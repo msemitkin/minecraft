@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MineClone — Minecraft у браузері</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="overlay">
+    <div id="overlay-content">
+      <h1>⛏ MineClone</h1>
+      <p class="subtitle">Клон Minecraft у браузері</p>
+      <button id="play-btn">Грати</button>
+      <div class="controls">
+        <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> — рух</div>
+        <div><kbd>Space</kbd> — стрибок / плисти вгору</div>
+        <div><kbd>Shift</kbd> — біг</div>
+        <div><kbd>ЛКМ</kbd> — зруйнувати блок</div>
+        <div><kbd>ПКМ</kbd> — поставити блок</div>
+        <div><kbd>1</kbd>–<kbd>7</kbd> або колесо миші — вибір блока</div>
+        <div><kbd>Esc</kbd> — пауза</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="hud" hidden>
+    <div id="crosshair">+</div>
+    <div id="hotbar"></div>
+    <div id="item-name"></div>
+    <div id="debug"></div>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
