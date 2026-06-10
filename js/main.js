@@ -367,6 +367,11 @@ const player = {
 const keys = {};
 let selectedSlot = 0;
 
+// Сенсорні пристрої: pointer lock недоступний, керування через віртуальний джойстик
+const IS_TOUCH = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+let mobilePlaying = false;
+const joy = { active: false, id: null, x: 0, y: 0 };
+
 // ===== Колізії (по осях) =====
 function* playerVoxels() {
   const p = player.pos;
@@ -414,8 +419,9 @@ function updatePlayer(dt) {
   if (keys['KeyS']) fz += 1;
   if (keys['KeyA']) fx -= 1;
   if (keys['KeyD']) fx += 1;
+  if (joy.active) { fx = joy.x; fz = joy.y; }
   const len = Math.hypot(fx, fz);
-  if (len > 0) { fx /= len; fz /= len; }
+  if (len > 1) { fx /= len; fz /= len; }
 
   const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
   player.vel.x = (fx * cos + fz * sin) * speed * (inWater ? 0.6 : 1);
@@ -593,6 +599,10 @@ function buildHotbar() {
       0, 0, TILE, TILE
     );
     slot.append(num, icon);
+    slot.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      selectSlot(i);
+    });
     hotbar.appendChild(slot);
   });
 }
@@ -609,16 +619,154 @@ function selectSlot(i) {
 
 // ===== Керування =====
 const isLocked = () => document.pointerLockElement === renderer.domElement;
+const gameActive = () => isLocked() || mobilePlaying;
+
+const touchControls = document.getElementById('touch-controls');
+
+function enterMobileMode() {
+  mobilePlaying = true;
+  overlay.style.display = 'none';
+  hud.hidden = false;
+  touchControls.hidden = false;
+}
+
+function exitMobileMode() {
+  mobilePlaying = false;
+  joy.active = false;
+  joy.x = joy.y = 0;
+  keys['Space'] = false;
+  overlay.style.display = 'flex';
+  hud.hidden = true;
+  touchControls.hidden = true;
+}
 
 document.getElementById('play-btn').addEventListener('click', () => {
-  renderer.domElement.requestPointerLock();
+  if (IS_TOUCH || !renderer.domElement.requestPointerLock) {
+    enterMobileMode();
+    return;
+  }
+  const result = renderer.domElement.requestPointerLock();
+  if (result && result.catch) result.catch(() => enterMobileMode());
+  // Якщо браузер мовчки відхилив pointer lock — перейти на сенсорний режим
+  setTimeout(() => {
+    if (!isLocked() && !mobilePlaying) enterMobileMode();
+  }, 400);
 });
 
 document.addEventListener('pointerlockchange', () => {
-  const locked = isLocked();
-  overlay.style.display = locked ? 'none' : 'flex';
-  hud.hidden = !locked;
+  if (isLocked()) {
+    overlay.style.display = 'none';
+    hud.hidden = false;
+    touchControls.hidden = true;
+  } else if (!mobilePlaying) {
+    overlay.style.display = 'flex';
+    hud.hidden = true;
+  }
 });
+
+// ===== Сенсорне керування =====
+// Камера: тягнути по екрану (поза джойстиком і кнопками)
+let lookTouch = null;
+
+renderer.domElement.addEventListener('touchstart', (e) => {
+  if (!mobilePlaying) return;
+  e.preventDefault();
+  if (lookTouch === null && e.changedTouches.length > 0) {
+    const t = e.changedTouches[0];
+    lookTouch = { id: t.identifier, x: t.clientX, y: t.clientY };
+  }
+}, { passive: false });
+
+renderer.domElement.addEventListener('touchmove', (e) => {
+  if (!mobilePlaying || lookTouch === null) return;
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier !== lookTouch.id) continue;
+    player.yaw -= (t.clientX - lookTouch.x) * 0.005;
+    player.pitch -= (t.clientY - lookTouch.y) * 0.005;
+    player.pitch = THREE.MathUtils.clamp(player.pitch, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
+    lookTouch.x = t.clientX;
+    lookTouch.y = t.clientY;
+  }
+}, { passive: false });
+
+for (const ev of ['touchend', 'touchcancel']) {
+  renderer.domElement.addEventListener(ev, (e) => {
+    for (const t of e.changedTouches) {
+      if (lookTouch && t.identifier === lookTouch.id) lookTouch = null;
+    }
+  });
+}
+
+// Джойстик руху
+const joyEl = document.getElementById('joystick');
+const stickEl = document.getElementById('stick');
+const JOY_R = 52;
+
+function updateJoy(t) {
+  const rect = joyEl.getBoundingClientRect();
+  let dx = t.clientX - (rect.left + rect.width / 2);
+  let dy = t.clientY - (rect.top + rect.height / 2);
+  const d = Math.hypot(dx, dy);
+  if (d > JOY_R) { dx = dx / d * JOY_R; dy = dy / d * JOY_R; }
+  stickEl.style.transform = `translate(${dx}px, ${dy}px)`;
+  joy.x = dx / JOY_R;
+  joy.y = dy / JOY_R; // вгору = вперед (від'ємний fz)
+}
+
+joyEl.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  const t = e.changedTouches[0];
+  joy.active = true;
+  joy.id = t.identifier;
+  updateJoy(t);
+}, { passive: false });
+
+joyEl.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (joy.active && t.identifier === joy.id) updateJoy(t);
+  }
+}, { passive: false });
+
+for (const ev of ['touchend', 'touchcancel']) {
+  joyEl.addEventListener(ev, (e) => {
+    for (const t of e.changedTouches) {
+      if (joy.active && t.identifier === joy.id) {
+        joy.active = false;
+        joy.x = joy.y = 0;
+        stickEl.style.transform = '';
+      }
+    }
+  });
+}
+
+// Кнопки: стрибок, зруйнувати (з повтором при утриманні), поставити
+function bindTouchButton(id, onDown, onUp) {
+  const el = document.getElementById(id);
+  el.addEventListener('touchstart', (e) => { e.preventDefault(); onDown(); }, { passive: false });
+  for (const ev of ['touchend', 'touchcancel']) {
+    el.addEventListener(ev, (e) => { e.preventDefault(); if (onUp) onUp(); }, { passive: false });
+  }
+}
+
+bindTouchButton('btn-jump', () => { keys['Space'] = true; }, () => { keys['Space'] = false; });
+
+let breakRepeat = null;
+bindTouchButton('btn-break',
+  () => {
+    breakBlock();
+    breakRepeat = setInterval(breakBlock, 300);
+  },
+  () => clearInterval(breakRepeat));
+
+bindTouchButton('btn-place', () => placeBlock());
+
+document.getElementById('btn-pause').addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  exitMobileMode();
+}, { passive: false });
+document.getElementById('btn-pause').addEventListener('click', () => exitMobileMode());
 
 document.addEventListener('mousemove', (e) => {
   if (!isLocked()) return;
@@ -656,6 +804,12 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
+// На сенсорних пристроях показати відповідну довідку на стартовому екрані
+if (IS_TOUCH) {
+  document.getElementById('controls-desktop').style.display = 'none';
+  document.getElementById('controls-touch').style.display = 'inline-block';
+}
+
 // ===== Головний цикл =====
 buildHotbar();
 const clock = new THREE.Clock();
@@ -666,7 +820,7 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
 
-  if (isLocked()) {
+  if (gameActive()) {
     updatePlayer(dt);
   }
 
@@ -679,7 +833,7 @@ function animate() {
   updateDayNight(dt);
 
   // Підсвічування блока
-  const hit = isLocked() ? raycastBlock() : null;
+  const hit = gameActive() ? raycastBlock() : null;
   highlight.visible = !!hit;
   if (hit) {
     highlight.position.set(hit.block[0] + 0.5, hit.block[1] + 0.5, hit.block[2] + 0.5);
