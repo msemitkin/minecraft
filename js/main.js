@@ -5,7 +5,7 @@ import * as THREE from 'three';
 // ============================================================
 const CHUNK = 16;          // розмір чанка по X/Z
 const HEIGHT = 64;         // висота світу
-const SEA = 25;            // рівень моря
+const SEA = 26;            // рівень моря
 const RENDER_DIST = 4;     // радіус видимості в чанках
 const SEED = 20260610;
 const DAY_LENGTH = 240;    // секунд на повний цикл день/ніч
@@ -16,10 +16,10 @@ const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4,
 
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
-  [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки',
+  [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
 };
 
-const HOTBAR_ITEMS = [GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANK];
+const HOTBAR_ITEMS = [GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANK, WATER];
 
 const isSolid = (id) => id !== AIR && id !== WATER;
 
@@ -58,7 +58,8 @@ function fbm(x, z) {
 function heightAt(x, z) {
   const base = fbm(x / 60, z / 60);
   const mountains = fbm(x / 180 + 100, z / 180 + 100);
-  const h = 18 + base * 14 + mountains * mountains * 28;
+  // Низини нижче рівня моря дають озера (~10% площі)
+  const h = 12 + base * 24 + mountains * mountains * 28;
   return Math.max(2, Math.min(HEIGHT - 10, Math.floor(h)));
 }
 
@@ -362,6 +363,8 @@ const player = {
   yaw: 0,
   pitch: 0,
   onGround: false,
+  halfW: PLAYER_W,
+  height: PLAYER_H,
 };
 
 const keys = {};
@@ -372,37 +375,35 @@ const IS_TOUCH = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 let mobilePlaying = false;
 const joy = { active: false, id: null, x: 0, y: 0 };
 
-// ===== Колізії (по осях) =====
-function* playerVoxels() {
-  const p = player.pos;
-  const x0 = Math.floor(p.x - PLAYER_W), x1 = Math.floor(p.x + PLAYER_W);
-  const y0 = Math.floor(p.y), y1 = Math.floor(p.y + PLAYER_H);
-  const z0 = Math.floor(p.z - PLAYER_W), z1 = Math.floor(p.z + PLAYER_W);
-  for (let x = x0; x <= x1; x++)
-    for (let y = y0; y <= y1; y++)
-      for (let z = z0; z <= z1; z++)
-        if (isSolid(blockAt(x, y, z))) yield [x, y, z];
-}
-
-function moveAxis(axis, amount) {
-  if (amount === 0) return;
-  player.pos[axis] += amount;
-  for (const [vx, vy, vz] of playerVoxels()) {
-    if (axis === 'x') {
-      player.pos.x = amount > 0 ? vx - PLAYER_W - EPS : vx + 1 + PLAYER_W + EPS;
-    } else if (axis === 'z') {
-      player.pos.z = amount > 0 ? vz - PLAYER_W - EPS : vz + 1 + PLAYER_W + EPS;
-    } else {
-      if (amount > 0) {
-        player.pos.y = vy - PLAYER_H - EPS;
-      } else {
-        player.pos.y = vy + 1 + EPS;
-        player.onGround = true;
+// ===== Колізії (по осях), спільні для гравця і тварин =====
+function moveEntityAxis(e, axis, amount) {
+  if (amount === 0) return false;
+  e.pos[axis] += amount;
+  const x0 = Math.floor(e.pos.x - e.halfW), x1 = Math.floor(e.pos.x + e.halfW);
+  const y0 = Math.floor(e.pos.y), y1 = Math.floor(e.pos.y + e.height);
+  const z0 = Math.floor(e.pos.z - e.halfW), z1 = Math.floor(e.pos.z + e.halfW);
+  for (let x = x0; x <= x1; x++) {
+    for (let y = y0; y <= y1; y++) {
+      for (let z = z0; z <= z1; z++) {
+        if (!isSolid(blockAt(x, y, z))) continue;
+        if (axis === 'x') {
+          e.pos.x = amount > 0 ? x - e.halfW - EPS : x + 1 + e.halfW + EPS;
+        } else if (axis === 'z') {
+          e.pos.z = amount > 0 ? z - e.halfW - EPS : z + 1 + e.halfW + EPS;
+        } else {
+          if (amount > 0) {
+            e.pos.y = y - e.height - EPS;
+          } else {
+            e.pos.y = y + 1 + EPS;
+            e.onGround = true;
+          }
+        }
+        e.vel[axis] = 0;
+        return true;
       }
     }
-    player.vel[axis] = 0;
-    return;
   }
+  return false;
 }
 
 function updatePlayer(dt) {
@@ -437,9 +438,9 @@ function updatePlayer(dt) {
   }
 
   player.onGround = false;
-  moveAxis('y', player.vel.y * dt);
-  moveAxis('x', player.vel.x * dt);
-  moveAxis('z', player.vel.z * dt);
+  moveEntityAxis(player, 'y', player.vel.y * dt);
+  moveEntityAxis(player, 'x', player.vel.x * dt);
+  moveEntityAxis(player, 'z', player.vel.z * dt);
 
   // Якщо провалилися під світ — повернути на поверхню
   if (player.pos.y < -10) {
@@ -449,6 +450,205 @@ function updatePlayer(dt) {
 
   camera.position.set(player.pos.x, player.pos.y + EYE, player.pos.z);
   camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+}
+
+// ============================================================
+// Тварини
+// ============================================================
+const ANIMAL_MAX = 12;
+const ANIMAL_DESPAWN_DIST = 80;
+const animals = [];
+
+function animalBox(parent, w, h, d, color, x, y, z) {
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(w, h, d),
+    new THREE.MeshLambertMaterial({ color })
+  );
+  mesh.position.set(x, y, z);
+  parent.add(mesh);
+  return mesh;
+}
+
+// Нога з віссю обертання вгорі, щоб гойдалася при ходьбі
+function animalLeg(parent, w, len, color, x, top, z) {
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(w, len, w),
+    new THREE.MeshLambertMaterial({ color })
+  );
+  mesh.geometry.translate(0, -len / 2, 0);
+  mesh.position.set(x, top, z);
+  parent.add(mesh);
+  return mesh;
+}
+
+// Моделі дивляться в -Z (як і гравець при yaw = 0)
+const ANIMAL_TYPES = {
+  pig: {
+    speed: 1.4, halfW: 0.32, height: 0.95,
+    build(g) {
+      const pink = 0xeba6a0, dark = 0xd98c86;
+      animalBox(g, 0.6, 0.45, 0.9, pink, 0, 0.62, 0.05);
+      animalBox(g, 0.42, 0.4, 0.32, pink, 0, 0.68, -0.55);
+      animalBox(g, 0.2, 0.14, 0.08, dark, 0, 0.6, -0.74);   // п'ятачок
+      return [
+        animalLeg(g, 0.16, 0.4, dark, -0.18, 0.4, -0.25),
+        animalLeg(g, 0.16, 0.4, dark, 0.18, 0.4, -0.25),
+        animalLeg(g, 0.16, 0.4, dark, -0.18, 0.4, 0.32),
+        animalLeg(g, 0.16, 0.4, dark, 0.18, 0.4, 0.32),
+      ];
+    },
+  },
+  cow: {
+    speed: 1.1, halfW: 0.38, height: 1.3,
+    build(g) {
+      const brown = 0x6b4a32, light = 0x8a6647, white = 0xe8e2d8;
+      animalBox(g, 0.7, 0.55, 1.05, brown, 0, 0.95, 0.05);
+      animalBox(g, 0.44, 0.42, 0.36, light, 0, 1.1, -0.68);
+      animalBox(g, 0.3, 0.16, 0.06, white, 0, 0.98, -0.89);  // морда
+      animalBox(g, 0.12, 0.12, 0.12, white, -0.3, 1.33, -0.6); // ріжки
+      animalBox(g, 0.12, 0.12, 0.12, white, 0.3, 1.33, -0.6);
+      return [
+        animalLeg(g, 0.18, 0.68, brown, -0.22, 0.68, -0.32),
+        animalLeg(g, 0.18, 0.68, brown, 0.22, 0.68, -0.32),
+        animalLeg(g, 0.18, 0.68, brown, -0.22, 0.68, 0.4),
+        animalLeg(g, 0.18, 0.68, brown, 0.22, 0.68, 0.4),
+      ];
+    },
+  },
+  chicken: {
+    speed: 1.7, halfW: 0.2, height: 0.7,
+    build(g) {
+      const white = 0xf2f0ea, orange = 0xe89c3f, red = 0xc63d33;
+      animalBox(g, 0.36, 0.36, 0.5, white, 0, 0.42, 0.02);
+      animalBox(g, 0.24, 0.3, 0.2, white, 0, 0.72, -0.22);
+      animalBox(g, 0.1, 0.08, 0.1, orange, 0, 0.7, -0.36);   // дзьоб
+      animalBox(g, 0.08, 0.1, 0.1, red, 0, 0.6, -0.32);      // борідка
+      animalBox(g, 0.04, 0.3, 0.36, white, -0.2, 0.46, 0.04); // крила
+      animalBox(g, 0.04, 0.3, 0.36, white, 0.2, 0.46, 0.04);
+      return [
+        animalLeg(g, 0.07, 0.24, orange, -0.09, 0.24, 0.02),
+        animalLeg(g, 0.07, 0.24, orange, 0.09, 0.24, 0.02),
+      ];
+    },
+  },
+};
+
+function spawnAnimal(type, x, y, z) {
+  const def = ANIMAL_TYPES[type];
+  const group = new THREE.Group();
+  const legs = def.build(group);
+  group.position.set(x, y, z);
+  scene.add(group);
+  animals.push({
+    type, group, legs,
+    pos: new THREE.Vector3(x, y, z),
+    vel: new THREE.Vector3(),
+    yaw: Math.random() * Math.PI * 2,
+    targetYaw: 0,
+    halfW: def.halfW,
+    height: def.height,
+    speed: def.speed,
+    state: 'idle',
+    stateTimer: Math.random() * 2,
+    legPhase: 0,
+    onGround: false,
+  });
+}
+
+function trySpawnAnimal() {
+  if (animals.length >= ANIMAL_MAX) return;
+  const angle = Math.random() * Math.PI * 2;
+  const dist = 16 + Math.random() * 28;
+  const x = Math.floor(player.pos.x + Math.cos(angle) * dist);
+  const z = Math.floor(player.pos.z + Math.sin(angle) * dist);
+  const h = heightAt(x, z);
+  if (h <= SEA + 1) return;                    // не у воді й не на пляжі
+  if (blockAt(x, h, z) !== GRASS) return;      // лише на траві
+  if (isSolid(blockAt(x, h + 1, z))) return;   // місце вільне
+  const types = Object.keys(ANIMAL_TYPES);
+  spawnAnimal(types[Math.floor(Math.random() * types.length)], x + 0.5, h + 1.01, z + 0.5);
+}
+
+function removeAnimal(index) {
+  const a = animals[index];
+  scene.remove(a.group);
+  a.group.traverse((obj) => {
+    if (obj.isMesh) {
+      obj.geometry.dispose();
+      obj.material.dispose();
+    }
+  });
+  animals.splice(index, 1);
+}
+
+function updateAnimal(a, dt) {
+  // Зміна стану: блукає / стоїть
+  a.stateTimer -= dt;
+  if (a.stateTimer <= 0) {
+    if (a.state === 'walk') {
+      a.state = 'idle';
+      a.stateTimer = 1 + Math.random() * 3;
+    } else {
+      a.state = 'walk';
+      a.stateTimer = 2 + Math.random() * 4;
+      a.targetYaw = Math.random() * Math.PI * 2;
+    }
+  }
+
+  // Плавний поворот до цільового напрямку
+  let dyaw = a.targetYaw - a.yaw;
+  dyaw = ((dyaw + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+  a.yaw += dyaw * Math.min(1, dt * 3);
+
+  const moving = a.state === 'walk';
+  const sp = moving ? a.speed : 0;
+  a.vel.x = -Math.sin(a.yaw) * sp;
+  a.vel.z = -Math.cos(a.yaw) * sp;
+
+  const inWater = blockAt(
+    Math.floor(a.pos.x), Math.floor(a.pos.y + 0.3), Math.floor(a.pos.z)
+  ) === WATER;
+  if (inWater) {
+    a.vel.y = Math.min(a.vel.y + 40 * dt, 3); // спливає на поверхню
+  } else {
+    a.vel.y -= 24 * dt;
+  }
+
+  a.onGround = false;
+  moveEntityAxis(a, 'y', a.vel.y * dt);
+  const bumpedX = moveEntityAxis(a, 'x', a.vel.x * dt);
+  const bumpedZ = moveEntityAxis(a, 'z', a.vel.z * dt);
+  if ((bumpedX || bumpedZ) && a.onGround && moving) a.vel.y = 7; // перестрибнути блок
+
+  // Анімація ніг
+  if (moving && (a.onGround || inWater)) {
+    a.legPhase += dt * 9;
+  }
+  const swing = Math.sin(a.legPhase) * 0.55 * (moving ? 1 : 0);
+  a.legs.forEach((leg, i) => {
+    leg.rotation.x = i % 2 === 0 ? swing : -swing;
+  });
+
+  a.group.position.copy(a.pos);
+  a.group.rotation.y = a.yaw;
+}
+
+let animalSpawnTimer = 0;
+
+function updateAnimals(dt) {
+  animalSpawnTimer -= dt;
+  if (animalSpawnTimer <= 0) {
+    trySpawnAnimal();
+    animalSpawnTimer = 2;
+  }
+  for (let i = animals.length - 1; i >= 0; i--) {
+    const a = animals[i];
+    if (a.pos.distanceTo(player.pos) > ANIMAL_DESPAWN_DIST || a.pos.y < -10) {
+      removeAnimal(i);
+    } else {
+      updateAnimal(a, dt);
+    }
+  }
 }
 
 // ===== Промінь погляду (вибір блока) =====
@@ -822,6 +1022,7 @@ function animate() {
 
   if (gameActive()) {
     updatePlayer(dt);
+    updateAnimals(dt);
   }
 
   chunkTimer -= dt;
