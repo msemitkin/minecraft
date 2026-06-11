@@ -65,6 +65,39 @@ function heightAt(x, z) {
 
 const treeAt = (x, z) => ihash(x + 39163, z - 21577) < 0.02;
 
+// ===== Печери: 3D-шум вирізає тунелі =====
+function ihash3(x, y, z) {
+  let h = Math.imul(x, 374761393) ^ Math.imul(y, 1597334677) ^ Math.imul(z, 668265263) ^ Math.imul(SEED, 1013904223);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+function valueNoise3(x, y, z) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const u = smooth(x - xi), v = smooth(y - yi), w = smooth(z - zi);
+  const n000 = ihash3(xi, yi, zi), n100 = ihash3(xi + 1, yi, zi);
+  const n010 = ihash3(xi, yi + 1, zi), n110 = ihash3(xi + 1, yi + 1, zi);
+  const n001 = ihash3(xi, yi, zi + 1), n101 = ihash3(xi + 1, yi, zi + 1);
+  const n011 = ihash3(xi, yi + 1, zi + 1), n111 = ihash3(xi + 1, yi + 1, zi + 1);
+  const x00 = n000 + (n100 - n000) * u, x10 = n010 + (n110 - n010) * u;
+  const x01 = n001 + (n101 - n001) * u, x11 = n011 + (n111 - n011) * u;
+  const y0 = x00 + (x10 - x00) * v, y1 = x01 + (x11 - x01) * v;
+  return y0 + (y1 - y0) * w;
+}
+
+// Тунель там, де дві незалежні шумові «стрічки» перетинаються.
+// Поріг згасає біля поверхні, щоб входи в печери були рідкісними.
+function caveAt(x, y, z, h) {
+  if (y < 2) return false;
+  const fade = Math.min(1, (h - y) / 10 + 0.2);
+  const th = 0.085 * fade;
+  const a = valueNoise3(x / 26, y / 18, z / 26);
+  if (Math.abs(a - 0.5) >= th) return false;
+  const b = valueNoise3(x / 26 + 77, y / 18 + 77, z / 26 + 77);
+  return Math.abs(b - 0.5) < th;
+}
+
 // ============================================================
 // Дані чанків
 // ============================================================
@@ -76,6 +109,46 @@ const dirtyChunks = new Set();
 const chunkKey = (cx, cz) => cx + ',' + cz;
 const blockIndex = (lx, ly, lz) => (ly * CHUNK + lz) * CHUNK + lx;
 
+// ============================================================
+// Збереження світу в localStorage
+// ============================================================
+// v3: версія генератора (печери + нові висоти) — старі сейви несумісні
+const SAVE_KEY = `mineclone:${SEED}:v3`;
+
+function loadGame() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveGame() {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      edits: [...edits],
+      player: {
+        x: player.pos.x, y: player.pos.y, z: player.pos.z,
+        yaw: player.yaw, pitch: player.pitch,
+      },
+      timeOfDay,
+      selectedSlot,
+    }));
+  } catch {
+    // сховище переповнене або недоступне — просто пропускаємо
+  }
+}
+
+function clearSave() {
+  try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ }
+}
+
+const savedGame = loadGame();
+if (savedGame && Array.isArray(savedGame.edits)) {
+  for (const [key, id] of savedGame.edits) edits.set(key, id);
+}
+
 function genChunkData(cx, cz) {
   const data = new Uint8Array(CHUNK * HEIGHT * CHUNK);
   const wx0 = cx * CHUNK, wz0 = cz * CHUNK;
@@ -83,8 +156,11 @@ function genChunkData(cx, cz) {
   // Рельєф
   for (let lx = 0; lx < CHUNK; lx++) {
     for (let lz = 0; lz < CHUNK; lz++) {
-      const h = heightAt(wx0 + lx, wz0 + lz);
+      const wx = wx0 + lx, wz = wz0 + lz;
+      const h = heightAt(wx, wz);
+      const noCaves = h <= SEA + 1; // не дірявити дно озер і пляжі
       for (let y = 0; y <= h; y++) {
+        if (!noCaves && caveAt(wx, y, wz, h)) continue;
         let id;
         if (y === h) id = h <= SEA + 1 ? SAND : GRASS;
         else if (y > h - 4) id = DIRT;
@@ -110,6 +186,7 @@ function genChunkData(cx, cz) {
     for (let tz = wz0 - 2; tz < wz0 + CHUNK + 2; tz++) {
       const h = heightAt(tx, tz);
       if (h <= SEA + 1 || !treeAt(tx, tz)) continue;
+      if (caveAt(tx, h, tz, h)) continue; // не садити дерево над входом у печеру
       const trunkH = 4 + Math.floor(ihash(tx + 777, tz + 333) * 2);
       // Крона
       for (let dy = trunkH - 1; dy <= trunkH + 2; dy++) {
@@ -366,6 +443,15 @@ const player = {
   halfW: PLAYER_W,
   height: PLAYER_H,
 };
+
+if (savedGame && savedGame.player) {
+  const p = savedGame.player;
+  if ([p.x, p.y, p.z].every(Number.isFinite)) {
+    player.pos.set(p.x, p.y, p.z);
+    player.yaw = p.yaw || 0;
+    player.pitch = p.pitch || 0;
+  }
+}
 
 const keys = {};
 let selectedSlot = 0;
@@ -756,7 +842,9 @@ function processChunkQueue() {
 const dayColor = new THREE.Color(0x87ceeb);
 const nightColor = new THREE.Color(0x0b1026);
 const skyColor = new THREE.Color();
-let timeOfDay = DAY_LENGTH * 0.25; // почати вранці
+let timeOfDay = Number.isFinite(savedGame?.timeOfDay)
+  ? savedGame.timeOfDay
+  : DAY_LENGTH * 0.25; // почати вранці
 
 function updateDayNight(dt) {
   timeOfDay = (timeOfDay + dt) % DAY_LENGTH;
@@ -1010,10 +1098,30 @@ if (IS_TOUCH) {
   document.getElementById('controls-touch').style.display = 'inline-block';
 }
 
+// ===== Збереження: автозбереження + кнопка «Нова гра» =====
+if (savedGame) {
+  document.getElementById('play-btn').textContent = 'Продовжити';
+}
+
+document.getElementById('new-game-btn').addEventListener('click', () => {
+  clearSave();
+  location.reload();
+});
+
+// Зберегти, коли вкладку згортають або закривають
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') saveGame();
+});
+addEventListener('pagehide', saveGame);
+
 // ===== Головний цикл =====
 buildHotbar();
+if (savedGame && Number.isInteger(savedGame.selectedSlot)) {
+  selectSlot(savedGame.selectedSlot);
+}
 const clock = new THREE.Clock();
 let chunkTimer = 0;
+let saveTimer = 5;
 let fpsTime = 0, fpsFrames = 0, fps = 0;
 
 function animate() {
@@ -1023,6 +1131,11 @@ function animate() {
   if (gameActive()) {
     updatePlayer(dt);
     updateAnimals(dt);
+    saveTimer -= dt;
+    if (saveTimer <= 0) {
+      saveGame();
+      saveTimer = 5;
+    }
   }
 
   chunkTimer -= dt;
