@@ -265,12 +265,12 @@ kbd {
 /* Вузькі екрани: менший хотбар, приховати десктопну довідку */
 @media (max-width: 620px) {
   .slot {
-    width: 38px;
-    height: 38px;
+    width: 34px;
+    height: 34px;
   }
   .slot canvas {
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
   }
   #overlay-content h1 {
     font-size: 40px;

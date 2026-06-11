@@ -13,15 +13,22 @@ const DAY_LENGTH = 240;    // секунд на повний цикл день/�
 // Типи блоків
 const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4,
       LOG = 5, LEAVES = 6, WATER = 7, PLANK = 8;
+// Текуча вода (рівні 3..1) і динаміт
+const FLOW3 = 9, FLOW2 = 10, FLOW1 = 11, TNT = 12;
 
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
+  [TNT]: 'Динаміт',
 };
 
-const HOTBAR_ITEMS = [GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANK, WATER];
+const HOTBAR_ITEMS = [GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANK, WATER, TNT];
 
-const isSolid = (id) => id !== AIR && id !== WATER;
+const isWaterId = (id) => id === WATER || (id >= FLOW3 && id <= FLOW1);
+const isSolid = (id) => id !== AIR && !isWaterId(id);
+// Рівень води: джерело = 4, потоки = 3..1
+const WATER_LEVEL = { [WATER]: 4, [FLOW3]: 3, [FLOW2]: 2, [FLOW1]: 1 };
+const FLOW_OF_LEVEL = { 3: FLOW3, 2: FLOW2, 1: FLOW1 };
 
 // ============================================================
 // Шум та генерація рельєфу
@@ -244,6 +251,84 @@ function setBlock(wx, wy, wz, id) {
   if (lx === CHUNK - 1) dirtyChunks.add(chunkKey(cx + 1, cz));
   if (lz === 0) dirtyChunks.add(chunkKey(cx, cz - 1));
   if (lz === CHUNK - 1) dirtyChunks.add(chunkKey(cx, cz + 1));
+  scheduleWaterAround(wx, wy, wz);
+}
+
+// ============================================================
+// Симуляція води: тече вниз, обмежено розтікається вбік
+// ============================================================
+const waterQueue = new Set();
+
+function scheduleWater(x, y, z) {
+  if (y >= 0 && y < HEIGHT) waterQueue.add(x + ',' + y + ',' + z);
+}
+
+function scheduleWaterAround(x, y, z) {
+  scheduleWater(x, y, z);
+  scheduleWater(x + 1, y, z);
+  scheduleWater(x - 1, y, z);
+  scheduleWater(x, y + 1, z);
+  scheduleWater(x, y - 1, z);
+  scheduleWater(x, y, z + 1);
+  scheduleWater(x, y, z - 1);
+}
+
+const HORIZ_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+// Рівень, який потік може підтримувати: вода зверху тримає 3,
+// інакше — максимальний сусідній рівень мінус один
+function waterSupport(x, y, z) {
+  if (isWaterId(blockAt(x, y + 1, z))) return 3;
+  let best = 0;
+  for (const [dx, dz] of HORIZ_DIRS) {
+    const lvl = WATER_LEVEL[blockAt(x + dx, y, z + dz)] || 0;
+    best = Math.max(best, lvl - 1);
+  }
+  return best;
+}
+
+function tickWaterCell(x, y, z) {
+  const id = blockAt(x, y, z);
+  if (!isWaterId(id)) return;
+  let lvl = WATER_LEVEL[id];
+
+  // Потік без підживлення висихає (джерела вічні)
+  if (id !== WATER) {
+    const support = waterSupport(x, y, z);
+    if (support < lvl) {
+      setBlock(x, y, z, support >= 1 ? FLOW_OF_LEVEL[support] : AIR);
+      if (support < 1) return;
+      lvl = support;
+    }
+  }
+
+  // Тече вниз
+  const below = blockAt(x, y - 1, z);
+  if (below === AIR || (isWaterId(below) && below !== WATER && WATER_LEVEL[below] < 3)) {
+    setBlock(x, y - 1, z, FLOW3);
+    return;
+  }
+
+  // Розтікається вбік лише над твердою опорою (інакше тільки падає),
+  // інакше падаючі стовпи розливалися б на кожній висоті — повінь
+  if (isSolid(below) && lvl > 1) {
+    for (const [dx, dz] of HORIZ_DIRS) {
+      const nb = blockAt(x + dx, y, z + dz);
+      if (nb === AIR || (isWaterId(nb) && nb !== WATER && WATER_LEVEL[nb] < lvl - 1)) {
+        setBlock(x + dx, y, z + dz, FLOW_OF_LEVEL[lvl - 1]);
+      }
+    }
+  }
+}
+
+function processWaterQueue() {
+  if (waterQueue.size === 0) return;
+  const batch = [...waterQueue].slice(0, 400);
+  for (const key of batch) {
+    waterQueue.delete(key);
+    const [x, y, z] = key.split(',').map(Number);
+    tickWaterCell(x, y, z);
+  }
 }
 
 // ============================================================
@@ -288,6 +373,8 @@ function makeAtlas() {
   paint(7, () => vary(58, 121, 38, 18));                                         // 7 листя
   paint(8, () => vary(53, 95, 205, 8));                                          // 8 вода
   paint(9, (x, y) => (y % 4 === 3) ? vary(140, 110, 60, 5) : vary(166, 133, 80, 8)); // 9 дошки
+  paint(10, (x, y) => (y >= 6 && y <= 9) ? vary(228, 222, 210, 6) : vary(178, 46, 40, 12)); // 10 динаміт (бік)
+  paint(11, (x, y) => (x > 4 && x < 11 && y > 4 && y < 11) ? vary(120, 32, 28, 8) : vary(178, 46, 40, 12)); // 11 динаміт (верх)
 
   const tex = new THREE.CanvasTexture(atlasCanvas);
   tex.magFilter = THREE.NearestFilter;
@@ -306,6 +393,10 @@ const BLOCK_TILES = {
   [LEAVES]: { top: 7, bottom: 7, side: 7 },
   [WATER]:  { top: 8, bottom: 8, side: 8 },
   [PLANK]:  { top: 9, bottom: 9, side: 9 },
+  [FLOW3]:  { top: 8, bottom: 8, side: 8 },
+  [FLOW2]:  { top: 8, bottom: 8, side: 8 },
+  [FLOW1]:  { top: 8, bottom: 8, side: 8 },
+  [TNT]:    { top: 11, bottom: 11, side: 10 },
 };
 
 function tileUV(tile) {
@@ -345,12 +436,12 @@ function buildChunkMesh(cx, cz, scene, materials) {
 
         for (const { dir, face, verts } of FACES) {
           const nb = blockAt(wx + dir[0], ly + dir[1], wz + dir[2]);
-          const visible = id === WATER
+          const visible = isWaterId(id)
             ? nb === AIR
-            : nb === AIR || nb === WATER;
+            : nb === AIR || isWaterId(nb);
           if (!visible) continue;
 
-          const buf = id === WATER ? water : solid;
+          const buf = isWaterId(id) ? water : solid;
           const { u0, u1, v0, v1 } = tileUV(BLOCK_TILES[id][face]);
           const uvCorners = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
           const base = buf.pos.length / 3;
@@ -358,7 +449,7 @@ function buildChunkMesh(cx, cz, scene, materials) {
           for (let i = 0; i < 4; i++) {
             const v = verts[i];
             // Верх води трохи нижче, щоб було видно поверхню
-            const yOff = id === WATER && v[1] === 1 ? -0.12 : 0;
+            const yOff = isWaterId(id) && v[1] === 1 ? -0.12 : 0;
             buf.pos.push(lx + v[0], ly + v[1] + yOff, lz + v[2]);
             buf.norm.push(dir[0], dir[1], dir[2]);
             buf.uv.push(uvCorners[i][0], uvCorners[i][1]);
@@ -493,11 +584,11 @@ function moveEntityAxis(e, axis, amount) {
 }
 
 function updatePlayer(dt) {
-  const inWater = blockAt(
+  const inWater = isWaterId(blockAt(
     Math.floor(player.pos.x),
     Math.floor(player.pos.y + 0.4),
     Math.floor(player.pos.z)
-  ) === WATER;
+  ));
 
   // Горизонтальний рух
   const speed = keys['ShiftLeft'] || keys['ShiftRight'] ? 8 : 5;
@@ -691,9 +782,9 @@ function updateAnimal(a, dt) {
   a.vel.x = -Math.sin(a.yaw) * sp;
   a.vel.z = -Math.cos(a.yaw) * sp;
 
-  const inWater = blockAt(
+  const inWater = isWaterId(blockAt(
     Math.floor(a.pos.x), Math.floor(a.pos.y + 0.3), Math.floor(a.pos.z)
-  ) === WATER;
+  ));
   if (inWater) {
     a.vel.y = Math.min(a.vel.y + 40 * dt, 3); // спливає на поверхню
   } else {
@@ -737,6 +828,99 @@ function updateAnimals(dt) {
   }
 }
 
+// ============================================================
+// Динаміт
+// ============================================================
+const TNT_FUSE = 2.2;
+const TNT_RADIUS = 3.5;
+const primedTnt = [];
+const explosionFx = [];
+
+function igniteTnt(x, y, z, fuse = TNT_FUSE) {
+  setBlock(x, y, z, AIR);
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(0.98, 0.98, 0.98),
+    new THREE.MeshLambertMaterial({ color: 0xb53a2e })
+  );
+  mesh.position.set(x + 0.5, y + 0.5, z + 0.5);
+  scene.add(mesh);
+  primedTnt.push({ mesh, x, y, z, timer: fuse });
+}
+
+function knockback(entity, cx, cy, cz) {
+  const center = new THREE.Vector3(
+    entity.pos.x, entity.pos.y + entity.height / 2, entity.pos.z
+  );
+  const d = center.distanceTo(new THREE.Vector3(cx, cy, cz));
+  if (d > 8) return;
+  const power = (1 - d / 8) * 14;
+  const dir = center.sub(new THREE.Vector3(cx, cy, cz)).normalize();
+  entity.vel.x += dir.x * power;
+  entity.vel.z += dir.z * power;
+  entity.vel.y += Math.abs(dir.y) * power * 0.5 + power * 0.4;
+}
+
+function explode(cx, cy, cz) {
+  const r = Math.ceil(TNT_RADIUS);
+  const bx = Math.floor(cx), by = Math.floor(cy), bz = Math.floor(cz);
+  for (let x = bx - r; x <= bx + r; x++) {
+    for (let y = by - r; y <= by + r; y++) {
+      for (let z = bz - r; z <= bz + r; z++) {
+        const dx = x + 0.5 - cx, dy = y + 0.5 - cy, dz = z + 0.5 - cz;
+        if (dx * dx + dy * dy + dz * dz > TNT_RADIUS * TNT_RADIUS) continue;
+        const id = blockAt(x, y, z);
+        if (id === AIR || isWaterId(id)) continue;
+        if (id === TNT) {
+          igniteTnt(x, y, z, 0.3 + Math.random() * 0.5); // ланцюгова детонація
+        } else {
+          setBlock(x, y, z, AIR);
+        }
+      }
+    }
+  }
+
+  knockback(player, cx, cy, cz);
+  for (const a of animals) knockback(a, cx, cy, cz);
+
+  // Спалах вибуху
+  const fx = new THREE.Mesh(
+    new THREE.SphereGeometry(1, 12, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffd28a, transparent: true, opacity: 0.9 })
+  );
+  fx.position.set(cx, cy, cz);
+  scene.add(fx);
+  explosionFx.push({ mesh: fx, t: 0 });
+}
+
+function updateTnt(dt) {
+  for (let i = primedTnt.length - 1; i >= 0; i--) {
+    const t = primedTnt[i];
+    t.timer -= dt;
+    t.mesh.material.color.setHex(Math.sin(t.timer * 18) > 0 ? 0xffffff : 0xb53a2e);
+    if (t.timer <= 0) {
+      scene.remove(t.mesh);
+      t.mesh.geometry.dispose();
+      t.mesh.material.dispose();
+      primedTnt.splice(i, 1);
+      explode(t.x + 0.5, t.y + 0.5, t.z + 0.5);
+    }
+  }
+  for (let i = explosionFx.length - 1; i >= 0; i--) {
+    const e = explosionFx[i];
+    e.t += dt;
+    const k = e.t / 0.45;
+    if (k >= 1) {
+      scene.remove(e.mesh);
+      e.mesh.geometry.dispose();
+      e.mesh.material.dispose();
+      explosionFx.splice(i, 1);
+    } else {
+      e.mesh.scale.setScalar(1 + k * (TNT_RADIUS + 1.5));
+      e.mesh.material.opacity = 0.9 * (1 - k);
+    }
+  }
+}
+
 // ===== Промінь погляду (вибір блока) =====
 function raycastBlock(maxDist = 6) {
   const dir = new THREE.Vector3();
@@ -760,14 +944,21 @@ function raycastBlock(maxDist = 6) {
 
 function breakBlock() {
   const hit = raycastBlock();
-  if (hit) setBlock(...hit.block, AIR);
+  if (!hit) return;
+  const [x, y, z] = hit.block;
+  if (blockAt(x, y, z) === TNT) {
+    igniteTnt(x, y, z); // удар по динаміту підпалює його
+    return;
+  }
+  setBlock(x, y, z, AIR);
 }
 
 function placeBlock() {
   const hit = raycastBlock();
   if (!hit || !hit.prev) return;
   const [x, y, z] = hit.prev;
-  if (blockAt(x, y, z) !== AIR && blockAt(x, y, z) !== WATER) return;
+  const target = blockAt(x, y, z);
+  if (target !== AIR && !isWaterId(target)) return;
 
   // Не ставити блок усередину гравця
   const p = player.pos;
@@ -1122,6 +1313,7 @@ if (savedGame && Number.isInteger(savedGame.selectedSlot)) {
 const clock = new THREE.Clock();
 let chunkTimer = 0;
 let saveTimer = 5;
+let waterTimer = 0;
 let fpsTime = 0, fpsFrames = 0, fps = 0;
 
 function animate() {
@@ -1131,6 +1323,12 @@ function animate() {
   if (gameActive()) {
     updatePlayer(dt);
     updateAnimals(dt);
+    updateTnt(dt);
+    waterTimer -= dt;
+    if (waterTimer <= 0) {
+      processWaterQueue();
+      waterTimer = 0.2;
+    }
     saveTimer -= dt;
     if (saveTimer <= 0) {
       saveGame();
