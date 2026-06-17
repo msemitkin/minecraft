@@ -15,14 +15,21 @@ const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4,
       LOG = 5, LEAVES = 6, WATER = 7, PLANK = 8;
 // Текуча вода (рівні 3..1) і динаміт
 const FLOW3 = 9, FLOW2 = 10, FLOW1 = 11, TNT = 12;
+// Руди (генеруються в камені, добуваються та ставляться як декоративні блоки)
+const COAL = 13, IRON = 14, GOLD = 15, DIAMOND = 16;
 
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
   [TNT]: 'Динаміт',
+  [COAL]: 'Вугільна руда', [IRON]: 'Залізна руда',
+  [GOLD]: 'Золота руда', [DIAMOND]: 'Алмазна руда',
 };
 
-const HOTBAR_ITEMS = [GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANK, WATER, TNT];
+const HOTBAR_ITEMS = [
+  GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANK, WATER, TNT,
+  COAL, IRON, GOLD, DIAMOND,
+];
 
 const isWaterId = (id) => id === WATER || (id >= FLOW3 && id <= FLOW1);
 const isSolid = (id) => id !== AIR && !isWaterId(id);
@@ -34,6 +41,7 @@ const FLOW_OF_LEVEL = { 3: FLOW3, 2: FLOW2, 1: FLOW1 };
 const BLOCK_HARDNESS = {
   [GRASS]: 0.5, [DIRT]: 0.5, [SAND]: 0.55,
   [LEAVES]: 0.3, [LOG]: 1.0, [PLANK]: 0.9, [STONE]: 1.6,
+  [COAL]: 2.2, [IRON]: 2.8, [GOLD]: 2.8, [DIAMOND]: 3.6,
 };
 const DEFAULT_HARDNESS = 0.6;
 
@@ -98,6 +106,25 @@ function valueNoise3(x, y, z) {
   const x01 = n001 + (n101 - n001) * u, x11 = n011 + (n111 - n011) * u;
   const y0 = x00 + (x10 - x00) * v, y1 = x01 + (x11 - x01) * v;
   return y0 + (y1 - y0) * w;
+}
+
+// ===== Руди: жили з 3D-шуму в камені =====
+// Жила там, де шум потрапляє у вузьку смугу навколо 0.5; зсув і ширина
+// смуги задають окрему «сітку» жил для кожної руди.
+function oreVein(x, y, z, off, th) {
+  const n = valueNoise3((x + off) / 5, (y + off) / 5, (z + off) / 5);
+  return Math.abs(n - 0.5) < th;
+}
+
+// Тип руди для блока каменю: рідкісніші руди — глибше.
+// Перевіряємо від найглибшої/найрідкіснішої до звичайної.
+// (частки каменю: вугілля ~4.6%, залізо ~2.3%, золото ~0.6%, алмаз ~0.17%)
+function oreAt(x, y, z) {
+  if (y <= 14 && oreVein(x, y, z, 701, 0.0018)) return DIAMOND;
+  if (y <= 24 && oreVein(x, y, z, 503, 0.0035)) return GOLD;
+  if (y <= 42 && oreVein(x, y, z, 307, 0.0075)) return IRON;
+  if (y <= 54 && oreVein(x, y, z, 109, 0.012)) return COAL;
+  return STONE;
 }
 
 // Тунель там, де дві незалежні шумові «стрічки» перетинаються.
@@ -178,7 +205,7 @@ function genChunkData(cx, cz) {
         let id;
         if (y === h) id = h <= SEA + 1 ? SAND : GRASS;
         else if (y > h - 4) id = DIRT;
-        else id = STONE;
+        else id = oreAt(wx, y, wz);
         data[blockIndex(lx, y, lz)] = id;
       }
       for (let y = h + 1; y <= SEA; y++) {
@@ -383,6 +410,22 @@ function makeAtlas() {
   paint(10, (x, y) => (y >= 6 && y <= 9) ? vary(228, 222, 210, 6) : vary(178, 46, 40, 12)); // 10 динаміт (бік)
   paint(11, (x, y) => (x > 4 && x < 11 && y > 4 && y < 11) ? vary(120, 32, 28, 8) : vary(178, 46, 40, 12)); // 11 динаміт (верх)
 
+  // Руди: камінь у фоні + детерміновані вкраплення кольору руди
+  const oreTile = (i, speckColor, density) => {
+    // власний ГВЧ на тайл, щоб малюнок руди був стабільним між запусками
+    let s = (i * 2654435761) >>> 0;
+    const r = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+    const specks = new Set();
+    for (let n = 0; n < density; n++) {
+      specks.add(Math.floor(r() * TILE) * TILE + Math.floor(r() * TILE));
+    }
+    paint(i, (x, y) => specks.has(x * TILE + y) ? speckColor(x, y) : vary(125, 125, 125, 10));
+  };
+  oreTile(12, () => vary(34, 34, 38, 8), 26);    // 12 вугілля
+  oreTile(13, () => vary(196, 154, 116, 10), 24); // 13 залізо
+  oreTile(14, () => vary(243, 207, 71, 10), 22);  // 14 золото
+  oreTile(15, () => vary(98, 214, 214, 12), 20);  // 15 алмаз
+
   const tex = new THREE.CanvasTexture(atlasCanvas);
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
@@ -404,6 +447,10 @@ const BLOCK_TILES = {
   [FLOW2]:  { top: 8, bottom: 8, side: 8 },
   [FLOW1]:  { top: 8, bottom: 8, side: 8 },
   [TNT]:    { top: 11, bottom: 11, side: 10 },
+  [COAL]:    { top: 12, bottom: 12, side: 12 },
+  [IRON]:    { top: 13, bottom: 13, side: 13 },
+  [GOLD]:    { top: 14, bottom: 14, side: 14 },
+  [DIAMOND]: { top: 15, bottom: 15, side: 15 },
 };
 
 function tileUV(tile) {
