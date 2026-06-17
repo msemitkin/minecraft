@@ -28,7 +28,8 @@
         <div><kbd>Shift</kbd> — біг</div>
         <div><kbd>ЛКМ</kbd> (утримувати) — добувати блок</div>
         <div><kbd>ПКМ</kbd> — поставити блок</div>
-        <div><kbd>1</kbd>–<kbd>9</kbd> або колесо миші — вибір блока</div>
+        <div><kbd>1</kbd>–<kbd>9</kbd>, <kbd>0</kbd> або колесо миші — слот хотбара</div>
+        <div><kbd>Tab</kbd> — меню всіх блоків</div>
         <div><kbd>Esc</kbd> — пауза</div>
       </div>
       <div class="controls" id="controls-touch">
@@ -37,6 +38,7 @@
         <div>⬆ — стрибок / плисти вгору</div>
         <div>⛏ (тримати) — добувати блок</div>
         <div>▦ — поставити блок</div>
+        <div>▤ — меню всіх блоків</div>
         <div>Тап по слоту внизу — вибір блока</div>
       </div>
     </div>
@@ -54,8 +56,19 @@
         <button id="btn-jump">⬆</button>
         <button id="btn-break">⛏</button>
         <button id="btn-place">▦</button>
+        <button id="btn-inv">▤</button>
       </div>
       <button id="btn-pause">❚❚</button>
+    </div>
+  </div>
+
+  <div id="block-menu" hidden>
+    <div id="block-menu-panel">
+      <button id="block-menu-close" title="Закрити">✕</button>
+      <h2>Блоки</h2>
+      <p class="menu-hint">Виберіть блок для активного слота • <kbd>Tab</kbd>/<kbd>Esc</kbd> — закрити</p>
+      <div id="block-grid"></div>
+      <div id="menu-hotbar"></div>
     </div>
   </div>
 
