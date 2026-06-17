@@ -1273,6 +1273,126 @@ function processChunkQueue() {
   }
 }
 
+// ============================================================
+// Небесні тіла: сонце, місяць і зорі
+// ============================================================
+// Малюються окремою сценою на нескінченній «небесній сфері» (камера в центрі,
+// без туману), тому видно весь час незалежно від дальності промальовування.
+const skyScene = new THREE.Scene();
+const skyCamera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 4000);
+const SKY_R = 1500;
+
+// М'який радіальний градієнт для світіння сонця/місяця
+function makeGlowTexture(inner, mid) {
+  const s = 128;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = s;
+  const ctx = cv.getContext('2d');
+  const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  g.addColorStop(0, inner);
+  g.addColorStop(0.45, mid);
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// Місяць: бліде ядро з кратерами та м'яким гало
+function makeMoonTexture() {
+  const s = 128, c = s / 2;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = s;
+  const ctx = cv.getContext('2d');
+  // гало
+  const halo = ctx.createRadialGradient(c, c, s * 0.28, c, c, c);
+  halo.addColorStop(0, 'rgba(214,224,240,0.55)');
+  halo.addColorStop(1, 'rgba(214,224,240,0)');
+  ctx.fillStyle = halo;
+  ctx.fillRect(0, 0, s, s);
+  // диск
+  ctx.beginPath();
+  ctx.arc(c, c, s * 0.3, 0, Math.PI * 2);
+  ctx.fillStyle = '#e9eef7';
+  ctx.fill();
+  // кратери
+  ctx.fillStyle = 'rgba(150,162,186,0.55)';
+  const craters = [[-8, -6, 5], [10, 4, 6], [2, 12, 4], [-4, 10, 3], [12, -10, 3]];
+  for (const [dx, dy, r] of craters) {
+    ctx.beginPath();
+    ctx.arc(c + dx, c + dy, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const sunSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: makeGlowTexture('rgba(255,250,235,1)', 'rgba(255,221,140,0.55)'),
+  transparent: true, depthTest: false, depthWrite: false, fog: false,
+  blending: THREE.AdditiveBlending,
+}));
+sunSprite.scale.setScalar(220);
+skyScene.add(sunSprite);
+
+const moonSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: makeMoonTexture(),
+  transparent: true, depthTest: false, depthWrite: false, fog: false,
+}));
+moonSprite.scale.setScalar(150);
+skyScene.add(moonSprite);
+
+// Зорі: випадкові точки на сфері, обертаються разом із небом
+function makeStarTexture() {
+  const s = 32;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = s;
+  const ctx = cv.getContext('2d');
+  const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.4, 'rgba(255,255,255,0.6)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  return new THREE.CanvasTexture(cv);
+}
+
+const STAR_COUNT = 1400;
+const starGroup = new THREE.Group();
+{
+  const pos = new Float32Array(STAR_COUNT * 3);
+  for (let n = 0; n < STAR_COUNT; n++) {
+    // рівномірно по всій сфері (ті, що під обрієм, просто не видно)
+    const u = Math.random() * 2 - 1;
+    const phi = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(1 - u * u);
+    pos[n * 3] = r * Math.cos(phi) * SKY_R * 0.95;
+    pos[n * 3 + 1] = u * SKY_R * 0.95;
+    pos[n * 3 + 2] = r * Math.sin(phi) * SKY_R * 0.95;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.PointsMaterial({
+    map: makeStarTexture(),
+    size: 22,
+    sizeAttenuation: true,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+    fog: false,
+    blending: THREE.AdditiveBlending,
+    opacity: 0,
+  });
+  starGroup.add(new THREE.Points(geo, mat));
+  starGroup.userData.material = mat;
+}
+skyScene.add(starGroup);
+
+const _sunDir = new THREE.Vector3();
+const sunsetColor = new THREE.Color(0xff8a4a);
+
 // ===== День / ніч =====
 const dayColor = new THREE.Color(0x87ceeb);
 const nightColor = new THREE.Color(0x0b1026);
@@ -1293,8 +1413,26 @@ function updateDayNight(dt) {
   hemi.intensity = 0.15 + day * 0.75;
 
   skyColor.lerpColors(nightColor, dayColor, day);
-  scene.background = skyColor;
+  // Тепле сяйво на сході/заході: лише коли сонце близько до обрію з денного боку
+  const sunset = Math.max(0, 1 - Math.abs(sunHeight) / 0.22) *
+                 THREE.MathUtils.clamp((sunHeight + 0.32) / 0.32, 0, 1);
+  skyColor.lerp(sunsetColor, sunset * 0.55);
   scene.fog.color.copy(skyColor);
+
+  // ===== Небесні тіла =====
+  _sunDir.copy(sun.position).normalize();
+  sunSprite.position.copy(_sunDir).multiplyScalar(SKY_R);
+  moonSprite.position.copy(_sunDir).multiplyScalar(-SKY_R);
+
+  // Прозорість: сонце видно над обрієм, місяць і зорі — вночі
+  sunSprite.material.opacity = THREE.MathUtils.clamp((sunHeight + 0.04) / 0.12, 0, 1);
+  const night = THREE.MathUtils.clamp((-sunHeight + 0.08) / 0.22, 0, 1);
+  moonSprite.material.opacity = night;
+  // Легке мерехтіння зір
+  const twinkle = 0.85 + 0.15 * Math.sin(timeOfDay * 3.3);
+  starGroup.userData.material.opacity = night * twinkle;
+  // Небо повільно обертається разом із циклом доби
+  starGroup.rotation.z = angle;
 }
 
 // ===== HUD =====
@@ -1528,6 +1666,8 @@ addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   viewCamera.aspect = innerWidth / innerHeight;
   viewCamera.updateProjectionMatrix();
+  skyCamera.aspect = innerWidth / innerHeight;
+  skyCamera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
 
@@ -1613,10 +1753,17 @@ function animate() {
     `FPS: ${fps}\n` +
     `XYZ: ${player.pos.x.toFixed(1)} ${player.pos.y.toFixed(1)} ${player.pos.z.toFixed(1)}`;
 
+  // Небо малюємо першим проходом: заливка кольором неба + сонце/місяць/зорі,
+  // далі світ (з очищенням глибини), далі кирка — кожне поверх попереднього
+  renderer.autoClear = false;
+  renderer.setClearColor(skyColor);
+  renderer.clear(true, true, true);
+  skyCamera.quaternion.copy(camera.quaternion);
+  renderer.render(skyScene, skyCamera);
+  renderer.clearDepth();
   renderer.render(scene, camera);
 
   // Кирку малюємо окремим проходом поверх світу
-  renderer.autoClear = false;
   renderer.clearDepth();
   renderer.render(viewScene, viewCamera);
   renderer.autoClear = true;
