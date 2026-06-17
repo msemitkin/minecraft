@@ -30,6 +30,13 @@ const isSolid = (id) => id !== AIR && !isWaterId(id);
 const WATER_LEVEL = { [WATER]: 4, [FLOW3]: 3, [FLOW2]: 2, [FLOW1]: 1 };
 const FLOW_OF_LEVEL = { 3: FLOW3, 2: FLOW2, 1: FLOW1 };
 
+// Скільки секунд утримувати ЛКМ, щоб видобути блок
+const BLOCK_HARDNESS = {
+  [GRASS]: 0.5, [DIRT]: 0.5, [SAND]: 0.55,
+  [LEAVES]: 0.3, [LOG]: 1.0, [PLANK]: 0.9, [STONE]: 1.6,
+};
+const DEFAULT_HARDNESS = 0.6;
+
 // ============================================================
 // Шум та генерація рельєфу
 // ============================================================
@@ -519,6 +526,156 @@ const highlight = new THREE.LineSegments(
 highlight.visible = false;
 scene.add(highlight);
 
+// ===== Оверлей тріщин при видобутку =====
+const CRACK_STAGES = 10;
+
+function makeCrackTexture() {
+  const size = 16;
+  const cv = document.createElement('canvas');
+  cv.width = CRACK_STAGES * size;
+  cv.height = size;
+  const ctx = cv.getContext('2d');
+
+  let seed = 0x9e3779b9;
+  const rnd = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) | 0;
+    return ((seed >>> 8) & 0xffff) / 0x10000;
+  };
+
+  // Одна нова тріщина на стадію; пізніші стадії містять усі попередні
+  const cracks = [];
+  for (let s = 0; s < CRACK_STAGES; s++) {
+    const pts = [];
+    let x = rnd() * size, y = rnd() * size;
+    pts.push([x, y]);
+    const segs = 2 + Math.floor(rnd() * 3);
+    for (let i = 0; i < segs; i++) {
+      x = Math.max(0, Math.min(size, x + (rnd() - 0.5) * 9));
+      y = Math.max(0, Math.min(size, y + (rnd() - 0.5) * 9));
+      pts.push([x, y]);
+    }
+    cracks.push(pts);
+  }
+
+  ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+  ctx.lineWidth = 1;
+  for (let s = 0; s < CRACK_STAGES; s++) {
+    const ox = s * size;
+    for (let c = 0; c <= s; c++) {
+      const pts = cracks[c];
+      ctx.beginPath();
+      ctx.moveTo(ox + pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(ox + pts[i][0], pts[i][1]);
+      ctx.stroke();
+    }
+  }
+
+  const tex = new THREE.CanvasTexture(cv);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(1 / CRACK_STAGES, 1);
+  return tex;
+}
+
+const crackTexture = makeCrackTexture();
+const crackMesh = new THREE.Mesh(
+  new THREE.BoxGeometry(1.004, 1.004, 1.004),
+  new THREE.MeshBasicMaterial({
+    map: crackTexture,
+    transparent: true,
+    opacity: 0.8,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+    fog: false,
+  })
+);
+crackMesh.visible = false;
+scene.add(crackMesh);
+
+// ===== Модель кирки від першої особи =====
+// Рендериться окремою сценою поверх світу (з очищенням глибини),
+// тож не провалюється в блоки біля стіни й завжди добре освітлена
+const viewScene = new THREE.Scene();
+const viewCamera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.01, 10);
+viewScene.add(new THREE.HemisphereLight(0xffffff, 0x707070, 1.1));
+const viewLight = new THREE.DirectionalLight(0xffffff, 0.7);
+viewLight.position.set(0.6, 1, 0.8);
+viewScene.add(viewLight);
+
+function makePickaxe() {
+  const g = new THREE.Group();
+  const handleMat = new THREE.MeshLambertMaterial({ color: 0x8a5a2b });
+  const headMat = new THREE.MeshLambertMaterial({ color: 0x9099a3 });
+
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.62, 0.07), handleMat);
+  g.add(handle);
+
+  // Голівка кирки: поперечка + два загнутих «дзьоби»
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.09, 0.09), headMat);
+  head.position.set(0, 0.3, 0);
+  g.add(head);
+  const tipL = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.08, 0.08), headMat);
+  tipL.position.set(-0.25, 0.26, 0);
+  tipL.rotation.z = 0.5;
+  g.add(tipL);
+  const tipR = tipL.clone();
+  tipR.position.x = 0.25;
+  tipR.rotation.z = -0.5;
+  g.add(tipR);
+
+  return g;
+}
+
+const viewModel = makePickaxe();
+const VIEW_BASE_POS = new THREE.Vector3(0.42, -0.42, -0.85);
+const VIEW_BASE_ROT = new THREE.Euler(0.3, -0.35, 0.35);
+viewModel.position.copy(VIEW_BASE_POS);
+viewModel.rotation.copy(VIEW_BASE_ROT);
+viewScene.add(viewModel);
+
+// Стан маху киркою
+const swing = { active: false, t: 0 };
+const SWING_DUR = 0.28;
+function triggerSwing() {
+  if (!swing.active) {
+    swing.active = true;
+    swing.t = 0;
+  }
+}
+
+let bobPhase = 0;
+
+function updateViewModel(dt) {
+  // Прогрес маху; під час видобутку — безперервно
+  if (swing.active) {
+    swing.t += dt / SWING_DUR;
+    if (swing.t >= 1) {
+      if (mining) swing.t -= 1;
+      else { swing.active = false; swing.t = 0; }
+    }
+  }
+  const s = swing.active ? Math.sin(swing.t * Math.PI) : 0;
+
+  // Похитування при ходьбі по землі
+  const speed = Math.hypot(player.vel.x, player.vel.z);
+  if (speed > 0.5 && player.onGround) bobPhase += dt * 9;
+  const bob = Math.min(speed, 6) * 0.004;
+
+  viewModel.position.set(
+    VIEW_BASE_POS.x - s * 0.05 + Math.cos(bobPhase) * bob,
+    VIEW_BASE_POS.y + s * 0.06 + Math.abs(Math.sin(bobPhase)) * bob,
+    VIEW_BASE_POS.z + s * 0.06
+  );
+  viewModel.rotation.set(
+    VIEW_BASE_ROT.x - s * 1.2,
+    VIEW_BASE_ROT.y + s * 0.25,
+    VIEW_BASE_ROT.z
+  );
+}
+
 // ===== Гравець =====
 const PLAYER_W = 0.3;   // пів-ширини
 const PLAYER_H = 1.8;
@@ -942,18 +1099,58 @@ function raycastBlock(maxDist = 6) {
   return null;
 }
 
-function breakBlock() {
-  const hit = raycastBlock();
-  if (!hit) return;
-  const [x, y, z] = hit.block;
-  if (blockAt(x, y, z) === TNT) {
-    igniteTnt(x, y, z); // удар по динаміту підпалює його
+// ===== Поетапний видобуток =====
+let mining = false;                       // утримується кнопка руйнування
+const miningState = { key: null, progress: 0 };
+
+function resetMining() {
+  miningState.key = null;
+  miningState.progress = 0;
+  crackMesh.visible = false;
+}
+
+function updateMining(dt, hit) {
+  if (!mining || !hit) {
+    resetMining();
     return;
   }
-  setBlock(x, y, z, AIR);
+  const [x, y, z] = hit.block;
+  const id = blockAt(x, y, z);
+
+  // Динаміт підпалюється одним ударом, а не видобувається
+  if (id === TNT) {
+    igniteTnt(x, y, z);
+    triggerSwing();
+    mining = false;
+    resetMining();
+    return;
+  }
+
+  triggerSwing(); // безперервний мах киркою
+
+  const key = x + ',' + y + ',' + z;
+  if (key !== miningState.key) {
+    miningState.key = key;
+    miningState.progress = 0;
+  }
+  const hardness = BLOCK_HARDNESS[id] ?? DEFAULT_HARDNESS;
+  miningState.progress += dt / hardness;
+
+  if (miningState.progress >= 1) {
+    setBlock(x, y, z, AIR);
+    resetMining();
+    return;
+  }
+
+  // Показати тріщини відповідної стадії
+  const stage = Math.min(CRACK_STAGES - 1, Math.floor(miningState.progress * CRACK_STAGES));
+  crackTexture.offset.x = stage / CRACK_STAGES;
+  crackMesh.position.set(x + 0.5, y + 0.5, z + 0.5);
+  crackMesh.visible = true;
 }
 
 function placeBlock() {
+  triggerSwing();
   const hit = raycastBlock();
   if (!hit || !hit.prev) return;
   const [x, y, z] = hit.prev;
@@ -1114,6 +1311,7 @@ function exitMobileMode() {
   joy.active = false;
   joy.x = joy.y = 0;
   keys['Space'] = false;
+  mining = false;
   overlay.style.display = 'flex';
   hud.hidden = true;
   touchControls.hidden = true;
@@ -1138,6 +1336,7 @@ document.addEventListener('pointerlockchange', () => {
     hud.hidden = false;
     touchControls.hidden = true;
   } else if (!mobilePlaying) {
+    mining = false;
     overlay.style.display = 'flex';
     hud.hidden = true;
   }
@@ -1231,13 +1430,9 @@ function bindTouchButton(id, onDown, onUp) {
 
 bindTouchButton('btn-jump', () => { keys['Space'] = true; }, () => { keys['Space'] = false; });
 
-let breakRepeat = null;
 bindTouchButton('btn-break',
-  () => {
-    breakBlock();
-    breakRepeat = setInterval(breakBlock, 300);
-  },
-  () => clearInterval(breakRepeat));
+  () => { mining = true; },
+  () => { mining = false; });
 
 bindTouchButton('btn-place', () => placeBlock());
 
@@ -1256,8 +1451,12 @@ document.addEventListener('mousemove', (e) => {
 
 document.addEventListener('mousedown', (e) => {
   if (!isLocked()) return;
-  if (e.button === 0) breakBlock();
+  if (e.button === 0) mining = true;
   if (e.button === 2) placeBlock();
+});
+
+document.addEventListener('mouseup', (e) => {
+  if (e.button === 0) mining = false;
 });
 
 document.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -1280,6 +1479,8 @@ document.addEventListener('wheel', (e) => {
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
+  viewCamera.aspect = innerWidth / innerHeight;
+  viewCamera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
 
@@ -1344,12 +1545,14 @@ function animate() {
   processChunkQueue();
   updateDayNight(dt);
 
-  // Підсвічування блока
+  // Підсвічування блока, видобуток і анімація кирки
   const hit = gameActive() ? raycastBlock() : null;
   highlight.visible = !!hit;
   if (hit) {
     highlight.position.set(hit.block[0] + 0.5, hit.block[1] + 0.5, hit.block[2] + 0.5);
   }
+  updateMining(dt, hit);
+  updateViewModel(dt);
 
   // Дебаг-панель
   fpsFrames++;
@@ -1364,6 +1567,12 @@ function animate() {
     `XYZ: ${player.pos.x.toFixed(1)} ${player.pos.y.toFixed(1)} ${player.pos.z.toFixed(1)}`;
 
   renderer.render(scene, camera);
+
+  // Кирку малюємо окремим проходом поверх світу
+  renderer.autoClear = false;
+  renderer.clearDepth();
+  renderer.render(viewScene, viewCamera);
+  renderer.autoClear = true;
 }
 
 animate();
