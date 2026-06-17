@@ -26,10 +26,16 @@ const BLOCK_NAMES = {
   [GOLD]: 'Золота руда', [DIAMOND]: 'Алмазна руда',
 };
 
-const HOTBAR_ITEMS = [
+// Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
+const ALL_BLOCKS = [
   GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANK, WATER, TNT,
   COAL, IRON, GOLD, DIAMOND,
 ];
+
+// Хотбар: 10 слотів швидкого доступу (клавіші 1–9 та 0).
+// Блоки, які не вмістилися, доступні через меню (Tab) і призначаються в слот.
+const HOTBAR_SIZE = 10;
+const DEFAULT_HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANK, WATER, TNT, COAL];
 
 const isWaterId = (id) => id === WATER || (id >= FLOW3 && id <= FLOW1);
 const isSolid = (id) => id !== AIR && !isWaterId(id);
@@ -178,6 +184,7 @@ function saveGame() {
       },
       timeOfDay,
       selectedSlot,
+      hotbar: [...hotbar],
     }));
   } catch {
     // сховище переповнене або недоступне — просто пропускаємо
@@ -753,6 +760,8 @@ if (savedGame && savedGame.player) {
 
 const keys = {};
 let selectedSlot = 0;
+let hotbar = [...DEFAULT_HOTBAR];
+let blockMenuOpen = false;
 
 // Сенсорні пристрої: pointer lock недоступний, керування через віртуальний джойстик
 const IS_TOUCH = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
@@ -1214,7 +1223,7 @@ function placeBlock() {
   const overlapZ = z + 1 > p.z - PLAYER_W && z < p.z + PLAYER_W;
   if (overlapX && overlapY && overlapZ) return;
 
-  setBlock(x, y, z, HOTBAR_ITEMS[selectedSlot]);
+  setBlock(x, y, z, hotbar[selectedSlot]);
 }
 
 // ===== Менеджмент чанків =====
@@ -1445,40 +1454,139 @@ const itemNameEl = document.getElementById('item-name');
 const debugEl = document.getElementById('debug');
 let itemNameTimer = null;
 
+// Малює іконку блока id у переданий canvas (вирізка з атласу текстур)
+function drawBlockIcon(canvas, id) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const tile = BLOCK_TILES[id].side;
+  canvas.getContext('2d').drawImage(
+    atlasCanvas,
+    (tile % ATLAS_COLS) * TILE, Math.floor(tile / ATLAS_COLS) * TILE, TILE, TILE,
+    0, 0, TILE, TILE
+  );
+}
+
+// Підпис слота хотбара: 1..9, а останній — 0 (як клавіша)
+const slotLabel = (i) => (i < 9 ? i + 1 : 0);
+
+const hotbarSlotEls = [];
+
 function buildHotbar() {
-  const hotbar = document.getElementById('hotbar');
-  HOTBAR_ITEMS.forEach((id, i) => {
+  const hotbar2 = document.getElementById('hotbar');
+  hotbar2.innerHTML = '';
+  hotbarSlotEls.length = 0;
+  for (let i = 0; i < HOTBAR_SIZE; i++) {
     const slot = document.createElement('div');
-    slot.className = 'slot' + (i === 0 ? ' selected' : '');
+    slot.className = 'slot' + (i === selectedSlot ? ' selected' : '');
     const num = document.createElement('span');
     num.className = 'num';
-    num.textContent = i + 1;
+    num.textContent = slotLabel(i);
     const icon = document.createElement('canvas');
-    icon.width = TILE;
-    icon.height = TILE;
-    const tile = BLOCK_TILES[id].side;
-    icon.getContext('2d').drawImage(
-      atlasCanvas,
-      (tile % ATLAS_COLS) * TILE, Math.floor(tile / ATLAS_COLS) * TILE, TILE, TILE,
-      0, 0, TILE, TILE
-    );
+    drawBlockIcon(icon, hotbar[i]);
     slot.append(num, icon);
     slot.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       selectSlot(i);
     });
-    hotbar.appendChild(slot);
-  });
+    hotbar2.appendChild(slot);
+    hotbarSlotEls.push({ slot, icon });
+  }
 }
 
 function selectSlot(i) {
-  selectedSlot = ((i % HOTBAR_ITEMS.length) + HOTBAR_ITEMS.length) % HOTBAR_ITEMS.length;
-  document.querySelectorAll('.slot').forEach((el, j) =>
-    el.classList.toggle('selected', j === selectedSlot));
-  itemNameEl.textContent = BLOCK_NAMES[HOTBAR_ITEMS[selectedSlot]];
+  selectedSlot = ((i % HOTBAR_SIZE) + HOTBAR_SIZE) % HOTBAR_SIZE;
+  hotbarSlotEls.forEach((s, j) => s.slot.classList.toggle('selected', j === selectedSlot));
+  itemNameEl.textContent = BLOCK_NAMES[hotbar[selectedSlot]];
   itemNameEl.style.opacity = 1;
   clearTimeout(itemNameTimer);
   itemNameTimer = setTimeout(() => { itemNameEl.style.opacity = 0; }, 1200);
+  if (blockMenuOpen) syncBlockMenu();
+}
+
+// ===== Меню вибору блока (Tab) =====
+// Призначає блок id у поточний слот хотбара
+function assignBlockToSlot(id) {
+  hotbar[selectedSlot] = id;
+  drawBlockIcon(hotbarSlotEls[selectedSlot].icon, id);
+  selectSlot(selectedSlot); // оновити назву та підсвічування (у т.ч. в меню)
+}
+
+const menuGridCells = [];
+const menuHotbarEls = [];
+let blockMenuEl;
+
+function buildBlockMenu() {
+  blockMenuEl = document.getElementById('block-menu');
+  const grid = document.getElementById('block-grid');
+  const row = document.getElementById('menu-hotbar');
+
+  ALL_BLOCKS.forEach((id) => {
+    const cell = document.createElement('button');
+    cell.className = 'block-cell';
+    const icon = document.createElement('canvas');
+    drawBlockIcon(icon, id);
+    const label = document.createElement('span');
+    label.className = 'block-label';
+    label.textContent = BLOCK_NAMES[id];
+    cell.append(icon, label);
+    cell.addEventListener('click', () => assignBlockToSlot(id));
+    grid.appendChild(cell);
+    menuGridCells.push({ cell, id });
+  });
+
+  for (let i = 0; i < HOTBAR_SIZE; i++) {
+    const slot = document.createElement('div');
+    slot.className = 'slot';
+    const num = document.createElement('span');
+    num.className = 'num';
+    num.textContent = slotLabel(i);
+    const icon = document.createElement('canvas');
+    drawBlockIcon(icon, hotbar[i]);
+    slot.append(num, icon);
+    slot.addEventListener('click', () => selectSlot(i));
+    row.appendChild(slot);
+    menuHotbarEls.push({ slot, icon });
+  }
+
+  // Закриття: хрестик або клік по тлу поза панеллю
+  document.getElementById('block-menu-close').addEventListener('click', closeBlockMenu);
+  blockMenuEl.addEventListener('pointerdown', (e) => {
+    if (e.target === blockMenuEl) closeBlockMenu();
+  });
+}
+
+// Синхронізує меню з поточним станом хотбара
+function syncBlockMenu() {
+  menuHotbarEls.forEach((s, i) => {
+    drawBlockIcon(s.icon, hotbar[i]);
+    s.slot.classList.toggle('selected', i === selectedSlot);
+  });
+  const active = hotbar[selectedSlot];
+  menuGridCells.forEach((c) => c.cell.classList.toggle('active', c.id === active));
+}
+
+function openBlockMenu() {
+  if (blockMenuOpen || !gameActive()) return;
+  blockMenuOpen = true;
+  mining = false;
+  syncBlockMenu();
+  blockMenuEl.hidden = false;
+  // На десктопі звільнити курсор, щоб клікати по меню (без паузи)
+  if (isLocked()) document.exitPointerLock();
+}
+
+function closeBlockMenu() {
+  if (!blockMenuOpen) return;
+  blockMenuOpen = false;
+  blockMenuEl.hidden = true;
+  // На десктопі повернутись у гру, перехопивши курсор
+  if (!IS_TOUCH && !mobilePlaying && renderer.domElement.requestPointerLock) {
+    renderer.domElement.requestPointerLock();
+  }
+}
+
+function toggleBlockMenu() {
+  blockMenuOpen ? closeBlockMenu() : openBlockMenu();
 }
 
 // ===== Керування =====
@@ -1523,7 +1631,7 @@ document.addEventListener('pointerlockchange', () => {
     overlay.style.display = 'none';
     hud.hidden = false;
     touchControls.hidden = true;
-  } else if (!mobilePlaying) {
+  } else if (!mobilePlaying && !blockMenuOpen) {
     mining = false;
     overlay.style.display = 'flex';
     hud.hidden = true;
@@ -1624,6 +1732,8 @@ bindTouchButton('btn-break',
 
 bindTouchButton('btn-place', () => placeBlock());
 
+bindTouchButton('btn-inv', () => toggleBlockMenu());
+
 document.getElementById('btn-pause').addEventListener('touchstart', (e) => {
   e.preventDefault();
   exitMobileMode();
@@ -1652,9 +1762,20 @@ document.addEventListener('contextmenu', (e) => e.preventDefault());
 document.addEventListener('keydown', (e) => {
   keys[e.code] = true;
   if (e.code === 'Space') e.preventDefault();
+  if (e.code === 'Tab') {
+    e.preventDefault();
+    toggleBlockMenu();
+    return;
+  }
+  // Клавіші 1–9 та 0 — вибір слота хотбара (0 = десятий слот)
   if (e.code.startsWith('Digit')) {
     const n = Number(e.code.slice(5));
-    if (n >= 1 && n <= HOTBAR_ITEMS.length) selectSlot(n - 1);
+    if (n === 0) selectSlot(HOTBAR_SIZE - 1);
+    else if (n >= 1 && n <= 9) selectSlot(n - 1);
+  }
+  if (blockMenuOpen && e.code === 'Escape') {
+    e.preventDefault();
+    closeBlockMenu();
   }
 });
 
@@ -1700,9 +1821,16 @@ document.addEventListener('visibilitychange', () => {
 addEventListener('pagehide', saveGame);
 
 // ===== Головний цикл =====
+// Відновити збережений хотбар (лише валідні блоки)
+if (savedGame && Array.isArray(savedGame.hotbar)) {
+  for (let i = 0; i < HOTBAR_SIZE; i++) {
+    if (ALL_BLOCKS.includes(savedGame.hotbar[i])) hotbar[i] = savedGame.hotbar[i];
+  }
+}
 buildHotbar();
+buildBlockMenu();
 if (savedGame && Number.isInteger(savedGame.selectedSlot)) {
-  selectSlot(savedGame.selectedSlot);
+  selectSlot(savedGame.selectedSlot % HOTBAR_SIZE);
 }
 const clock = new THREE.Clock();
 let chunkTimer = 0;
