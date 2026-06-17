@@ -165,7 +165,10 @@ function loadGame() {
   }
 }
 
+let saveEnabled = true;
+
 function saveGame() {
+  if (!saveEnabled) return;
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
       edits: [...edits],
@@ -1543,6 +1546,9 @@ if (savedGame) {
 }
 
 document.getElementById('new-game-btn').addEventListener('click', () => {
+  // Вимкнути збереження, інакше pagehide/visibilitychange під час
+  // reload запишуть світ назад одразу після очищення
+  saveEnabled = false;
   clearSave();
   location.reload();
 });
