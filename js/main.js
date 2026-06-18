@@ -1106,6 +1106,12 @@ function explode(cx, cy, cz) {
   fx.position.set(cx, cy, cz);
   scene.add(fx);
   explosionFx.push({ mesh: fx, t: 0 });
+
+  // Дим, що піднімається, і розжарені іскри
+  spawnParticles(cx, cy, cz, new THREE.Color(0x4a4a4a), 26,
+    { radius: 1.2, speed: 4, upBias: 1.5, life: 1.1, size: 0.32, gravity: -3, drag: 1.4 });
+  spawnParticles(cx, cy, cz, new THREE.Color(0xffb24a), 18,
+    { radius: 0.9, speed: 7, upBias: 2, life: 0.6, size: 0.16, gravity: 14 });
 }
 
 function updateTnt(dt) {
@@ -1135,6 +1141,129 @@ function updateTnt(dt) {
       e.mesh.material.opacity = 0.9 * (1 - k);
     }
   }
+}
+
+// ============================================================
+// Частинки: уламки при руйнуванні, пил при встановленні, дим вибуху
+// ============================================================
+// Усі частинки малюються одним InstancedMesh (один виклик відмалювання),
+// колір береться з усередненого кольору тайла блока в атласі.
+const MAX_PARTICLES = 256;
+const particles = [];
+for (let i = 0; i < MAX_PARTICLES; i++) {
+  particles.push({
+    pos: new THREE.Vector3(),
+    vel: new THREE.Vector3(),
+    quat: new THREE.Quaternion(),
+    life: 0, maxLife: 1, size: 0.1, gravity: 18, drag: 0, active: false,
+  });
+}
+
+const particleMesh = new THREE.InstancedMesh(
+  new THREE.BoxGeometry(1, 1, 1),
+  new THREE.MeshLambertMaterial(),
+  MAX_PARTICLES
+);
+particleMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+particleMesh.frustumCulled = false;
+{
+  // Ініціалізуємо instanceColor (білий) і ховаємо всі частинки (нульовий масштаб)
+  const white = new THREE.Color(1, 1, 1);
+  const hide = new THREE.Matrix4().makeScale(0, 0, 0);
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    particleMesh.setColorAt(i, white);
+    particleMesh.setMatrixAt(i, hide);
+  }
+}
+scene.add(particleMesh);
+
+// Усереднений колір бокового тайла блока (кешується)
+const _blockColorCache = new Map();
+function blockColor(id) {
+  if (_blockColorCache.has(id)) return _blockColorCache.get(id);
+  const tile = (BLOCK_TILES[id] || BLOCK_TILES[STONE]).side;
+  const ox = (tile % ATLAS_COLS) * TILE, oy = Math.floor(tile / ATLAS_COLS) * TILE;
+  const px = atlasCanvas.getContext('2d').getImageData(ox, oy, TILE, TILE).data;
+  let r = 0, g = 0, b = 0;
+  for (let i = 0; i < px.length; i += 4) { r += px[i]; g += px[i + 1]; b += px[i + 2]; }
+  const n = px.length / 4;
+  const c = new THREE.Color(r / n / 255, g / n / 255, b / n / 255);
+  _blockColorCache.set(id, c);
+  return c;
+}
+
+const _pEuler = new THREE.Euler();
+function spawnParticles(x, y, z, color, count, opts = {}) {
+  const radius = opts.radius ?? 0.4;
+  const speed = opts.speed ?? 3;
+  const upBias = opts.upBias ?? 1;
+  const life = opts.life ?? 0.6;
+  const size = opts.size ?? 0.12;
+  const gravity = opts.gravity ?? 18;
+  const drag = opts.drag ?? 0;
+  let spawned = 0, touched = false;
+  for (let i = 0; i < MAX_PARTICLES && spawned < count; i++) {
+    const p = particles[i];
+    if (p.active) continue;
+    p.active = true;
+    p.pos.set(
+      x + (Math.random() - 0.5) * 2 * radius,
+      y + (Math.random() - 0.5) * 2 * radius,
+      z + (Math.random() - 0.5) * 2 * radius
+    );
+    p.vel.set(
+      (Math.random() - 0.5) * speed,
+      Math.random() * speed * 0.6 + upBias,
+      (Math.random() - 0.5) * speed
+    );
+    _pEuler.set(Math.random() * 6.28, Math.random() * 6.28, Math.random() * 6.28);
+    p.quat.setFromEuler(_pEuler);
+    p.maxLife = p.life = life * (0.7 + Math.random() * 0.6);
+    p.size = size * (0.7 + Math.random() * 0.7);
+    p.gravity = gravity;
+    p.drag = drag;
+    particleMesh.setColorAt(i, color);
+    spawned++;
+    touched = true;
+  }
+  if (touched && particleMesh.instanceColor) particleMesh.instanceColor.needsUpdate = true;
+}
+
+const _pMat = new THREE.Matrix4();
+const _pScale = new THREE.Vector3();
+const _pHide = new THREE.Vector3(0, 0, 0);
+const _pZeroQuat = new THREE.Quaternion();
+const _pHidePos = new THREE.Vector3(0, -9999, 0);
+
+function updateParticles(dt) {
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    const p = particles[i];
+    if (p.active) {
+      p.life -= dt;
+      if (p.life <= 0) {
+        p.active = false;
+      } else {
+        p.vel.y -= p.gravity * dt;
+        if (p.drag) p.vel.multiplyScalar(Math.max(0, 1 - p.drag * dt));
+        p.pos.addScaledVector(p.vel, dt);
+        // Просте зіткнення: якщо частинка зайшла у твердий блок — осідає зверху
+        if (isSolid(blockAt(Math.floor(p.pos.x), Math.floor(p.pos.y), Math.floor(p.pos.z)))) {
+          p.pos.y = Math.floor(p.pos.y) + 1 + p.size * 0.5;
+          p.vel.set(p.vel.x * 0.3, 0, p.vel.z * 0.3);
+        }
+      }
+    }
+    if (p.active) {
+      const k = Math.min(1, p.life / Math.min(p.maxLife, 0.3)); // зникають під кінець життя
+      const s = Math.max(0.001, p.size * k);
+      _pScale.set(s, s, s);
+      _pMat.compose(p.pos, p.quat, _pScale);
+    } else {
+      _pMat.compose(_pHidePos, _pZeroQuat, _pHide);
+    }
+    particleMesh.setMatrixAt(i, _pMat);
+  }
+  particleMesh.instanceMatrix.needsUpdate = true;
 }
 
 // ===== Промінь погляду (вибір блока) =====
@@ -1196,6 +1325,8 @@ function updateMining(dt, hit) {
   miningState.progress += dt / hardness;
 
   if (miningState.progress >= 1) {
+    spawnParticles(x + 0.5, y + 0.5, z + 0.5, blockColor(id), 14,
+      { radius: 0.45, speed: 3.5, upBias: 1.5, life: 0.7, size: 0.13 });
     setBlock(x, y, z, AIR);
     resetMining();
     return;
@@ -1223,7 +1354,11 @@ function placeBlock() {
   const overlapZ = z + 1 > p.z - PLAYER_W && z < p.z + PLAYER_W;
   if (overlapX && overlapY && overlapZ) return;
 
-  setBlock(x, y, z, hotbar[selectedSlot]);
+  const id = hotbar[selectedSlot];
+  setBlock(x, y, z, id);
+  // Невеликий пил при встановленні блока
+  spawnParticles(x + 0.5, y + 0.5, z + 0.5, blockColor(id), 6,
+    { radius: 0.5, speed: 1.4, upBias: 0.3, life: 0.4, size: 0.1, gravity: 10 });
 }
 
 // ===== Менеджмент чанків =====
@@ -1846,6 +1981,7 @@ function animate() {
     updatePlayer(dt);
     updateAnimals(dt);
     updateTnt(dt);
+    updateParticles(dt);
     waterTimer -= dt;
     if (waterTimer <= 0) {
       processWaterQueue();
