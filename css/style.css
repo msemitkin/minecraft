@@ -134,7 +134,7 @@ kbd {
   bottom: 16px;
   transform: translateX(-50%);
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: center;
   max-width: 96vw;
   gap: 4px;
@@ -179,7 +179,7 @@ kbd {
 #item-name {
   position: fixed;
   left: 50%;
-  bottom: 84px;
+  bottom: 144px;
   transform: translateX(-50%);
   color: #fff;
   font-size: 16px;
@@ -200,6 +200,99 @@ kbd {
   text-shadow: 1px 1px 0 #000;
   z-index: 5;
   white-space: pre;
+}
+
+/* ===== Здоров'я та повітря ===== */
+#status {
+  position: fixed;
+  left: 50%;
+  bottom: 86px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+#air, #health {
+  display: flex;
+  gap: 2px;
+  height: 20px;
+}
+
+#air {
+  flex-direction: row-reverse;
+}
+
+#status .icon {
+  width: 20px;
+  height: 20px;
+  image-rendering: pixelated;
+  filter: drop-shadow(1px 1px 0 rgba(0, 0, 0, 0.6));
+}
+
+/* ===== Червоний спалах при отриманні шкоди ===== */
+#damage-vignette {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 7;
+  background: radial-gradient(ellipse at center,
+    rgba(120, 0, 0, 0) 45%, rgba(150, 0, 0, 0.85) 100%);
+  transition: opacity 0.08s linear;
+}
+
+/* ===== Екран смерті ===== */
+#death-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(60, 6, 6, 0.78);
+  backdrop-filter: blur(3px);
+  z-index: 12;
+}
+
+#death-overlay[hidden] {
+  display: none;
+}
+
+#death-content {
+  text-align: center;
+  color: #fff;
+}
+
+#death-content h1 {
+  font-size: 52px;
+  letter-spacing: 2px;
+  color: #ff5a5a;
+  text-shadow: 3px 3px 0 #2a0000;
+}
+
+#death-cause {
+  margin: 10px 0 26px;
+  color: #ffd0d0;
+  font-size: 17px;
+  min-height: 20px;
+}
+
+#respawn-btn {
+  font-size: 22px;
+  padding: 12px 56px;
+  cursor: pointer;
+  color: #fff;
+  background: #3c8527;
+  border: 2px solid #1e4a12;
+  border-bottom-width: 5px;
+  border-radius: 4px;
+}
+
+#respawn-btn:hover {
+  background: #4aa330;
 }
 
 /* ===== Меню вибору блока (Tab) ===== */
@@ -382,12 +475,18 @@ kbd {
 /* Вузькі екрани: менший хотбар, приховати десктопну довідку */
 @media (max-width: 620px) {
   .slot {
-    width: 34px;
-    height: 34px;
+    width: 30px;
+    height: 30px;
   }
   .slot canvas {
-    width: 26px;
-    height: 26px;
+    width: 24px;
+    height: 24px;
+  }
+  #hotbar {
+    gap: 2px;
+  }
+  #status {
+    bottom: 60px;
   }
   #overlay-content h1 {
     font-size: 40px;
