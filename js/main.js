@@ -181,6 +181,7 @@ function saveGame() {
       player: {
         x: player.pos.x, y: player.pos.y, z: player.pos.z,
         yaw: player.yaw, pitch: player.pitch,
+        health: player.health,
       },
       timeOfDay,
       selectedSlot,
@@ -739,6 +740,12 @@ const PLAYER_H = 1.8;
 const EYE = 1.62;
 const EPS = 0.001;
 
+// ===== Виживання: здоров'я, повітря, шкода =====
+const MAX_HEALTH = 20;          // 10 сердець (по 2 одиниці кожне)
+const MAX_AIR = 11;             // запас повітря в секундах (10 бульбашок)
+const FALL_SAFE = 3;            // блоки падіння без шкоди
+const SPAWN = { x: 8, z: 8 };
+
 const player = {
   pos: new THREE.Vector3(8.5, heightAt(8, 8) + 2, 8.5),
   vel: new THREE.Vector3(),
@@ -747,7 +754,20 @@ const player = {
   onGround: false,
   halfW: PLAYER_W,
   height: PLAYER_H,
+  // стан виживання
+  health: MAX_HEALTH,
+  air: MAX_AIR,
+  dead: false,
+  invuln: 0,        // короткі кадри невразливості після удару
+  hurtFlash: 0,     // інтенсивність червоного спалаху (0..1)
+  sinceHurt: 999,   // секунд від останньої шкоди (для регенерації)
+  regenTick: 0,
+  drownTick: 0,
+  fallPeakY: 0,     // найвища точка під час падіння
+  prevOnGround: true,
+  lastCause: '',
 };
+player.fallPeakY = player.pos.y;
 
 if (savedGame && savedGame.player) {
   const p = savedGame.player;
@@ -756,7 +776,12 @@ if (savedGame && savedGame.player) {
     player.yaw = p.yaw || 0;
     player.pitch = p.pitch || 0;
   }
+  // Здоров'я: не завантажувати мертвим — пусте/нульове = повне
+  if (Number.isFinite(p.health) && p.health > 0) {
+    player.health = Math.min(MAX_HEALTH, p.health);
+  }
 }
+player.fallPeakY = player.pos.y;
 
 const keys = {};
 let selectedSlot = 0;
@@ -835,14 +860,115 @@ function updatePlayer(dt) {
   moveEntityAxis(player, 'x', player.vel.x * dt);
   moveEntityAxis(player, 'z', player.vel.z * dt);
 
-  // Якщо провалилися під світ — повернути на поверхню
+  // Якщо провалилися під світ — повернути на поверхню (без шкоди від падіння)
   if (player.pos.y < -10) {
     player.pos.set(player.pos.x, HEIGHT, player.pos.z);
     player.vel.set(0, 0, 0);
+    player.fallPeakY = player.pos.y;
   }
+
+  // Шкода від падіння: рахуємо висоту арки між відривом і приземленням
+  if (player.onGround) {
+    if (!player.prevOnGround) {
+      const fall = player.fallPeakY - player.pos.y;
+      if (fall > FALL_SAFE && !inWater) {
+        damagePlayer(Math.floor(fall - FALL_SAFE), 'fall');
+      }
+    }
+    player.fallPeakY = player.pos.y;
+  } else {
+    player.fallPeakY = Math.max(player.fallPeakY, player.pos.y);
+  }
+  player.prevOnGround = player.onGround;
 
   camera.position.set(player.pos.x, player.pos.y + EYE, player.pos.z);
   camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+}
+
+// ===== Виживання: повітря, регенерація, шкода, смерть =====
+function damagePlayer(amount, cause) {
+  if (player.dead || amount <= 0) return;
+  if (player.invuln > 0 && cause !== 'drown') return;
+  player.health = Math.max(0, player.health - amount);
+  player.hurtFlash = 1;
+  player.invuln = 0.5;
+  player.sinceHurt = 0;
+  player.lastCause = cause || '';
+  if (player.health <= 0) die();
+}
+
+// Знаходить безпечну висоту над поверхнею для координат (x, z)
+function safeSpawnY(x, z) {
+  for (let y = HEIGHT - 1; y > 0; y--) {
+    if (isSolid(blockAt(x, y, z))) return y + 1;
+  }
+  return SEA + 2;
+}
+
+function die() {
+  if (player.dead) return;
+  player.dead = true;
+  player.vel.set(0, 0, 0);
+  mining = false;
+  resetMining();
+  if (isLocked()) document.exitPointerLock();
+  showDeathScreen(player.lastCause);
+}
+
+function respawn() {
+  player.health = MAX_HEALTH;
+  player.air = MAX_AIR;
+  player.invuln = 1.5;
+  player.hurtFlash = 0;
+  player.sinceHurt = 999;
+  player.dead = false;
+  const sy = safeSpawnY(SPAWN.x, SPAWN.z);
+  player.pos.set(SPAWN.x + 0.5, sy, SPAWN.z + 0.5);
+  player.vel.set(0, 0, 0);
+  player.fallPeakY = player.pos.y;
+  player.prevOnGround = true;
+  hideDeathScreen();
+  if (!mobilePlaying && renderer.domElement.requestPointerLock) {
+    renderer.domElement.requestPointerLock();
+  }
+}
+
+function updateSurvival(dt) {
+  if (player.hurtFlash > 0) player.hurtFlash = Math.max(0, player.hurtFlash - dt * 2);
+  if (player.invuln > 0) player.invuln -= dt;
+  player.sinceHurt += dt;
+
+  // Чи занурена голова під воду (рівень очей)
+  const headWater = isWaterId(blockAt(
+    Math.floor(player.pos.x),
+    Math.floor(player.pos.y + EYE),
+    Math.floor(player.pos.z)
+  ));
+
+  if (headWater) {
+    player.air -= dt;
+    if (player.air <= 0) {
+      player.air = 0;
+      player.drownTick -= dt;
+      if (player.drownTick <= 0) {
+        damagePlayer(2, 'drown');
+        player.drownTick = 1;
+      }
+    }
+  } else {
+    player.air = Math.min(MAX_AIR, player.air + dt * 4);
+    player.drownTick = 0;
+  }
+
+  // Природна регенерація: коли давно не били й не тонемо
+  if (player.health > 0 && player.health < MAX_HEALTH &&
+      player.sinceHurt > 4 && !headWater) {
+    player.regenTick -= dt;
+    if (player.regenTick <= 0) {
+      player.health = Math.min(MAX_HEALTH, player.health + 1);
+      player.regenTick = 1.5;
+    }
+  }
 }
 
 // ============================================================
@@ -1097,6 +1223,16 @@ function explode(cx, cy, cz) {
 
   knockback(player, cx, cy, cz);
   for (const a of animals) knockback(a, cx, cy, cz);
+
+  // Шкода гравцю від близького вибуху
+  const pd = Math.hypot(
+    player.pos.x - cx,
+    player.pos.y + player.height / 2 - cy,
+    player.pos.z - cz
+  );
+  if (pd < TNT_RADIUS + 2) {
+    damagePlayer(Math.ceil((1 - pd / (TNT_RADIUS + 2)) * 14), 'tnt');
+  }
 
   // Спалах вибуху
   const fx = new THREE.Mesh(
@@ -1589,6 +1725,111 @@ const itemNameEl = document.getElementById('item-name');
 const debugEl = document.getElementById('debug');
 let itemNameTimer = null;
 
+// ===== Здоров'я та повітря (HUD виживання) =====
+const healthEl = document.getElementById('health');
+const airEl = document.getElementById('air');
+const vignetteEl = document.getElementById('damage-vignette');
+const deathOverlay = document.getElementById('death-overlay');
+const deathCauseEl = document.getElementById('death-cause');
+
+// Піксельні іконки серця й бульбашки малюються процедурно на canvas
+const HEART_PX = [
+  [0, 1, 1, 0, 1, 1, 0],
+  [1, 1, 1, 1, 1, 1, 1],
+  [1, 1, 1, 1, 1, 1, 1],
+  [0, 1, 1, 1, 1, 1, 0],
+  [0, 0, 1, 1, 1, 0, 0],
+  [0, 0, 0, 1, 0, 0, 0],
+];
+
+function drawHeart(canvas, state) {
+  canvas.width = 7; canvas.height = 6;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, 7, 6);
+  for (let r = 0; r < 6; r++) {
+    for (let c = 0; c < 7; c++) {
+      if (!HEART_PX[r][c]) continue;
+      const red = state === 'full' || (state === 'half' && c <= 2);
+      ctx.fillStyle = red ? '#e0273a' : '#3a2226';
+      ctx.fillRect(c, r, 1, 1);
+    }
+  }
+}
+
+function drawBubble(canvas, full) {
+  canvas.width = 8; canvas.height = 8;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, 8, 8);
+  ctx.beginPath();
+  ctx.arc(4, 4, 3.4, 0, Math.PI * 2);
+  ctx.fillStyle = full ? '#6cc8ff' : '#243340';
+  ctx.fill();
+  if (full) {
+    ctx.beginPath();
+    ctx.arc(3, 3, 1, 0, Math.PI * 2);
+    ctx.fillStyle = '#dff3ff';
+    ctx.fill();
+  }
+}
+
+const heartCanvases = [];
+const bubbleCanvases = [];
+
+function buildSurvivalHud() {
+  healthEl.innerHTML = '';
+  airEl.innerHTML = '';
+  heartCanvases.length = 0;
+  bubbleCanvases.length = 0;
+  for (let i = 0; i < 10; i++) {
+    const h = document.createElement('canvas');
+    h.className = 'icon';
+    healthEl.appendChild(h);
+    heartCanvases.push(h);
+    const b = document.createElement('canvas');
+    b.className = 'icon';
+    airEl.appendChild(b);
+    bubbleCanvases.push(b);
+  }
+}
+
+let lastHealthDrawn = -1;
+let lastAirDrawn = -1;
+
+function updateSurvivalHud() {
+  if (player.health !== lastHealthDrawn) {
+    lastHealthDrawn = player.health;
+    for (let i = 0; i < 10; i++) {
+      const hp = player.health - i * 2;
+      drawHeart(heartCanvases[i], hp >= 2 ? 'full' : hp >= 1 ? 'half' : 'empty');
+    }
+  }
+  const showAir = player.air < MAX_AIR - 0.05;
+  airEl.style.visibility = showAir ? 'visible' : 'hidden';
+  if (showAir) {
+    const bubbles = Math.ceil(player.air / MAX_AIR * 10);
+    if (bubbles !== lastAirDrawn) {
+      lastAirDrawn = bubbles;
+      for (let i = 0; i < 10; i++) drawBubble(bubbleCanvases[i], i < bubbles);
+    }
+  }
+  vignetteEl.style.opacity = player.hurtFlash * 0.55;
+}
+
+const DEATH_CAUSES = {
+  fall: 'Падіння з висоти',
+  drown: 'Потонув',
+  tnt: 'Підірвався на динаміті',
+};
+
+function showDeathScreen(cause) {
+  deathCauseEl.textContent = DEATH_CAUSES[cause] || '';
+  deathOverlay.hidden = false;
+}
+
+function hideDeathScreen() {
+  deathOverlay.hidden = true;
+}
+
 // Малює іконку блока id у переданий canvas (вирізка з атласу текстур)
 function drawBlockIcon(canvas, id) {
   canvas.width = TILE;
@@ -1766,7 +2007,7 @@ document.addEventListener('pointerlockchange', () => {
     overlay.style.display = 'none';
     hud.hidden = false;
     touchControls.hidden = true;
-  } else if (!mobilePlaying && !blockMenuOpen) {
+  } else if (!mobilePlaying && !blockMenuOpen && !player.dead) {
     mining = false;
     overlay.style.display = 'flex';
     hud.hidden = true;
@@ -1964,6 +2205,9 @@ if (savedGame && Array.isArray(savedGame.hotbar)) {
 }
 buildHotbar();
 buildBlockMenu();
+buildSurvivalHud();
+updateSurvivalHud();
+document.getElementById('respawn-btn').addEventListener('click', respawn);
 if (savedGame && Number.isInteger(savedGame.selectedSlot)) {
   selectSlot(savedGame.selectedSlot % HOTBAR_SIZE);
 }
@@ -1977,8 +2221,9 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
 
-  if (gameActive()) {
+  if (gameActive() && !player.dead) {
     updatePlayer(dt);
+    updateSurvival(dt);
     updateAnimals(dt);
     updateTnt(dt);
     updateParticles(dt);
@@ -2022,6 +2267,8 @@ function animate() {
   debugEl.textContent =
     `FPS: ${fps}\n` +
     `XYZ: ${player.pos.x.toFixed(1)} ${player.pos.y.toFixed(1)} ${player.pos.z.toFixed(1)}`;
+
+  updateSurvivalHud();
 
   // Небо малюємо першим проходом: заливка кольором неба + сонце/місяць/зорі,
   // далі світ (з очищенням глибини), далі кирка — кожне поверх попереднього

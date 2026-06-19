@@ -46,6 +46,10 @@
 
   <div id="hud" hidden>
     <div id="crosshair">+</div>
+    <div id="status">
+      <div id="air"></div>
+      <div id="health"></div>
+    </div>
     <div id="hotbar"></div>
     <div id="item-name"></div>
     <div id="debug"></div>
@@ -59,6 +63,16 @@
         <button id="btn-inv">▤</button>
       </div>
       <button id="btn-pause">❚❚</button>
+    </div>
+  </div>
+
+  <div id="damage-vignette"></div>
+
+  <div id="death-overlay" hidden>
+    <div id="death-content">
+      <h1>Ви загинули</h1>
+      <p id="death-cause"></p>
+      <button id="respawn-btn">Відродитися</button>
     </div>
   </div>
 
