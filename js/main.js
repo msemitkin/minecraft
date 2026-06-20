@@ -1171,6 +1171,221 @@ function updateAnimals(dt) {
 }
 
 // ============================================================
+// Вороги: зомбі (з'являються вночі, переслідують і б'ють гравця)
+// ============================================================
+const MOB_MAX = 6;
+const MOB_DESPAWN_DIST = 80;
+let dayNightSun = 1; // оновлюється в updateDayNight: 1 — полудень, -1 — північ
+
+const ZOMBIE_COLOR = new THREE.Color(0x4f7a44);
+const SMOKE_COLOR = new THREE.Color(0x4a4a4a);
+const mobs = [];
+
+// Будує гуманоїдну модель зомбі; повертає кінцівки для анімації.
+// Модель дивиться в -Z (як гравець при yaw = 0).
+function buildZombie(g) {
+  const skin = 0x5b8a4a, shirt = 0x2f5a6b, pants = 0x33335a, eye = 0x10160f;
+  animalBox(g, 0.52, 0.7, 0.3, shirt, 0, 1.15, 0);          // тулуб
+  animalBox(g, 0.46, 0.46, 0.46, skin, 0, 1.73, 0);         // голова
+  animalBox(g, 0.1, 0.08, 0.03, eye, -0.11, 1.76, -0.235);  // очі
+  animalBox(g, 0.1, 0.08, 0.03, eye, 0.11, 1.76, -0.235);
+  // Руки — пивот біля плеча (animalLeg переносить геометрію на -len/2 по Y),
+  // у updateMob їх повертають уперед у класичній позі зомбі.
+  const armL = animalLeg(g, 0.17, 0.62, skin, -0.345, 1.46, 0);
+  const armR = animalLeg(g, 0.17, 0.62, skin, 0.345, 1.46, 0);
+  const legL = animalLeg(g, 0.19, 0.8, pants, -0.13, 0.8, 0);
+  const legR = animalLeg(g, 0.19, 0.8, pants, 0.13, 0.8, 0);
+  return { legs: [legL, legR], arms: [armL, armR] };
+}
+
+function spawnMob(x, y, z) {
+  const group = new THREE.Group();
+  const { legs, arms } = buildZombie(group);
+  group.position.set(x, y, z);
+  scene.add(group);
+  const mats = [];
+  group.traverse((o) => { if (o.isMesh) mats.push(o.material); });
+  mobs.push({
+    group, legs, arms, mats,
+    pos: new THREE.Vector3(x, y, z),
+    vel: new THREE.Vector3(),
+    yaw: Math.random() * Math.PI * 2,
+    targetYaw: 0,
+    halfW: 0.3,
+    height: 1.9,
+    speed: 2.2,
+    onGround: false,
+    legPhase: 0,
+    health: 14,
+    hurt: 0,        // спалах при ударі (0..1)
+    attackCD: 0,    // перезарядка атаки
+    attackAnim: 0,  // мах руками при ударі
+    burn: 0,        // час горіння під сонцем
+  });
+}
+
+let mobSpawnTimer = 4;
+
+function trySpawnMob() {
+  if (mobs.length >= MOB_MAX) return;
+  if (dayNightSun > -0.05) return;             // тільки в темряві
+  const angle = Math.random() * Math.PI * 2;
+  const dist = 14 + Math.random() * 16;
+  const x = Math.floor(player.pos.x + Math.cos(angle) * dist);
+  const z = Math.floor(player.pos.z + Math.sin(angle) * dist);
+  const h = heightAt(x, z);
+  if (h <= SEA + 1) return;                     // не у воді й не на пляжі
+  if (!isSolid(blockAt(x, h, z))) return;       // тверда опора
+  if (isSolid(blockAt(x, h + 1, z)) || isSolid(blockAt(x, h + 2, z))) return; // є місце
+  spawnMob(x + 0.5, h + 1.01, z + 0.5);
+}
+
+function removeMob(index) {
+  const m = mobs[index];
+  scene.remove(m.group);
+  m.group.traverse((o) => {
+    if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
+  });
+  mobs.splice(index, 1);
+}
+
+function updateMob(m, dt) {
+  // Удень зомбі займаються вогнем і швидко гинуть
+  if (dayNightSun > 0.15) {
+    m.burn += dt;
+    if (Math.random() < dt * 7) {
+      spawnParticles(m.pos.x, m.pos.y + 1.1, m.pos.z, SMOKE_COLOR, 1,
+        { radius: 0.3, speed: 0.5, upBias: 0.9, life: 0.7, size: 0.12, gravity: -3 });
+    }
+    if (m.burn > 2.2) { m.health = 0; return; }
+  } else {
+    m.burn = 0;
+  }
+
+  // Переслідування гравця
+  const dx = player.pos.x - m.pos.x;
+  const dz = player.pos.z - m.pos.z;
+  const distH = Math.hypot(dx, dz);
+  const chase = distH < 26 && !player.dead;
+  if (chase) m.targetYaw = Math.atan2(-dx, -dz); // дивиться в -Z
+
+  let dyaw = m.targetYaw - m.yaw;
+  dyaw = ((dyaw + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+  m.yaw += dyaw * Math.min(1, dt * 6);
+
+  const moving = chase && distH > 1.0;
+  const sp = moving ? m.speed : 0;
+  m.vel.x = -Math.sin(m.yaw) * sp;
+  m.vel.z = -Math.cos(m.yaw) * sp;
+
+  const inWater = isWaterId(blockAt(
+    Math.floor(m.pos.x), Math.floor(m.pos.y + 0.3), Math.floor(m.pos.z)
+  ));
+  if (inWater) m.vel.y = Math.min(m.vel.y + 40 * dt, 3);
+  else m.vel.y -= 24 * dt;
+
+  m.onGround = false;
+  moveEntityAxis(m, 'y', m.vel.y * dt);
+  const bumpedX = moveEntityAxis(m, 'x', m.vel.x * dt);
+  const bumpedZ = moveEntityAxis(m, 'z', m.vel.z * dt);
+  if ((bumpedX || bumpedZ) && m.onGround && moving) m.vel.y = 7.5; // перестрибнути
+
+  // Атака при контакті
+  if (m.attackCD > 0) m.attackCD -= dt;
+  const vOverlap = player.pos.y < m.pos.y + m.height &&
+                   player.pos.y + player.height > m.pos.y;
+  if (chase && distH < 1.2 && vOverlap && m.attackCD <= 0 && !player.dead) {
+    damagePlayer(3, 'zombie');
+    const k = distH || 1;
+    player.vel.x += (dx / k) * 4;
+    player.vel.z += (dz / k) * 4;
+    player.vel.y += 3;
+    m.attackCD = 1.0;
+    m.attackAnim = 1;
+  }
+
+  // Анімація ніг і рук
+  if (moving && (m.onGround || inWater)) m.legPhase += dt * 8;
+  const legSwing = Math.sin(m.legPhase) * 0.5 * (moving ? 1 : 0);
+  m.legs[0].rotation.x = legSwing;
+  m.legs[1].rotation.x = -legSwing;
+  if (m.attackAnim > 0) m.attackAnim = Math.max(0, m.attackAnim - dt * 3);
+  const armBase = -1.35;                         // витягнуті вперед
+  const armSwing = Math.sin(m.legPhase) * 0.18 + m.attackAnim * 0.6;
+  m.arms[0].rotation.x = armBase - armSwing;
+  m.arms[1].rotation.x = armBase + armSwing;
+
+  // Червоний спалах при отриманні удару
+  if (m.hurt > 0) {
+    m.hurt = Math.max(0, m.hurt - dt * 3);
+    for (const mat of m.mats) mat.emissive.setRGB(m.hurt * 0.6, 0, 0);
+  }
+
+  m.group.position.copy(m.pos);
+  m.group.rotation.y = m.yaw;
+}
+
+function updateMobs(dt) {
+  mobSpawnTimer -= dt;
+  if (mobSpawnTimer <= 0) {
+    trySpawnMob();
+    mobSpawnTimer = 3;
+  }
+  for (let i = mobs.length - 1; i >= 0; i--) {
+    const m = mobs[i];
+    if (m.health <= 0) {
+      spawnParticles(m.pos.x, m.pos.y + 0.9, m.pos.z, ZOMBIE_COLOR, 16,
+        { radius: 0.4, speed: 3, upBias: 1.2, life: 0.7, size: 0.13 });
+      removeMob(i);
+      continue;
+    }
+    if (m.pos.distanceTo(player.pos) > MOB_DESPAWN_DIST || m.pos.y < -10) {
+      removeMob(i);
+      continue;
+    }
+    updateMob(m, dt);
+  }
+}
+
+// Удар гравця по зомбі (ЛКМ). Повертає true, якщо влучив у ворога —
+// тоді цей клік не починає видобуток блока.
+const MELEE_REACH = 3.4;
+const _atkDir = new THREE.Vector3();
+function tryAttackMob() {
+  if (!mobs.length) return false;
+  camera.getWorldDirection(_atkDir);
+  const ox = camera.position.x, oy = camera.position.y, oz = camera.position.z;
+  let best = null, bestDist = Infinity;
+  for (const m of mobs) {
+    const tx = m.pos.x - ox;
+    const ty = m.pos.y + m.height * 0.5 - oy;
+    const tz = m.pos.z - oz;
+    const dist = Math.hypot(tx, ty, tz);
+    if (dist > MELEE_REACH) continue;
+    const dot = (tx * _atkDir.x + ty * _atkDir.y + tz * _atkDir.z) / (dist || 1);
+    if (dot < 0.55) continue;                    // має бути приблизно в прицілі
+    if (dist < bestDist) { bestDist = dist; best = m; }
+  }
+  if (!best) return false;
+  best.health -= 5;
+  best.hurt = 1;
+  const dx = best.pos.x - player.pos.x, dz = best.pos.z - player.pos.z;
+  const d = Math.hypot(dx, dz) || 1;
+  best.vel.x += (dx / d) * 8;
+  best.vel.z += (dz / d) * 8;
+  best.vel.y += 4;
+  triggerSwing();
+  return true;
+}
+
+// Спільний обробник ЛКМ / кнопки «добувати»: спершу удар по ворогу,
+// інакше — почати видобуток блока.
+function startBreakOrAttack() {
+  if (tryAttackMob()) return;
+  mining = true;
+}
+
+// ============================================================
 // Динаміт
 // ============================================================
 const TNT_FUSE = 2.2;
@@ -1688,6 +1903,7 @@ function updateDayNight(dt) {
   timeOfDay = (timeOfDay + dt) % DAY_LENGTH;
   const angle = (timeOfDay / DAY_LENGTH) * Math.PI * 2;
   const sunHeight = Math.sin(angle); // 1 — полудень, -1 — північ
+  dayNightSun = sunHeight;            // для спавну/горіння зомбі
 
   sun.position.set(Math.cos(angle) * 100, sunHeight * 100, 30);
   sun.intensity = Math.max(0, sunHeight) * 1.2;
@@ -1819,6 +2035,7 @@ const DEATH_CAUSES = {
   fall: 'Падіння з висоти',
   drown: 'Потонув',
   tnt: 'Підірвався на динаміті',
+  zombie: 'Розтерзаний зомбі',
 };
 
 function showDeathScreen(cause) {
@@ -2103,7 +2320,7 @@ function bindTouchButton(id, onDown, onUp) {
 bindTouchButton('btn-jump', () => { keys['Space'] = true; }, () => { keys['Space'] = false; });
 
 bindTouchButton('btn-break',
-  () => { mining = true; },
+  () => { startBreakOrAttack(); },
   () => { mining = false; });
 
 bindTouchButton('btn-place', () => placeBlock());
@@ -2125,7 +2342,7 @@ document.addEventListener('mousemove', (e) => {
 
 document.addEventListener('mousedown', (e) => {
   if (!isLocked()) return;
-  if (e.button === 0) mining = true;
+  if (e.button === 0) startBreakOrAttack();
   if (e.button === 2) placeBlock();
 });
 
@@ -2211,6 +2428,26 @@ document.getElementById('respawn-btn').addEventListener('click', respawn);
 if (savedGame && Number.isInteger(savedGame.selectedSlot)) {
   selectSlot(savedGame.selectedSlot % HOTBAR_SIZE);
 }
+// Невеликий діагностичний інтерфейс (ручне тестування зомбі та циклу доби з консолі)
+window.MCDebug = {
+  setTime: (t) => { timeOfDay = ((t % DAY_LENGTH) + DAY_LENGTH) % DAY_LENGTH; },
+  night: () => { timeOfDay = DAY_LENGTH * 0.75; },       // північ
+  day: () => { timeOfDay = DAY_LENGTH * 0.25; },         // ранок
+  spawnZombie: (n = 1) => {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = 4 + Math.random() * 4;
+      const x = Math.floor(player.pos.x + Math.cos(a) * d);
+      const z = Math.floor(player.pos.z + Math.sin(a) * d);
+      const h = heightAt(x, z);
+      spawnMob(x + 0.5, h + 1.01, z + 0.5);
+    }
+    return mobs.length;
+  },
+  get mobs() { return mobs; },
+  get player() { return player; },
+};
+
 const clock = new THREE.Clock();
 let chunkTimer = 0;
 let saveTimer = 5;
@@ -2225,6 +2462,7 @@ function animate() {
     updatePlayer(dt);
     updateSurvival(dt);
     updateAnimals(dt);
+    updateMobs(dt);
     updateTnt(dt);
     updateParticles(dt);
     waterTimer -= dt;
