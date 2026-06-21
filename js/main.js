@@ -1345,7 +1345,8 @@ function updateAnimal(a, dt) {
   const panicking = a.panic > 0;
   if (panicking) {
     a.panic -= dt;
-    a.targetYaw = Math.atan2(-(a.pos.x - player.pos.x), -(a.pos.z - player.pos.z)) + Math.PI;
+    // Дивиться геть від гравця: «до гравця» — atan2(a−p); напрям утечі — протилежний
+    a.targetYaw = Math.atan2(player.pos.x - a.pos.x, player.pos.z - a.pos.z);
   } else {
     // Зміна стану: блукає / стоїть
     a.stateTimer -= dt;
