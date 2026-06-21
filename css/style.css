@@ -242,14 +242,42 @@ kbd {
   z-index: 5;
 }
 
-#air, #health {
+#air, #health, #hunger {
   display: flex;
   gap: 2px;
   height: 20px;
 }
 
-#air {
+#air, #hunger {
   flex-direction: row-reverse;
+}
+
+/* ===== Їжа (лічильник сирого м'яса) ===== */
+#food-badge {
+  position: fixed;
+  right: 16px;
+  bottom: 90px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  background: rgba(0, 0, 0, 0.42);
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+#food-icon {
+  width: 26px;
+  height: 26px;
+  image-rendering: pixelated;
+  filter: drop-shadow(1px 1px 0 rgba(0, 0, 0, 0.6));
+}
+
+#food-count {
+  font: bold 18px/1 system-ui, sans-serif;
+  color: #fff;
+  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.7);
 }
 
 #status .icon {

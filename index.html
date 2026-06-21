@@ -26,10 +26,11 @@
         <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> — рух</div>
         <div><kbd>Space</kbd> — стрибок / плисти вгору</div>
         <div><kbd>Shift</kbd> — біг</div>
-        <div><kbd>ЛКМ</kbd> (утримувати) — добувати блок</div>
+        <div><kbd>ЛКМ</kbd> (утримувати) — добувати блок / бити істоту</div>
         <div><kbd>ПКМ</kbd> — поставити блок</div>
         <div><kbd>1</kbd>–<kbd>9</kbd>, <kbd>0</kbd> або колесо миші — слот хотбара</div>
         <div><kbd>Tab</kbd> — меню всіх блоків</div>
+        <div><kbd>F</kbd> — з'їсти м'ясо (відновити голод)</div>
         <div><kbd>M</kbd> — увімкнути / вимкнути звук</div>
         <div><kbd>Esc</kbd> — пауза</div>
       </div>
@@ -37,8 +38,9 @@
         <div>🕹 Джойстик ліворуч — рух</div>
         <div>👆 Свайп по екрану — камера</div>
         <div>⬆ — стрибок / плисти вгору</div>
-        <div>⛏ (тримати) — добувати блок</div>
+        <div>⛏ (тримати) — добувати блок / бити істоту</div>
         <div>▦ — поставити блок</div>
+        <div>🍖 — з'їсти м'ясо</div>
         <div>▤ — меню всіх блоків</div>
         <div>Тап по слоту внизу — вибір блока</div>
       </div>
@@ -50,6 +52,11 @@
     <div id="status">
       <div id="air"></div>
       <div id="health"></div>
+      <div id="hunger"></div>
+    </div>
+    <div id="food-badge" hidden>
+      <canvas id="food-icon"></canvas>
+      <span id="food-count">0</span>
     </div>
     <div id="hotbar"></div>
     <div id="item-name"></div>
@@ -62,6 +69,7 @@
         <button id="btn-jump">⬆</button>
         <button id="btn-break">⛏</button>
         <button id="btn-place">▦</button>
+        <button id="btn-eat">🍖</button>
         <button id="btn-inv">▤</button>
       </div>
       <button id="btn-pause">❚❚</button>
