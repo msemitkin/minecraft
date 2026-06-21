@@ -186,6 +186,7 @@ function saveGame() {
         food: player.food,
       },
       timeOfDay,
+      weather: { state: weatherState, timer: weatherTimer, intensity: weatherIntensity },
       selectedSlot,
       hotbar: [...hotbar],
       soundOn: Sound.isEnabled(),
@@ -288,6 +289,24 @@ const Sound = (() => {
     return { freq: 1100, q: 1.6, type: 'bandpass' };
   }
 
+  // Безперервний дощ: зациклений відфільтрований шум, гучність керує погода
+  let rainSrc = null, rainGain = null;
+  function ensureRain() {
+    ensureCtx();
+    if (!ctx || rainSrc) return;
+    rainSrc = ctx.createBufferSource();
+    rainSrc.buffer = noiseBuffer;
+    rainSrc.loop = true;
+    const filt = ctx.createBiquadFilter();
+    filt.type = 'bandpass';
+    filt.frequency.value = 1500;
+    filt.Q.value = 0.4;
+    rainGain = ctx.createGain();
+    rainGain.gain.value = 0.0001;
+    rainSrc.connect(filt).connect(rainGain).connect(master);
+    rainSrc.start();
+  }
+
   return {
     resume,
     isEnabled: () => enabled,
@@ -351,6 +370,21 @@ const Sound = (() => {
         if (!enabled) return;
         noise({ dur: 0.08, gain: 0.13, type: 'lowpass', freq: 560, q: 0.8 });
       }, 130);
+    },
+    // Рівень дощу 0..1 — плавно піднімає/опускає гучність зацикленого шуму
+    setRain(level) {
+      if (!ctx && level <= 0) return;
+      ensureRain();
+      if (rainGain && ctx) {
+        rainGain.gain.setTargetAtTime(Math.max(0.0001, level * 0.2), ctx.currentTime, 0.4);
+      }
+    },
+    // Грім: глибокий гуркіт із низьких тонів і шуму
+    thunder() {
+      if (!ctx || !enabled) return;
+      noise({ dur: 1.6, gain: 0.4, type: 'lowpass', freq: 280, q: 0.5, attack: 0.03 });
+      tone({ freq: 72, dur: 1.4, type: 'sine', gain: 0.3, slideTo: 30, attack: 0.04 });
+      tone({ freq: 120, dur: 0.9, type: 'triangle', gain: 0.14, slideTo: 45, attack: 0.06 });
     },
   };
 })();
@@ -2250,6 +2284,150 @@ const _cloudColor = new THREE.Color();
 }
 skyScene.add(cloudGroup);
 
+// ============================================================
+// Погода: дощ, сніг і грози — процедурні, зав'язані на хмари/світло/звук
+// ============================================================
+// Опади малюються одним InstancedMesh у головній сцені (з туманом і перевіркою
+// глибини, тож краплі за рельєфом природно приховані). Жодних зовнішніх ассетів:
+// дощ — це тонкі сині штрихи, сніг — м'які білі сніжинки, що погойдуються.
+const WEATHER_R = 14;          // радіус «колони» опадів навколо гравця
+const PRECIP_MAX = 520;        // розмір пулу крапель/сніжинок
+const SNOW_LINE = SEA + 16;    // вище за цей рівень — холодно, падає сніг
+const FOG_FAR = RENDER_DIST * CHUNK;
+
+const _savedW = savedGame?.weather;
+const _isWeather = (s) => s === 'rain' || s === 'snow' || s === 'clear';
+let weatherState = _isWeather(_savedW?.state) ? _savedW.state : 'clear';
+let weatherTimer = Number.isFinite(_savedW?.timer) ? _savedW.timer : 12 + Math.random() * 25;
+let weatherIntensity = Number.isFinite(_savedW?.intensity)
+  ? THREE.MathUtils.clamp(_savedW.intensity, 0, 1) : 0;
+let weatherDark = 0;           // затемнення світла/неба від негоди
+let skyFlash = 0;              // спалах блискавки (0..1, швидко згасає)
+let lightningTimer = 6 + Math.random() * 14;
+
+const stormGrey = new THREE.Color(0x3a3f47);
+const flashColor = new THREE.Color(0xdfe8ff);
+
+const precipMat = new THREE.MeshBasicMaterial({
+  color: 0x9fb4cc, transparent: true, opacity: 0.5, fog: true, depthWrite: false,
+});
+const precipMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), precipMat, PRECIP_MAX);
+precipMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+precipMesh.frustumCulled = false;
+precipMesh.visible = false;
+scene.add(precipMesh);
+
+const drops = [];
+for (let i = 0; i < PRECIP_MAX; i++) drops.push({ x: 0, y: -9999, z: 0, sway: Math.random() * 6.28 });
+let dropsSeeded = false;
+
+const _wMat = new THREE.Matrix4();
+const _wPos = new THREE.Vector3();
+const _wQuat = new THREE.Quaternion();
+const _wScale = new THREE.Vector3();
+const _wHidden = new THREE.Matrix4().makeScale(0, 0, 0);
+
+// Чи відкрите небо просто над гравцем (у печері/під дахом опадів немає)
+function skyIsOpenAbove() {
+  const x = Math.floor(player.pos.x), z = Math.floor(player.pos.z);
+  for (let y = Math.ceil(player.pos.y + EYE); y < HEIGHT; y++) {
+    if (isSolid(blockAt(x, y, z))) return false;
+  }
+  return true;
+}
+
+// Зміна погоди: з «ясно» — шанс негоди (дощ унизу / сніг високо), з негоди — до ясного
+function pickWeather() {
+  if (weatherState === 'clear') {
+    if (Math.random() < 0.55) {
+      weatherState = player.pos.y >= SNOW_LINE ? 'snow' : 'rain';
+      weatherTimer = 30 + Math.random() * 70;
+      lightningTimer = 6 + Math.random() * 14;
+    } else {
+      weatherTimer = 40 + Math.random() * 80;
+    }
+  } else {
+    weatherState = 'clear';
+    weatherTimer = 50 + Math.random() * 110;
+  }
+}
+
+function updateWeather(dt) {
+  weatherTimer -= dt;
+  if (weatherTimer <= 0) pickWeather();
+
+  const exposed = skyIsOpenAbove();
+  const isSnow = weatherState === 'snow';
+  const target = (weatherState === 'clear' || !exposed) ? 0 : 1;
+  weatherIntensity += (target - weatherIntensity) * Math.min(1, dt * 0.6);
+  if (weatherIntensity < 0.001) weatherIntensity = 0;
+  weatherDark = weatherIntensity * (isSnow ? 0.28 : 0.5);
+
+  // Ambient-звук дощу (сніг беззвучний)
+  Sound.setRain(weatherState === 'rain' ? weatherIntensity : 0);
+
+  // Блискавка під час сильного дощу під відкритим небом
+  if (weatherState === 'rain' && exposed && weatherIntensity > 0.5) {
+    lightningTimer -= dt;
+    if (lightningTimer <= 0) {
+      skyFlash = 1;
+      lightningTimer = 10 + Math.random() * 18;
+      setTimeout(() => Sound.thunder(), 400 + Math.random() * 2200);
+    }
+  }
+  if (skyFlash > 0) skyFlash = Math.max(0, skyFlash - dt * 5);
+
+  if (weatherIntensity <= 0) {
+    if (precipMesh.visible) precipMesh.visible = false;
+    dropsSeeded = false;
+    return;
+  }
+  precipMesh.visible = true;
+  precipMat.color.setHex(isSnow ? 0xffffff : 0x9fb4cc);
+  precipMat.opacity = isSnow ? 0.85 : 0.5;
+  if (isSnow) _wScale.set(0.09, 0.09, 0.09);
+  else _wScale.set(0.035, 0.55, 0.035);
+
+  const top = player.pos.y + 16;
+  const bottom = player.pos.y - 6;
+  if (!dropsSeeded) {
+    for (const d of drops) {
+      d.x = player.pos.x + (Math.random() * 2 - 1) * WEATHER_R;
+      d.z = player.pos.z + (Math.random() * 2 - 1) * WEATHER_R;
+      d.y = bottom + Math.random() * (top - bottom);
+    }
+    dropsSeeded = true;
+  }
+
+  const fall = isSnow ? 3.2 : 24;
+  const wind = isSnow ? 1.2 : 3.5;
+  const active = Math.floor(PRECIP_MAX * weatherIntensity);
+  for (let i = 0; i < PRECIP_MAX; i++) {
+    if (i >= active) { precipMesh.setMatrixAt(i, _wHidden); continue; }
+    const d = drops[i];
+    d.y -= fall * dt;
+    if (isSnow) {
+      d.sway += dt * 2;
+      d.x += Math.sin(d.sway) * wind * dt;
+      d.z += Math.cos(d.sway * 0.7) * wind * dt;
+    } else {
+      d.x += wind * dt * 0.4;
+    }
+    // Переробка: краплі впала нижче колони або гравець відійшов убік
+    if (d.y < bottom ||
+        Math.abs(d.x - player.pos.x) > WEATHER_R ||
+        Math.abs(d.z - player.pos.z) > WEATHER_R) {
+      d.x = player.pos.x + (Math.random() * 2 - 1) * WEATHER_R;
+      d.z = player.pos.z + (Math.random() * 2 - 1) * WEATHER_R;
+      d.y = top - Math.random() * 4;
+    }
+    _wPos.set(d.x, d.y, d.z);
+    _wMat.compose(_wPos, _wQuat, _wScale);
+    precipMesh.setMatrixAt(i, _wMat);
+  }
+  precipMesh.instanceMatrix.needsUpdate = true;
+}
+
 // ===== День / ніч =====
 const dayColor = new THREE.Color(0x87ceeb);
 const nightColor = new THREE.Color(0x0b1026);
@@ -2300,6 +2478,24 @@ function updateDayNight(dt) {
   _cloudColor.lerp(sunsetColor, sunset * 0.4);
   cloudMat.color.copy(_cloudColor);
   cloudMat.opacity = 0.35 + day * 0.5;
+
+  // ===== Погода: затемнення, густіший туман і спалахи блискавки =====
+  if (weatherDark > 0) {
+    sun.intensity *= 1 - weatherDark;
+    hemi.intensity *= 1 - weatherDark * 0.85;
+    skyColor.lerp(stormGrey, weatherDark);
+    cloudMat.color.lerp(stormGrey, weatherDark * 0.7);
+    cloudMat.opacity = Math.min(1, cloudMat.opacity + weatherDark * 0.5);
+    scene.fog.far = FOG_FAR * (1 - 0.38 * weatherIntensity);
+  } else if (scene.fog.far !== FOG_FAR) {
+    scene.fog.far = FOG_FAR;
+  }
+  if (skyFlash > 0) {
+    hemi.intensity += skyFlash * 1.6;
+    sun.intensity += skyFlash * 0.4;
+    skyColor.lerp(flashColor, skyFlash * 0.7);
+  }
+  scene.fog.color.copy(skyColor);
 }
 
 // ===== HUD =====
@@ -2887,6 +3083,14 @@ window.MCDebug = {
     }
     return mobs.length;
   },
+  setWeather: (s) => {
+    if (s !== 'rain' && s !== 'snow' && s !== 'clear') return 'use "rain" | "snow" | "clear"';
+    weatherState = s;
+    weatherTimer = 90;
+    if (s !== 'clear') lightningTimer = 3 + Math.random() * 8;
+    return s;
+  },
+  get weather() { return { state: weatherState, intensity: +weatherIntensity.toFixed(2) }; },
   get mobs() { return mobs; },
   get player() { return player; },
 };
@@ -2908,6 +3112,7 @@ function animate() {
     updateMobs(dt);
     updateTnt(dt);
     updateParticles(dt);
+    updateWeather(dt);
     waterTimer -= dt;
     if (waterTimer <= 0) {
       processWaterQueue();
@@ -2947,7 +3152,8 @@ function animate() {
   }
   debugEl.textContent =
     `FPS: ${fps}\n` +
-    `XYZ: ${player.pos.x.toFixed(1)} ${player.pos.y.toFixed(1)} ${player.pos.z.toFixed(1)}`;
+    `XYZ: ${player.pos.x.toFixed(1)} ${player.pos.y.toFixed(1)} ${player.pos.z.toFixed(1)}` +
+    (weatherState !== 'clear' ? `\n${weatherState === 'rain' ? '🌧' : '🌨'} ${weatherState}` : '');
 
   updateSurvivalHud();
 
