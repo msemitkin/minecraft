@@ -182,6 +182,8 @@ function saveGame() {
         x: player.pos.x, y: player.pos.y, z: player.pos.z,
         yaw: player.yaw, pitch: player.pitch,
         health: player.health,
+        hunger: player.hunger,
+        food: player.food,
       },
       timeOfDay,
       selectedSlot,
@@ -340,6 +342,15 @@ const Sound = (() => {
     mobDeath() {
       tone({ freq: 200, dur: 0.6, type: 'sawtooth', gain: 0.16, slideTo: 55, attack: 0.01 });
       noise({ dur: 0.3, gain: 0.12, type: 'lowpass', freq: 600, q: 0.7 });
+    },
+    eat() {
+      // Два приглушені «хрусти» поспіль — звук жування
+      noise({ dur: 0.09, gain: 0.16, type: 'lowpass', freq: 500, q: 0.8 });
+      tone({ freq: 180, dur: 0.1, type: 'triangle', gain: 0.08, slideTo: 120 });
+      setTimeout(() => {
+        if (!enabled) return;
+        noise({ dur: 0.08, gain: 0.13, type: 'lowpass', freq: 560, q: 0.8 });
+      }, 130);
     },
   };
 })();
@@ -886,6 +897,11 @@ const EPS = 0.001;
 // ===== Виживання: здоров'я, повітря, шкода =====
 const MAX_HEALTH = 20;          // 10 сердець (по 2 одиниці кожне)
 const MAX_AIR = 11;             // запас повітря в секундах (10 бульбашок)
+const MAX_HUNGER = 20;          // 10 «ніжок» (по 2 одиниці кожна)
+const FOOD_MAX = 64;            // максимум сирого м'яса в торбі
+const EAT_AMOUNT = 6;           // скільки голоду відновлює одна порція (3 ніжки)
+const EAT_COOLDOWN = 0.9;       // пауза між поїданнями, с
+const HUNGER_PER_EXHAUSTION = 4; // одиниць виснаження на 1 одиницю голоду
 const FALL_SAFE = 3;            // блоки падіння без шкоди
 const SPAWN = { x: 8, z: 8 };
 
@@ -900,6 +916,11 @@ const player = {
   // стан виживання
   health: MAX_HEALTH,
   air: MAX_AIR,
+  hunger: MAX_HUNGER,   // голод: спадає від активності
+  exhaustion: 0,        // накопичене виснаження; на порозі знімає 1 голод
+  food: 0,              // зібране сире м'ясо (їжа)
+  starveTick: 0,        // таймер шкоди від голоду
+  eatTimer: 0,          // перезарядка поїдання
   dead: false,
   invuln: 0,        // короткі кадри невразливості після удару
   hurtFlash: 0,     // інтенсивність червоного спалаху (0..1)
@@ -924,6 +945,12 @@ if (savedGame && savedGame.player) {
   // Здоров'я: не завантажувати мертвим — пусте/нульове = повне
   if (Number.isFinite(p.health) && p.health > 0) {
     player.health = Math.min(MAX_HEALTH, p.health);
+  }
+  if (Number.isFinite(p.hunger)) {
+    player.hunger = THREE.MathUtils.clamp(p.hunger, 0, MAX_HUNGER);
+  }
+  if (Number.isFinite(p.food)) {
+    player.food = THREE.MathUtils.clamp(Math.floor(p.food), 0, FOOD_MAX);
   }
 }
 player.fallPeakY = player.pos.y;
@@ -997,7 +1024,10 @@ function updatePlayer(dt) {
   } else {
     player.vel.y -= 24 * dt;
     player.vel.y = Math.max(player.vel.y, -50);
-    if (keys['Space'] && player.onGround) { player.vel.y = 8.2; Sound.jump(); }
+    if (keys['Space'] && player.onGround) {
+      player.vel.y = 8.2; Sound.jump();
+      player.exhaustion += keys['ShiftLeft'] || keys['ShiftRight'] ? 0.8 : 0.2;
+    }
   }
 
   // Звук сплеску при зануренні у воду
@@ -1083,6 +1113,10 @@ function die() {
 function respawn() {
   player.health = MAX_HEALTH;
   player.air = MAX_AIR;
+  player.hunger = MAX_HUNGER;
+  player.exhaustion = 0;
+  player.starveTick = 0;
+  player.eatTimer = 0;
   player.invuln = 1.5;
   player.hurtFlash = 0;
   player.sinceHurt = 999;
@@ -1125,15 +1159,50 @@ function updateSurvival(dt) {
     player.drownTick = 0;
   }
 
-  // Природна регенерація: коли давно не били й не тонемо
+  // ===== Голод =====
+  if (player.eatTimer > 0) player.eatTimer = Math.max(0, player.eatTimer - dt);
+
+  // Виснаження накопичується від руху (біг — швидше); на порозі знімає голод
+  const hSpeed = Math.hypot(player.vel.x, player.vel.z);
+  player.exhaustion += hSpeed * dt * 0.05;
+  while (player.exhaustion >= HUNGER_PER_EXHAUSTION) {
+    player.exhaustion -= HUNGER_PER_EXHAUSTION;
+    player.hunger = Math.max(0, player.hunger - 1);
+  }
+
+  // Голодування: коли шкала порожня — повільна шкода (але не на смерть)
+  if (player.hunger <= 0) {
+    player.starveTick -= dt;
+    if (player.starveTick <= 0) {
+      player.starveTick = 4;
+      if (player.health > 1) damagePlayer(1, 'starve');
+    }
+  } else {
+    player.starveTick = 0;
+  }
+
+  // Природна регенерація: коли давно не били, не тонемо й ситі.
+  // Лікування «спалює» їжу — додає виснаження, тож не нескінченне.
   if (player.health > 0 && player.health < MAX_HEALTH &&
-      player.sinceHurt > 4 && !headWater) {
+      player.sinceHurt > 4 && !headWater && player.hunger >= 16) {
     player.regenTick -= dt;
     if (player.regenTick <= 0) {
       player.health = Math.min(MAX_HEALTH, player.health + 1);
       player.regenTick = 1.5;
+      player.exhaustion += 3;
     }
   }
+}
+
+// Зʼїсти одну порцію сирого м'яса (клавіша F / кнопка 🍖)
+function eatFood() {
+  if (player.dead || player.eatTimer > 0) return;
+  if (player.food <= 0 || player.hunger >= MAX_HUNGER) return;
+  player.food -= 1;
+  player.hunger = Math.min(MAX_HUNGER, player.hunger + EAT_AMOUNT);
+  player.eatTimer = EAT_COOLDOWN;
+  Sound.eat();
+  updateFoodHud();
 }
 
 // ============================================================
@@ -1168,7 +1237,7 @@ function animalLeg(parent, w, len, color, x, top, z) {
 // Моделі дивляться в -Z (як і гравець при yaw = 0)
 const ANIMAL_TYPES = {
   pig: {
-    speed: 1.4, halfW: 0.32, height: 0.95,
+    speed: 1.4, halfW: 0.32, height: 0.95, hp: 10, food: 3,
     build(g) {
       const pink = 0xeba6a0, dark = 0xd98c86;
       animalBox(g, 0.6, 0.45, 0.9, pink, 0, 0.62, 0.05);
@@ -1183,7 +1252,7 @@ const ANIMAL_TYPES = {
     },
   },
   cow: {
-    speed: 1.1, halfW: 0.38, height: 1.3,
+    speed: 1.1, halfW: 0.38, height: 1.3, hp: 10, food: 4,
     build(g) {
       const brown = 0x6b4a32, light = 0x8a6647, white = 0xe8e2d8;
       animalBox(g, 0.7, 0.55, 1.05, brown, 0, 0.95, 0.05);
@@ -1200,7 +1269,7 @@ const ANIMAL_TYPES = {
     },
   },
   chicken: {
-    speed: 1.7, halfW: 0.2, height: 0.7,
+    speed: 1.7, halfW: 0.2, height: 0.7, hp: 4, food: 2,
     build(g) {
       const white = 0xf2f0ea, orange = 0xe89c3f, red = 0xc63d33;
       animalBox(g, 0.36, 0.36, 0.5, white, 0, 0.42, 0.02);
@@ -1223,8 +1292,10 @@ function spawnAnimal(type, x, y, z) {
   const legs = def.build(group);
   group.position.set(x, y, z);
   scene.add(group);
+  const mats = [];
+  group.traverse((o) => { if (o.isMesh) mats.push(o.material); });
   animals.push({
-    type, group, legs,
+    type, group, legs, mats,
     pos: new THREE.Vector3(x, y, z),
     vel: new THREE.Vector3(),
     yaw: Math.random() * Math.PI * 2,
@@ -1236,6 +1307,10 @@ function spawnAnimal(type, x, y, z) {
     stateTimer: Math.random() * 2,
     legPhase: 0,
     onGround: false,
+    health: def.hp,
+    foodValue: def.food,
+    hurt: 0,       // спалах при ударі (0..1)
+    panic: 0,      // тікає від гравця після удару
   });
 }
 
@@ -1266,26 +1341,33 @@ function removeAnimal(index) {
 }
 
 function updateAnimal(a, dt) {
-  // Зміна стану: блукає / стоїть
-  a.stateTimer -= dt;
-  if (a.stateTimer <= 0) {
-    if (a.state === 'walk') {
-      a.state = 'idle';
-      a.stateTimer = 1 + Math.random() * 3;
-    } else {
-      a.state = 'walk';
-      a.stateTimer = 2 + Math.random() * 4;
-      a.targetYaw = Math.random() * Math.PI * 2;
+  // Паніка після удару: тікає геть від гравця прискорено
+  const panicking = a.panic > 0;
+  if (panicking) {
+    a.panic -= dt;
+    a.targetYaw = Math.atan2(-(a.pos.x - player.pos.x), -(a.pos.z - player.pos.z)) + Math.PI;
+  } else {
+    // Зміна стану: блукає / стоїть
+    a.stateTimer -= dt;
+    if (a.stateTimer <= 0) {
+      if (a.state === 'walk') {
+        a.state = 'idle';
+        a.stateTimer = 1 + Math.random() * 3;
+      } else {
+        a.state = 'walk';
+        a.stateTimer = 2 + Math.random() * 4;
+        a.targetYaw = Math.random() * Math.PI * 2;
+      }
     }
   }
 
-  // Плавний поворот до цільового напрямку
+  // Плавний поворот до цільового напрямку (швидше в паніці)
   let dyaw = a.targetYaw - a.yaw;
   dyaw = ((dyaw + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
-  a.yaw += dyaw * Math.min(1, dt * 3);
+  a.yaw += dyaw * Math.min(1, dt * (panicking ? 8 : 3));
 
-  const moving = a.state === 'walk';
-  const sp = moving ? a.speed : 0;
+  const moving = panicking || a.state === 'walk';
+  const sp = moving ? a.speed * (panicking ? 2.2 : 1) : 0;
   a.vel.x = -Math.sin(a.yaw) * sp;
   a.vel.z = -Math.cos(a.yaw) * sp;
 
@@ -1312,6 +1394,12 @@ function updateAnimal(a, dt) {
   a.legs.forEach((leg, i) => {
     leg.rotation.x = i % 2 === 0 ? swing : -swing;
   });
+
+  // Червоний спалах при отриманні удару
+  if (a.hurt > 0) {
+    a.hurt = Math.max(0, a.hurt - dt * 3);
+    for (const mat of a.mats) mat.emissive.setRGB(a.hurt * 0.6, 0, 0);
+  }
 
   a.group.position.copy(a.pos);
   a.group.rotation.y = a.yaw;
@@ -1527,39 +1615,62 @@ function updateMobs(dt) {
 // Удар гравця по зомбі (ЛКМ). Повертає true, якщо влучив у ворога —
 // тоді цей клік не починає видобуток блока.
 const MELEE_REACH = 3.4;
+const MEAT_COLOR = new THREE.Color(0xc0392b);
 const _atkDir = new THREE.Vector3();
-function tryAttackMob() {
-  if (!mobs.length) return false;
+
+// Удар гравця по найближчій істоті в прицілі (зомбі або тварині).
+// Зомбі гинуть у updateMobs; тварини — тут, лишаючи сире м'ясо.
+function tryAttack() {
+  if (!mobs.length && !animals.length) return false;
   camera.getWorldDirection(_atkDir);
   const ox = camera.position.x, oy = camera.position.y, oz = camera.position.z;
-  let best = null, bestDist = Infinity;
-  for (const m of mobs) {
-    const tx = m.pos.x - ox;
-    const ty = m.pos.y + m.height * 0.5 - oy;
-    const tz = m.pos.z - oz;
+  let best = null, bestDist = Infinity, bestIsAnimal = false;
+  const consider = (e, isAnimal) => {
+    const tx = e.pos.x - ox;
+    const ty = e.pos.y + e.height * 0.5 - oy;
+    const tz = e.pos.z - oz;
     const dist = Math.hypot(tx, ty, tz);
-    if (dist > MELEE_REACH) continue;
+    if (dist > MELEE_REACH) return;
     const dot = (tx * _atkDir.x + ty * _atkDir.y + tz * _atkDir.z) / (dist || 1);
-    if (dot < 0.55) continue;                    // має бути приблизно в прицілі
-    if (dist < bestDist) { bestDist = dist; best = m; }
-  }
+    if (dot < 0.55) return;                       // має бути приблизно в прицілі
+    if (dist < bestDist) { bestDist = dist; best = e; bestIsAnimal = isAnimal; }
+  };
+  for (const m of mobs) consider(m, false);
+  for (const a of animals) consider(a, true);
   if (!best) return false;
+
   best.health -= 5;
   best.hurt = 1;
-  Sound.mobHit();
   const dx = best.pos.x - player.pos.x, dz = best.pos.z - player.pos.z;
   const d = Math.hypot(dx, dz) || 1;
   best.vel.x += (dx / d) * 8;
   best.vel.z += (dz / d) * 8;
   best.vel.y += 4;
   triggerSwing();
+
+  if (bestIsAnimal) {
+    best.panic = 4;                               // тварина кидається тікати
+    if (best.health <= 0) {
+      player.food = Math.min(FOOD_MAX, player.food + best.foodValue);
+      spawnParticles(best.pos.x, best.pos.y + best.height * 0.5, best.pos.z,
+        MEAT_COLOR, 12, { radius: 0.35, speed: 2.6, upBias: 1.1, life: 0.7, size: 0.12 });
+      Sound.mobDeath();
+      const idx = animals.indexOf(best);
+      if (idx >= 0) removeAnimal(idx);
+      updateFoodHud();
+    } else {
+      Sound.mobHit();
+    }
+  } else {
+    Sound.mobHit();
+  }
   return true;
 }
 
-// Спільний обробник ЛКМ / кнопки «добувати»: спершу удар по ворогу,
+// Спільний обробник ЛКМ / кнопки «добувати»: спершу удар по істоті,
 // інакше — почати видобуток блока.
 function startBreakOrAttack() {
-  if (tryAttackMob()) return;
+  if (tryAttack()) return;
   mining = true;
 }
 
@@ -2200,6 +2311,9 @@ let itemNameTimer = null;
 // ===== Здоров'я та повітря (HUD виживання) =====
 const healthEl = document.getElementById('health');
 const airEl = document.getElementById('air');
+const hungerEl = document.getElementById('hunger');
+const foodBadgeEl = document.getElementById('food-badge');
+const foodCountEl = document.getElementById('food-count');
 const vignetteEl = document.getElementById('damage-vignette');
 const deathOverlay = document.getElementById('death-overlay');
 const deathCauseEl = document.getElementById('death-cause');
@@ -2228,6 +2342,32 @@ function drawHeart(canvas, state) {
   }
 }
 
+// Піксельна «куряча ніжка»: 0 — порожньо, 1 — м'ясо, 2 — кістка
+const DRUMSTICK_PX = [
+  [0, 0, 1, 1, 0, 0, 0],
+  [0, 1, 1, 1, 1, 0, 0],
+  [0, 1, 1, 1, 1, 0, 0],
+  [0, 0, 1, 1, 1, 1, 0],
+  [0, 0, 0, 1, 1, 2, 2],
+  [0, 0, 0, 0, 2, 2, 0],
+];
+
+function drawDrumstick(canvas, state) {
+  canvas.width = 7; canvas.height = 6;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, 7, 6);
+  for (let r = 0; r < 6; r++) {
+    for (let c = 0; c < 7; c++) {
+      const px = DRUMSTICK_PX[r][c];
+      if (!px) continue;
+      const lit = state === 'full' || (state === 'half' && c <= 3);
+      if (px === 2) ctx.fillStyle = lit ? '#f3ead2' : '#3a352a';   // кістка
+      else ctx.fillStyle = lit ? '#a85327' : '#382519';            // м'ясо
+      ctx.fillRect(c, r, 1, 1);
+    }
+  }
+}
+
 function drawBubble(canvas, full) {
   canvas.width = 8; canvas.height = 8;
   const ctx = canvas.getContext('2d');
@@ -2246,12 +2386,15 @@ function drawBubble(canvas, full) {
 
 const heartCanvases = [];
 const bubbleCanvases = [];
+const hungerCanvases = [];
 
 function buildSurvivalHud() {
   healthEl.innerHTML = '';
   airEl.innerHTML = '';
+  hungerEl.innerHTML = '';
   heartCanvases.length = 0;
   bubbleCanvases.length = 0;
+  hungerCanvases.length = 0;
   for (let i = 0; i < 10; i++) {
     const h = document.createElement('canvas');
     h.className = 'icon';
@@ -2261,11 +2404,28 @@ function buildSurvivalHud() {
     b.className = 'icon';
     airEl.appendChild(b);
     bubbleCanvases.push(b);
+    const d = document.createElement('canvas');
+    d.className = 'icon';
+    hungerEl.appendChild(d);
+    hungerCanvases.push(d);
   }
+  // Іконка бейджа їжі малюється один раз (більший масштаб через CSS)
+  const foodIcon = document.getElementById('food-icon');
+  if (foodIcon) drawDrumstick(foodIcon, 'full');
 }
 
 let lastHealthDrawn = -1;
 let lastAirDrawn = -1;
+let lastHungerDrawn = -1;
+let lastFoodDrawn = -1;
+
+// Лічильник зібраного м'яса (бейдж 🍖)
+function updateFoodHud() {
+  if (player.food === lastFoodDrawn) return;
+  lastFoodDrawn = player.food;
+  foodCountEl.textContent = player.food;
+  foodBadgeEl.hidden = player.food <= 0;
+}
 
 function updateSurvivalHud() {
   if (player.health !== lastHealthDrawn) {
@@ -2273,6 +2433,13 @@ function updateSurvivalHud() {
     for (let i = 0; i < 10; i++) {
       const hp = player.health - i * 2;
       drawHeart(heartCanvases[i], hp >= 2 ? 'full' : hp >= 1 ? 'half' : 'empty');
+    }
+  }
+  if (player.hunger !== lastHungerDrawn) {
+    lastHungerDrawn = player.hunger;
+    for (let i = 0; i < 10; i++) {
+      const hg = player.hunger - i * 2;
+      drawDrumstick(hungerCanvases[i], hg >= 2 ? 'full' : hg >= 1 ? 'half' : 'empty');
     }
   }
   const showAir = player.air < MAX_AIR - 0.05;
@@ -2292,6 +2459,7 @@ const DEATH_CAUSES = {
   drown: 'Потонув',
   tnt: 'Підірвався на динаміті',
   zombie: 'Розтерзаний зомбі',
+  starve: 'Помер від голоду',
 };
 
 function showDeathScreen(cause) {
@@ -2582,6 +2750,8 @@ bindTouchButton('btn-break',
 
 bindTouchButton('btn-place', () => placeBlock());
 
+bindTouchButton('btn-eat', () => eatFood());
+
 bindTouchButton('btn-inv', () => toggleBlockMenu());
 
 document.getElementById('btn-pause').addEventListener('touchstart', (e) => {
@@ -2619,6 +2789,7 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'KeyM') { Sound.resume(); applySoundState(Sound.toggle()); return; }
+  if (e.code === 'KeyF') { Sound.resume(); eatFood(); return; }
   // Клавіші 1–9 та 0 — вибір слота хотбара (0 = десятий слот)
   if (e.code.startsWith('Digit')) {
     const n = Number(e.code.slice(5));
@@ -2683,6 +2854,7 @@ buildHotbar();
 buildBlockMenu();
 buildSurvivalHud();
 updateSurvivalHud();
+updateFoodHud();
 document.getElementById('respawn-btn').addEventListener('click', respawn);
 
 // ===== Вимикач звуку =====
