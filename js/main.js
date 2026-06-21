@@ -2083,6 +2083,61 @@ skyScene.add(starGroup);
 const _sunDir = new THREE.Vector3();
 const sunsetColor = new THREE.Color(0xff8a4a);
 
+// ===== Хмари: м'які білборди, що дрейфують по небосхилу =====
+// Малюються тим самим небесним проходом, що й сонце/місяць/зорі (без туману,
+// нескінченно далеко). Текстура процедурна — жодних зовнішніх ассетів.
+function makeCloudTexture() {
+  const s = 128;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = s;
+  const ctx = cv.getContext('2d');
+  // кілька накладених м'яких кружків утворюють пухнасту хмару з прозорими краями
+  const blobs = [
+    [0.50, 0.56, 0.30], [0.33, 0.60, 0.20], [0.67, 0.60, 0.22],
+    [0.43, 0.50, 0.18], [0.59, 0.50, 0.18], [0.50, 0.66, 0.16],
+  ];
+  for (const [cx, cy, r] of blobs) {
+    const g = ctx.createRadialGradient(cx * s, cy * s, 0, cx * s, cy * s, r * s);
+    g.addColorStop(0, 'rgba(255,255,255,0.85)');
+    g.addColorStop(0.6, 'rgba(255,255,255,0.45)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, s, s);
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const CLOUD_COUNT = 18;
+const cloudGroup = new THREE.Group();
+// Спільний матеріал для всіх хмар — тон/прозорість оновлюються один раз за кадр
+const cloudMat = new THREE.SpriteMaterial({
+  map: makeCloudTexture(),
+  transparent: true, depthTest: false, depthWrite: false, fog: false,
+  opacity: 0.85,
+});
+const cloudDayColor = new THREE.Color(0xffffff);
+const cloudNightColor = new THREE.Color(0x2b3551);
+const _cloudColor = new THREE.Color();
+{
+  let s = 1234567;
+  const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+  const R = SKY_R * 0.9;
+  for (let n = 0; n < CLOUD_COUNT; n++) {
+    const spr = new THREE.Sprite(cloudMat);
+    // рівномірно по азимуту, елевація 10°..44° над обрієм
+    const az = rnd() * Math.PI * 2;
+    const el = (10 + rnd() * 34) * Math.PI / 180;
+    const horiz = Math.cos(el) * R;
+    spr.position.set(Math.cos(az) * horiz, Math.sin(el) * R, Math.sin(az) * horiz);
+    const sc = 260 + rnd() * 280;
+    spr.scale.set(sc * 1.7, sc, 1); // хмари широкі та пласкі
+    cloudGroup.add(spr);
+  }
+}
+skyScene.add(cloudGroup);
+
 // ===== День / ніч =====
 const dayColor = new THREE.Color(0x87ceeb);
 const nightColor = new THREE.Color(0x0b1026);
@@ -2124,6 +2179,15 @@ function updateDayNight(dt) {
   starGroup.userData.material.opacity = night * twinkle;
   // Небо повільно обертається разом із циклом доби
   starGroup.rotation.z = angle;
+
+  // ===== Хмари =====
+  // Дрейф за вітром: повільне обертання всього шару навколо вертикалі
+  cloudGroup.rotation.y += dt * 0.0016;
+  // Тон: білі вдень, темно-сині вночі, теплі на сході/заході
+  _cloudColor.copy(cloudDayColor).lerp(cloudNightColor, 1 - day);
+  _cloudColor.lerp(sunsetColor, sunset * 0.4);
+  cloudMat.color.copy(_cloudColor);
+  cloudMat.opacity = 0.35 + day * 0.5;
 }
 
 // ===== HUD =====
