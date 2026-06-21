@@ -186,6 +186,7 @@ function saveGame() {
       timeOfDay,
       selectedSlot,
       hotbar: [...hotbar],
+      soundOn: Sound.isEnabled(),
     }));
   } catch {
     // сховище переповнене або недоступне — просто пропускаємо
@@ -200,6 +201,148 @@ const savedGame = loadGame();
 if (savedGame && Array.isArray(savedGame.edits)) {
   for (const [key, id] of savedGame.edits) edits.set(key, id);
 }
+
+// ============================================================
+// Звук: процедурні ефекти через Web Audio API (без зовнішніх файлів)
+// ============================================================
+// Усі звуки синтезуються на льоту (осцилятори + білий шум + фільтри),
+// тож не потрібно жодних аудіофайлів. Контекст створюється лише після
+// дії користувача (вимога браузерів до автозапуску звуку).
+const Sound = (() => {
+  let ctx = null;
+  let master = null;
+  let noiseBuffer = null;
+  // Початковий стан вимикача звуку береться зі збереження (типово — увімкнено)
+  let enabled = !(savedGame && savedGame.soundOn === false);
+  const MASTER_VOL = 0.5;
+
+  function ensureCtx() {
+    if (ctx) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    ctx = new AC();
+    master = ctx.createGain();
+    master.gain.value = enabled ? MASTER_VOL : 0;
+    master.connect(ctx.destination);
+    // Секунда білого шуму — основа для ударів, кроків і вибухів
+    noiseBuffer = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+    const d = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  }
+
+  // Викликається з обробників жестів користувача, щоб «розбудити» аудіо
+  function resume() {
+    ensureCtx();
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+  }
+
+  function envGain(dur, gain, attack = 0.004) {
+    const t = ctx.currentTime;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(gain, t + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    return g;
+  }
+
+  // Короткий сплеск відфільтрованого шуму
+  function noise({ dur = 0.12, gain = 0.3, type = 'bandpass', freq = 800, q = 1, attack = 0.004 }) {
+    if (!ctx || !enabled) return;
+    const src = ctx.createBufferSource();
+    src.buffer = noiseBuffer;
+    const filt = ctx.createBiquadFilter();
+    filt.type = type;
+    filt.frequency.value = freq;
+    filt.Q.value = q;
+    const g = envGain(dur, gain, attack);
+    src.connect(filt).connect(g).connect(master);
+    src.start();
+    src.stop(ctx.currentTime + dur + 0.03);
+    return { filt };
+  }
+
+  // Тон осцилятора з опційним ковзанням частоти
+  function tone({ freq = 440, dur = 0.15, type = 'sine', gain = 0.2, slideTo = null, attack = 0.005 }) {
+    if (!ctx || !enabled) return;
+    const osc = ctx.createOscillator();
+    osc.type = type;
+    const t = ctx.currentTime;
+    osc.frequency.setValueAtTime(freq, t);
+    if (slideTo) osc.frequency.exponentialRampToValueAtTime(Math.max(1, slideTo), t + dur);
+    const g = envGain(dur, gain, attack);
+    osc.connect(g).connect(master);
+    osc.start();
+    osc.stop(t + dur + 0.03);
+    return { osc };
+  }
+
+  // Звукова «матеріальність» блока: частота/фільтр залежать від типу
+  function material(id) {
+    if (id === SAND) return { freq: 360, q: 0.8, type: 'lowpass' };
+    if (id === LOG || id === PLANK) return { freq: 520, q: 2.4, type: 'bandpass' };
+    if (id === LEAVES) return { freq: 1700, q: 0.7, type: 'highpass' };
+    if (id === GRASS || id === DIRT) return { freq: 620, q: 0.9, type: 'bandpass' };
+    // камінь, руди, динаміт — твердий «цок»
+    return { freq: 1100, q: 1.6, type: 'bandpass' };
+  }
+
+  return {
+    resume,
+    isEnabled: () => enabled,
+    setEnabled(on) {
+      enabled = on;
+      if (master) master.gain.setTargetAtTime(on ? MASTER_VOL : 0, ctx.currentTime, 0.015);
+    },
+    toggle() { this.setEnabled(!enabled); return enabled; },
+
+    step(id) {
+      const m = material(id);
+      noise({ dur: 0.085, gain: 0.12, type: m.type, freq: m.freq * 0.7, q: m.q, attack: 0.002 });
+    },
+    dig(id) {
+      const m = material(id);
+      noise({ dur: 0.1, gain: 0.16, type: m.type, freq: m.freq, q: m.q + 0.6 });
+    },
+    breakBlock(id) {
+      const m = material(id);
+      noise({ dur: 0.22, gain: 0.26, type: m.type, freq: m.freq, q: m.q });
+      tone({ freq: 150, dur: 0.16, type: 'sine', gain: 0.12, slideTo: 70 });
+    },
+    place(id) {
+      const m = material(id);
+      noise({ dur: 0.09, gain: 0.18, type: m.type, freq: m.freq * 0.9, q: m.q });
+      tone({ freq: 220, dur: 0.1, type: 'sine', gain: 0.1, slideTo: 130 });
+    },
+    jump() { tone({ freq: 260, dur: 0.16, type: 'sine', gain: 0.1, slideTo: 440 }); },
+    land() { noise({ dur: 0.14, gain: 0.18, type: 'lowpass', freq: 300, q: 0.7 }); },
+    splash() {
+      noise({ dur: 0.3, gain: 0.2, type: 'highpass', freq: 900, q: 0.5 });
+      noise({ dur: 0.18, gain: 0.12, type: 'bandpass', freq: 500, q: 0.8 });
+    },
+    hurt() {
+      tone({ freq: 300, dur: 0.22, type: 'sawtooth', gain: 0.16, slideTo: 110 });
+      noise({ dur: 0.12, gain: 0.1, type: 'bandpass', freq: 700, q: 0.8 });
+    },
+    explosion() {
+      noise({ dur: 0.9, gain: 0.5, type: 'lowpass', freq: 420, q: 0.6, attack: 0.005 });
+      tone({ freq: 90, dur: 0.7, type: 'sine', gain: 0.35, slideTo: 28 });
+      tone({ freq: 150, dur: 0.4, type: 'triangle', gain: 0.18, slideTo: 50 });
+    },
+    fuse() { tone({ freq: 1400, dur: 0.06, type: 'square', gain: 0.05 }); },
+    mobHit() {
+      noise({ dur: 0.14, gain: 0.2, type: 'bandpass', freq: 450, q: 1.2 });
+      tone({ freq: 160, dur: 0.12, type: 'square', gain: 0.08, slideTo: 90 });
+    },
+    mobGroan() {
+      tone({ freq: 120, dur: 0.5, type: 'sawtooth', gain: 0.13, slideTo: 80, attack: 0.06 });
+      tone({ freq: 61, dur: 0.5, type: 'square', gain: 0.05, attack: 0.06 });
+    },
+    mobDeath() {
+      tone({ freq: 200, dur: 0.6, type: 'sawtooth', gain: 0.16, slideTo: 55, attack: 0.01 });
+      noise({ dur: 0.3, gain: 0.12, type: 'lowpass', freq: 600, q: 0.7 });
+    },
+  };
+})();
 
 function genChunkData(cx, cz) {
   const data = new Uint8Array(CHUNK * HEIGHT * CHUNK);
@@ -765,6 +908,8 @@ const player = {
   drownTick: 0,
   fallPeakY: 0,     // найвища точка під час падіння
   prevOnGround: true,
+  prevInWater: false, // для звуку сплеску при зануренні
+  stepDist: 0,      // накопичена відстань для звуку кроків
   lastCause: '',
 };
 player.fallPeakY = player.pos.y;
@@ -852,8 +997,12 @@ function updatePlayer(dt) {
   } else {
     player.vel.y -= 24 * dt;
     player.vel.y = Math.max(player.vel.y, -50);
-    if (keys['Space'] && player.onGround) player.vel.y = 8.2;
+    if (keys['Space'] && player.onGround) { player.vel.y = 8.2; Sound.jump(); }
   }
+
+  // Звук сплеску при зануренні у воду
+  if (inWater && !player.prevInWater) Sound.splash();
+  player.prevInWater = inWater;
 
   player.onGround = false;
   moveEntityAxis(player, 'y', player.vel.y * dt);
@@ -867,10 +1016,25 @@ function updatePlayer(dt) {
     player.fallPeakY = player.pos.y;
   }
 
+  // Звук кроків: накопичуємо пройдену відстань і цокаємо що ~2.4 блоки
+  const groundId = blockAt(
+    Math.floor(player.pos.x), Math.floor(player.pos.y - 0.1), Math.floor(player.pos.z)
+  );
+  if (player.onGround && !inWater) {
+    player.stepDist += Math.hypot(player.vel.x, player.vel.z) * dt;
+    if (player.stepDist > 2.4) {
+      player.stepDist = 0;
+      if (isSolid(groundId)) Sound.step(groundId);
+    }
+  } else {
+    player.stepDist = 0;
+  }
+
   // Шкода від падіння: рахуємо висоту арки між відривом і приземленням
   if (player.onGround) {
     if (!player.prevOnGround) {
       const fall = player.fallPeakY - player.pos.y;
+      if (!inWater && fall > 0.4) Sound.land(); // звук приземлення
       if (fall > FALL_SAFE && !inWater) {
         damagePlayer(Math.floor(fall - FALL_SAFE), 'fall');
       }
@@ -891,6 +1055,7 @@ function damagePlayer(amount, cause) {
   if (player.invuln > 0 && cause !== 'drown') return;
   player.health = Math.max(0, player.health - amount);
   player.hurtFlash = 1;
+  Sound.hurt();
   player.invuln = 0.5;
   player.sinceHurt = 0;
   player.lastCause = cause || '';
@@ -1325,17 +1490,29 @@ function updateMob(m, dt) {
   m.group.rotation.y = m.yaw;
 }
 
+let groanTimer = 3;
+
 function updateMobs(dt) {
   mobSpawnTimer -= dt;
   if (mobSpawnTimer <= 0) {
     trySpawnMob();
     mobSpawnTimer = 3;
   }
+  // Випадкові стогони, коли неподалік є зомбі (частіше — коли їх більше)
+  if (mobs.length > 0) {
+    groanTimer -= dt;
+    if (groanTimer <= 0) {
+      const near = mobs.some((m) => m.pos.distanceTo(player.pos) < 22);
+      if (near) Sound.mobGroan();
+      groanTimer = 2.5 + Math.random() * 4;
+    }
+  }
   for (let i = mobs.length - 1; i >= 0; i--) {
     const m = mobs[i];
     if (m.health <= 0) {
       spawnParticles(m.pos.x, m.pos.y + 0.9, m.pos.z, ZOMBIE_COLOR, 16,
         { radius: 0.4, speed: 3, upBias: 1.2, life: 0.7, size: 0.13 });
+      Sound.mobDeath();
       removeMob(i);
       continue;
     }
@@ -1369,6 +1546,7 @@ function tryAttackMob() {
   if (!best) return false;
   best.health -= 5;
   best.hurt = 1;
+  Sound.mobHit();
   const dx = best.pos.x - player.pos.x, dz = best.pos.z - player.pos.z;
   const d = Math.hypot(dx, dz) || 1;
   best.vel.x += (dx / d) * 8;
@@ -1401,7 +1579,7 @@ function igniteTnt(x, y, z, fuse = TNT_FUSE) {
   );
   mesh.position.set(x + 0.5, y + 0.5, z + 0.5);
   scene.add(mesh);
-  primedTnt.push({ mesh, x, y, z, timer: fuse });
+  primedTnt.push({ mesh, x, y, z, timer: fuse, fuseT: 0 });
 }
 
 function knockback(entity, cx, cy, cz) {
@@ -1436,6 +1614,7 @@ function explode(cx, cy, cz) {
     }
   }
 
+  Sound.explosion();
   knockback(player, cx, cy, cz);
   for (const a of animals) knockback(a, cx, cy, cz);
 
@@ -1469,6 +1648,8 @@ function updateTnt(dt) {
   for (let i = primedTnt.length - 1; i >= 0; i--) {
     const t = primedTnt[i];
     t.timer -= dt;
+    t.fuseT -= dt;
+    if (t.fuseT <= 0) { Sound.fuse(); t.fuseT = 0.18; } // тиктакання ґнота
     t.mesh.material.color.setHex(Math.sin(t.timer * 18) > 0 ? 0xffffff : 0xb53a2e);
     if (t.timer <= 0) {
       scene.remove(t.mesh);
@@ -1641,6 +1822,7 @@ function raycastBlock(maxDist = 6) {
 // ===== Поетапний видобуток =====
 let mining = false;                       // утримується кнопка руйнування
 const miningState = { key: null, progress: 0 };
+let digSoundTimer = 0;                     // ритм «цокання» киркою під час видобутку
 
 function resetMining() {
   miningState.key = null;
@@ -1651,6 +1833,7 @@ function resetMining() {
 function updateMining(dt, hit) {
   if (!mining || !hit) {
     resetMining();
+    digSoundTimer = 0;
     return;
   }
   const [x, y, z] = hit.block;
@@ -1675,9 +1858,17 @@ function updateMining(dt, hit) {
   const hardness = BLOCK_HARDNESS[id] ?? DEFAULT_HARDNESS;
   miningState.progress += dt / hardness;
 
+  // Ритмічне «цокання» киркою по блоку
+  digSoundTimer -= dt;
+  if (digSoundTimer <= 0) {
+    Sound.dig(id);
+    digSoundTimer = 0.22;
+  }
+
   if (miningState.progress >= 1) {
     spawnParticles(x + 0.5, y + 0.5, z + 0.5, blockColor(id), 14,
       { radius: 0.45, speed: 3.5, upBias: 1.5, life: 0.7, size: 0.13 });
+    Sound.breakBlock(id);
     setBlock(x, y, z, AIR);
     resetMining();
     return;
@@ -1707,6 +1898,7 @@ function placeBlock() {
 
   const id = hotbar[selectedSlot];
   setBlock(x, y, z, id);
+  Sound.place(id);
   // Невеликий пил при встановленні блока
   spawnParticles(x + 0.5, y + 0.5, z + 0.5, blockColor(id), 6,
     { radius: 0.5, speed: 1.4, upBias: 0.3, life: 0.4, size: 0.1, gravity: 10 });
@@ -2207,6 +2399,7 @@ function exitMobileMode() {
 }
 
 document.getElementById('play-btn').addEventListener('click', () => {
+  Sound.resume();
   if (IS_TOUCH || !renderer.domElement.requestPointerLock) {
     enterMobileMode();
     return;
@@ -2341,6 +2534,7 @@ document.addEventListener('mousemove', (e) => {
 });
 
 document.addEventListener('mousedown', (e) => {
+  Sound.resume();
   if (!isLocked()) return;
   if (e.button === 0) startBreakOrAttack();
   if (e.button === 2) placeBlock();
@@ -2360,6 +2554,7 @@ document.addEventListener('keydown', (e) => {
     toggleBlockMenu();
     return;
   }
+  if (e.code === 'KeyM') { Sound.resume(); applySoundState(Sound.toggle()); return; }
   // Клавіші 1–9 та 0 — вибір слота хотбара (0 = десятий слот)
   if (e.code.startsWith('Digit')) {
     const n = Number(e.code.slice(5));
@@ -2425,6 +2620,17 @@ buildBlockMenu();
 buildSurvivalHud();
 updateSurvivalHud();
 document.getElementById('respawn-btn').addEventListener('click', respawn);
+
+// ===== Вимикач звуку =====
+const soundBtn = document.getElementById('btn-sound');
+function applySoundState(on) {
+  soundBtn.textContent = on ? '🔊' : '🔇';
+  soundBtn.classList.toggle('muted', !on);
+}
+function toggleSound() { Sound.resume(); applySoundState(Sound.toggle()); }
+soundBtn.addEventListener('click', toggleSound);
+soundBtn.addEventListener('touchstart', (e) => { e.preventDefault(); toggleSound(); }, { passive: false });
+applySoundState(Sound.isEnabled());
 if (savedGame && Number.isInteger(savedGame.selectedSlot)) {
   selectSlot(savedGame.selectedSlot % HOTBAR_SIZE);
 }
