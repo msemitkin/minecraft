@@ -25,3 +25,13 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: '/code-review --comment'
+          claude_args: >-
+            --allowedTools
+            Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git blame*),
+            Bash(gh pr diff*),Bash(gh pr view*),Bash(gh pr list*),
+            mcp__github__create_review_comment,
+            mcp__github__create_pending_review,
+            mcp__github__submit_pending_review,
+            mcp__github__list_pull_request_files,
+            mcp__github__get_pull_request,
+            Read,Glob,Grep
