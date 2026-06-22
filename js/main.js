@@ -17,6 +17,9 @@ const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4,
 const FLOW3 = 9, FLOW2 = 10, FLOW1 = 11, TNT = 12;
 // Руди (генеруються в камені, добуваються та ставляться як декоративні блоки)
 const COAL = 13, IRON = 14, GOLD = 15, DIAMOND = 16;
+// Смолоскип — особливий «предмет», що не зберігається у воксельній сітці:
+// він ставиться окремою сутністю (модель + світло), тож не належить чанку.
+const TORCH = 17;
 
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
@@ -24,18 +27,19 @@ const BLOCK_NAMES = {
   [TNT]: 'Динаміт',
   [COAL]: 'Вугільна руда', [IRON]: 'Залізна руда',
   [GOLD]: 'Золота руда', [DIAMOND]: 'Алмазна руда',
+  [TORCH]: 'Смолоскип',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
 const ALL_BLOCKS = [
   GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANK, WATER, TNT,
-  COAL, IRON, GOLD, DIAMOND,
+  COAL, IRON, GOLD, DIAMOND, TORCH,
 ];
 
 // Хотбар: 10 слотів швидкого доступу (клавіші 1–9 та 0).
 // Блоки, які не вмістилися, доступні через меню (Tab) і призначаються в слот.
 const HOTBAR_SIZE = 10;
-const DEFAULT_HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANK, WATER, TNT, COAL];
+const DEFAULT_HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANK, WATER, TNT, TORCH];
 
 const isWaterId = (id) => id === WATER || (id >= FLOW3 && id <= FLOW1);
 const isSolid = (id) => id !== AIR && !isWaterId(id);
@@ -187,6 +191,7 @@ function saveGame() {
       },
       timeOfDay,
       weather: { state: weatherState, timer: weatherTimer, intensity: weatherIntensity },
+      torches: [...torches.values()].map((t) => [t.x, t.y, t.z, t.face, t.dx, t.dz]),
       selectedSlot,
       hotbar: [...hotbar],
       soundOn: Sound.isEnabled(),
@@ -350,6 +355,11 @@ const Sound = (() => {
       tone({ freq: 150, dur: 0.4, type: 'triangle', gain: 0.18, slideTo: 50 });
     },
     fuse() { tone({ freq: 1400, dur: 0.06, type: 'square', gain: 0.05 }); },
+    // Смолоскип: м'яке потріскування полум'я (короткий відфільтрований шум)
+    torch(gain = 0.12) {
+      noise({ dur: 0.12, gain, type: 'highpass', freq: 1900, q: 0.6, attack: 0.002 });
+      noise({ dur: 0.07, gain: gain * 0.7, type: 'bandpass', freq: 900, q: 0.8 });
+    },
     mobHit() {
       noise({ dur: 0.14, gain: 0.2, type: 'bandpass', freq: 450, q: 1.2 });
       tone({ freq: 160, dur: 0.12, type: 'square', gain: 0.08, slideTo: 90 });
@@ -1525,6 +1535,7 @@ function trySpawnMob() {
   if (h <= SEA + 1) return;                     // не у воді й не на пляжі
   if (!isSolid(blockAt(x, h, z))) return;       // тверда опора
   if (isSolid(blockAt(x, h + 1, z)) || isSolid(blockAt(x, h + 2, z))) return; // є місце
+  if (torchNear(x + 0.5, h + 1, z + 0.5, 7)) return; // світло смолоскипа відлякує зомбі
   spawnMob(x + 0.5, h + 1.01, z + 0.5);
 }
 
@@ -1706,6 +1717,21 @@ function tryAttack() {
 // інакше — почати видобуток блока.
 function startBreakOrAttack() {
   if (tryAttack()) return;
+  // Зняти смолоскип, якщо дивимось на нього (клітинка перед блоком)
+  if (torches.size > 0) {
+    const hit = raycastBlock();
+    if (hit && hit.prev) {
+      const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+      if (torches.has(key)) {
+        spawnParticles(hit.prev[0] + 0.5, hit.prev[1] + 0.4, hit.prev[2] + 0.5, torchEmber, 6,
+          { radius: 0.2, speed: 1.4, upBias: 0.8, life: 0.5, size: 0.07, gravity: 6 });
+        Sound.torch(0.1);
+        removeTorch(key);
+        triggerSwing();
+        return;
+      }
+    }
+  }
   mining = true;
 }
 
@@ -1760,6 +1786,7 @@ function explode(cx, cy, cz) {
     }
   }
 
+  validateTorches();  // вибух міг знести опору або клітинки смолоскипів
   Sound.explosion();
   knockback(player, cx, cy, cz);
   for (const a of animals) knockback(a, cx, cy, cz);
@@ -1965,6 +1992,199 @@ function raycastBlock(maxDist = 6) {
   return null;
 }
 
+// ============================================================
+// Смолоскипи: процедурне джерело світла, що ставиться у світ
+// ============================================================
+// Смолоскип — окрема сутність (модель + динамічне світло + іскри), а не
+// воксельний блок: він не змінює сітку чанка й не блокує рух. Світять кілька
+// найближчих смолоскипів (пул точкових ламп), решта дає лише полум'я-білборд.
+const torches = new Map();             // "x,y,z" -> { x, y, z, face, dx, dz, group, tip, glow, mat, flick, ember }
+const TORCH_MAX = 256;                 // межа, щоб збереження не розросталося
+const TORCH_LIGHT_POOL = 6;            // скільки смолоскипів світять реально водночас
+const TORCH_LIGHT_RANGE = 30;          // далі за це лампа не призначається
+
+const torchGlowTex = makeGlowTexture('rgba(255,206,128,0.95)', 'rgba(255,140,40,0.4)');
+const torchEmber = new THREE.Color(0xff7a1a);
+
+// Пул точкових ламп: щокадру призначаються найближчим смолоскипам.
+// Лампи завжди присутні (керуємо лише яскравістю), щоб не перекомпільовувати
+// шейдер щоразу, як змінюється кількість активних смолоскипів.
+const torchLights = [];
+for (let i = 0; i < TORCH_LIGHT_POOL; i++) {
+  const l = new THREE.PointLight(0xffb060, 0, 9, 1.6);
+  scene.add(l);
+  torchLights.push(l);
+}
+
+// Модель: брунатна паличка + розжарений кінчик + м'яке гало-білборд
+function makeTorchModel() {
+  const g = new THREE.Group();
+  animalBox(g, 0.11, 0.5, 0.11, 0x6b4a2b, 0, 0.25, 0);          // держак
+  const tip = new THREE.Mesh(
+    new THREE.BoxGeometry(0.17, 0.17, 0.17),
+    new THREE.MeshLambertMaterial({ color: 0xffd070, emissive: 0xff7a1a, emissiveIntensity: 1 })
+  );
+  tip.position.set(0, 0.54, 0);
+  g.add(tip);
+  const glowMat = new THREE.SpriteMaterial({
+    map: torchGlowTex, transparent: true, depthWrite: false,
+    blending: THREE.AdditiveBlending, opacity: 0.9,
+  });
+  const glow = new THREE.Sprite(glowMat);
+  glow.scale.setScalar(1.3);
+  glow.position.set(0, 0.54, 0);
+  g.add(glow);
+  return { group: g, tip, glow, mat: glowMat };
+}
+
+// Куди дивиться опора смолоскипа (клітинка, що його тримає)
+function torchSupportCell(t) {
+  if (t.face === 'floor') return [t.x, t.y - 1, t.z];
+  return [t.x + t.dx, t.y, t.z + t.dz];
+}
+
+function torchKey(x, y, z) { return x + ',' + y + ',' + z; }
+
+// Створити смолоскип у клітинці (x,y,z). face: 'floor' | 'wall'; для стіни
+// dx/dz вказують на клітинку-опору. Повертає false, якщо не вдалося.
+function addTorch(x, y, z, face, dx = 0, dz = 0) {
+  const key = torchKey(x, y, z);
+  if (torches.has(key) || torches.size >= TORCH_MAX) return false;
+  const { group, tip, glow, mat } = makeTorchModel();
+  group.position.set(x + 0.5, y, z + 0.5);
+  if (face === 'wall') {
+    // Притулити основу до стіни й нахилити полум'я назовні від неї
+    group.position.x += dx * 0.28;
+    group.position.z += dz * 0.28;
+    group.position.y += 0.12;
+    group.rotation.z = dx * 0.5;
+    group.rotation.x = -dz * 0.5;
+  }
+  scene.add(group);
+  torches.set(key, { x, y, z, face, dx, dz, group, tip, glow, mat, flick: Math.random() * 6.28, ember: Math.random() });
+  return true;
+}
+
+function removeTorch(key) {
+  const t = torches.get(key);
+  if (!t) return;
+  scene.remove(t.group);
+  t.group.traverse((o) => {
+    if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
+    if (o.isSprite) o.material.dispose();
+  });
+  torches.delete(key);
+}
+
+// Зняти смолоскипи, що втратили опору або клітинку яких зайняв блок
+function validateTorches() {
+  if (torches.size === 0) return;
+  for (const [key, t] of torches) {
+    const [sx, sy, sz] = torchSupportCell(t);
+    const occupied = isSolid(blockAt(t.x, t.y, t.z));
+    const supported = isSolid(blockAt(sx, sy, sz));
+    if (occupied || !supported) {
+      spawnParticles(t.x + 0.5, t.y + 0.4, t.z + 0.5, torchEmber, 6,
+        { radius: 0.2, speed: 1.2, upBias: 0.8, life: 0.5, size: 0.07, gravity: 8 });
+      removeTorch(key);
+    }
+  }
+}
+
+// Чи є смолоскип у радіусі r від точки (для стримування спавну зомбі)
+function torchNear(x, y, z, r) {
+  if (torches.size === 0) return false;
+  const r2 = r * r;
+  for (const t of torches.values()) {
+    const dx = t.x + 0.5 - x, dy = t.y + 0.5 - y, dz = t.z + 0.5 - z;
+    if (dx * dx + dy * dy + dz * dz < r2) return true;
+  }
+  return false;
+}
+
+// Поставити смолоскип у клітинку перед прицілом (hit.prev), визначивши опору
+function placeTorch(hit) {
+  const [x, y, z] = hit.prev;
+  if (blockAt(x, y, z) !== AIR || torches.has(torchKey(x, y, z))) return false;
+  // Напрямок від клітинки смолоскипа до блока, по якому клікнули
+  const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
+  let ok = false;
+  if (sy === -1 && sx === 0 && sz === 0) {
+    ok = addTorch(x, y, z, 'floor');
+  } else if (sy === 0 && (Math.abs(sx) + Math.abs(sz)) === 1) {
+    ok = addTorch(x, y, z, 'wall', sx, sz);
+  } else if (isSolid(blockAt(x, y - 1, z))) {
+    // запасний варіант: підлога під клітинкою
+    ok = addTorch(x, y, z, 'floor');
+  }
+  if (ok) {
+    Sound.torch(0.16);
+    spawnParticles(x + 0.5, y + 0.55, z + 0.5, torchEmber, 6,
+      { radius: 0.15, speed: 1.4, upBias: 1.2, life: 0.5, size: 0.07, gravity: -2 });
+  }
+  return ok;
+}
+
+const _torchSorted = [];
+let torchCrackleTimer = 1.5;
+function updateTorches(dt) {
+  // Незалежне мерехтіння кожного полум'я
+  for (const t of torches.values()) {
+    t.flick += dt * (7 + Math.random() * 3);
+    const f = 0.78 + 0.22 * Math.sin(t.flick) + (Math.random() - 0.5) * 0.08;
+    t.tip.material.emissiveIntensity = 0.8 + f * 0.6;
+    t.mat.opacity = 0.55 + f * 0.4;
+    t.glow.scale.setScalar(1.15 + f * 0.35);
+    // Зрідка злітає іскра вгору
+    t.ember -= dt;
+    if (t.ember <= 0) {
+      t.ember = 0.5 + Math.random() * 1.2;
+      const ey = t.y + 0.66 + (t.face === 'wall' ? 0.12 : 0);
+      spawnParticles(t.x + 0.5, ey, t.z + 0.5, torchEmber, 1,
+        { radius: 0.05, speed: 0.5, upBias: 0.9, life: 0.7, size: 0.05, gravity: -1.5 });
+    }
+  }
+
+  // Призначити пул найближчих ламп
+  if (torches.size > 0) {
+    _torchSorted.length = 0;
+    for (const t of torches.values()) {
+      const dx = t.x + 0.5 - camera.position.x;
+      const dy = t.y + 0.5 - camera.position.y;
+      const dz = t.z + 0.5 - camera.position.z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < TORCH_LIGHT_RANGE * TORCH_LIGHT_RANGE) _torchSorted.push({ t, d2 });
+    }
+    _torchSorted.sort((a, b) => a.d2 - b.d2);
+    for (let i = 0; i < TORCH_LIGHT_POOL; i++) {
+      const l = torchLights[i];
+      if (i < _torchSorted.length) {
+        const t = _torchSorted[i].t;
+        const flick = 0.85 + 0.15 * Math.sin(t.flick * 1.3);
+        l.position.set(t.x + 0.5, t.y + 0.6, t.z + 0.5);
+        l.intensity = 1.5 * flick;
+      } else {
+        l.intensity = 0;
+      }
+    }
+    // Ледь чутне потріскування найближчого смолоскипа
+    torchCrackleTimer -= dt;
+    if (torchCrackleTimer <= 0) {
+      torchCrackleTimer = 1.4 + Math.random() * 2.5;
+      if (_torchSorted.length && _torchSorted[0].d2 < 64) Sound.torch(0.05);
+    }
+  } else {
+    for (const l of torchLights) l.intensity = 0;
+  }
+}
+
+// Відновити збережені смолоскипи (формат: [x, y, z, face, dx, dz])
+if (savedGame && Array.isArray(savedGame.torches)) {
+  for (const e of savedGame.torches) {
+    if (Array.isArray(e) && e.length >= 4) addTorch(e[0], e[1], e[2], e[3], e[4] || 0, e[5] || 0);
+  }
+}
+
 // ===== Поетапний видобуток =====
 let mining = false;                       // утримується кнопка руйнування
 const miningState = { key: null, progress: 0 };
@@ -2016,6 +2236,7 @@ function updateMining(dt, hit) {
       { radius: 0.45, speed: 3.5, upBias: 1.5, life: 0.7, size: 0.13 });
     Sound.breakBlock(id);
     setBlock(x, y, z, AIR);
+    validateTorches();  // міг зникнути блок-опора смолоскипа
     resetMining();
     return;
   }
@@ -2031,6 +2252,15 @@ function placeBlock() {
   triggerSwing();
   const hit = raycastBlock();
   if (!hit || !hit.prev) return;
+
+  const id = hotbar[selectedSlot];
+
+  // Смолоскип — особлива сутність: ставиться на опору, не змінює воксельну сітку
+  if (id === TORCH) {
+    placeTorch(hit);
+    return;
+  }
+
   const [x, y, z] = hit.prev;
   const target = blockAt(x, y, z);
   if (target !== AIR && !isWaterId(target)) return;
@@ -2042,12 +2272,12 @@ function placeBlock() {
   const overlapZ = z + 1 > p.z - PLAYER_W && z < p.z + PLAYER_W;
   if (overlapX && overlapY && overlapZ) return;
 
-  const id = hotbar[selectedSlot];
   setBlock(x, y, z, id);
   Sound.place(id);
   // Невеликий пил при встановленні блока
   spawnParticles(x + 0.5, y + 0.5, z + 0.5, blockColor(id), 6,
     { radius: 0.5, speed: 1.4, upBias: 0.3, life: 0.4, size: 0.1, gravity: 10 });
+  validateTorches();  // блок міг зайняти клітинку смолоскипа
 }
 
 // ===== Менеджмент чанків =====
@@ -2672,6 +2902,18 @@ function hideDeathScreen() {
 function drawBlockIcon(canvas, id) {
   canvas.width = TILE;
   canvas.height = TILE;
+  if (id === TORCH) {
+    // Процедурна іконка смолоскипа: держак + полум'я (без атласу)
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#6b4a2b';
+    ctx.fillRect(7, 7, 2, 8);          // держак
+    ctx.fillStyle = '#ff7a1a';
+    ctx.fillRect(6, 3, 4, 4);          // полум'я (зовнішнє)
+    ctx.fillStyle = '#ffd070';
+    ctx.fillRect(7, 4, 2, 2);          // ядро полум'я
+    return;
+  }
   const tile = BLOCK_TILES[id].side;
   canvas.getContext('2d').drawImage(
     atlasCanvas,
@@ -3093,6 +3335,7 @@ window.MCDebug = {
   get weather() { return { state: weatherState, intensity: +weatherIntensity.toFixed(2) }; },
   get mobs() { return mobs; },
   get player() { return player; },
+  get torches() { return torches.size; },
 };
 
 const clock = new THREE.Clock();
@@ -3111,6 +3354,7 @@ function animate() {
     updateAnimals(dt);
     updateMobs(dt);
     updateTnt(dt);
+    updateTorches(dt);
     updateParticles(dt);
     updateWeather(dt);
     waterTimer -= dt;
