@@ -372,6 +372,11 @@ const Sound = (() => {
       tone({ freq: 200, dur: 0.6, type: 'sawtooth', gain: 0.16, slideTo: 55, attack: 0.01 });
       noise({ dur: 0.3, gain: 0.12, type: 'lowpass', freq: 600, q: 0.7 });
     },
+    // Кріпер запалює ґніт: довге сичання — наростаючий відфільтрований шум
+    creeperHiss() {
+      noise({ dur: 1.1, gain: 0.28, type: 'highpass', freq: 2600, q: 0.5, attack: 0.25 });
+      noise({ dur: 1.1, gain: 0.14, type: 'bandpass', freq: 1400, q: 0.7, attack: 0.25 });
+    },
     eat() {
       // Два приглушені «хрусти» поспіль — звук жування
       noise({ dur: 0.09, gain: 0.16, type: 'lowpass', freq: 500, q: 0.8 });
@@ -1476,8 +1481,26 @@ const MOB_DESPAWN_DIST = 80;
 let dayNightSun = 1; // оновлюється в updateDayNight: 1 — полудень, -1 — північ
 
 const ZOMBIE_COLOR = new THREE.Color(0x4f7a44);
+const CREEPER_COLOR = new THREE.Color(0x5fa64d);
 const SMOKE_COLOR = new THREE.Color(0x4a4a4a);
 const mobs = [];
+
+// Будує модель кріпера: чотириногий зелений силует із характерним «обличчям».
+// Дивиться в -Z (як гравець при yaw = 0). Повертає пари ніг для анімації.
+function buildCreeper(g) {
+  const body = 0x5fa64d, dark = 0x3f7a35, face = 0x102008;
+  animalBox(g, 0.5, 0.78, 0.28, body, 0, 1.18, 0);          // тулуб
+  animalBox(g, 0.5, 0.5, 0.5, body, 0, 1.82, 0);            // голова
+  animalBox(g, 0.13, 0.13, 0.03, face, -0.12, 1.9, -0.255); // очі
+  animalBox(g, 0.13, 0.13, 0.03, face, 0.12, 1.9, -0.255);
+  animalBox(g, 0.1, 0.22, 0.03, face, 0, 1.74, -0.255);     // «ніс/рот»
+  // Чотири короткі лапи, пивот угорі (як у тварин)
+  const fl = animalLeg(g, 0.17, 0.42, dark, -0.15, 0.78, -0.18);
+  const fr = animalLeg(g, 0.17, 0.42, dark, 0.15, 0.78, -0.18);
+  const bl = animalLeg(g, 0.17, 0.42, dark, -0.15, 0.78, 0.18);
+  const br = animalLeg(g, 0.17, 0.42, dark, 0.15, 0.78, 0.18);
+  return { legs: [fl, fr, bl, br] };
+}
 
 // Будує гуманоїдну модель зомбі; повертає кінцівки для анімації.
 // Модель дивиться в -Z (як гравець при yaw = 0).
@@ -1496,29 +1519,32 @@ function buildZombie(g) {
   return { legs: [legL, legR], arms: [armL, armR] };
 }
 
-function spawnMob(x, y, z) {
+function spawnMob(x, y, z, type = 'zombie') {
   const group = new THREE.Group();
-  const { legs, arms } = buildZombie(group);
+  const isCreeper = type === 'creeper';
+  const built = isCreeper ? buildCreeper(group) : buildZombie(group);
   group.position.set(x, y, z);
   scene.add(group);
   const mats = [];
   group.traverse((o) => { if (o.isMesh) mats.push(o.material); });
   mobs.push({
-    group, legs, arms, mats,
+    group, type, legs: built.legs, arms: built.arms || null, mats,
     pos: new THREE.Vector3(x, y, z),
     vel: new THREE.Vector3(),
     yaw: Math.random() * Math.PI * 2,
     targetYaw: 0,
-    halfW: 0.3,
-    height: 1.9,
-    speed: 2.2,
+    halfW: isCreeper ? 0.28 : 0.3,
+    height: isCreeper ? 2.1 : 1.9,
+    speed: isCreeper ? 2.6 : 2.2,
     onGround: false,
     legPhase: 0,
-    health: 14,
+    health: isCreeper ? 10 : 14,
     hurt: 0,        // спалах при ударі (0..1)
     attackCD: 0,    // перезарядка атаки
     attackAnim: 0,  // мах руками при ударі
     burn: 0,        // час горіння під сонцем
+    fuse: 0,        // кріпер: час, що лишився до вибуху (0 — ґніт не горить)
+    detonated: false,
   });
 }
 
@@ -1535,8 +1561,9 @@ function trySpawnMob() {
   if (h <= SEA + 1) return;                     // не у воді й не на пляжі
   if (!isSolid(blockAt(x, h, z))) return;       // тверда опора
   if (isSolid(blockAt(x, h + 1, z)) || isSolid(blockAt(x, h + 2, z))) return; // є місце
-  if (torchNear(x + 0.5, h + 1, z + 0.5, 7)) return; // світло смолоскипа відлякує зомбі
-  spawnMob(x + 0.5, h + 1.01, z + 0.5);
+  if (torchNear(x + 0.5, h + 1, z + 0.5, 7)) return; // світло смолоскипа відлякує нечисть
+  // Десь третина нічної нечисті — кріпери (тихі підривники)
+  spawnMob(x + 0.5, h + 1.01, z + 0.5, Math.random() < 0.33 ? 'creeper' : 'zombie');
 }
 
 function removeMob(index) {
@@ -1548,9 +1575,16 @@ function removeMob(index) {
   mobs.splice(index, 1);
 }
 
+// Кріпер: дистанції запалу/розрядки ґноту та тривалість самого ґноту
+const CREEPER_IGNITE_DIST = 2.7;
+const CREEPER_DEFUSE_DIST = 4.2;
+const CREEPER_FUSE_TIME = 1.4;
+
 function updateMob(m, dt) {
-  // Удень зомбі займаються вогнем і швидко гинуть
-  if (dayNightSun > 0.15) {
+  const isCreeper = m.type === 'creeper';
+
+  // Удень зомбі займаються вогнем і швидко гинуть; кріпери — ні (загроза вдень)
+  if (!isCreeper && dayNightSun > 0.15) {
     m.burn += dt;
     if (Math.random() < dt * 7) {
       spawnParticles(m.pos.x, m.pos.y + 1.1, m.pos.z, SMOKE_COLOR, 1,
@@ -1572,7 +1606,29 @@ function updateMob(m, dt) {
   dyaw = ((dyaw + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
   m.yaw += dyaw * Math.min(1, dt * 6);
 
-  const moving = chase && distH > 1.0;
+  // Кріпер: запалює ґніт зблизька, завмирає й набрякає, потім вибухає.
+  // Якщо гравець відбіг — ґніт гасне, кріпер знову переслідує.
+  if (isCreeper && !player.dead) {
+    if (m.fuse > 0) {
+      if (distH > CREEPER_DEFUSE_DIST) {
+        m.fuse = 0;                                 // розрядка: гравець утік
+      } else {
+        m.fuse -= dt;
+        if (m.fuse <= 0) {                          // детонація
+          explode(m.pos.x, m.pos.y + 0.6, m.pos.z, 'creeper');
+          m.health = 0;
+          m.detonated = true;
+          return;
+        }
+      }
+    } else if (chase && distH < CREEPER_IGNITE_DIST) {
+      m.fuse = CREEPER_FUSE_TIME;                    // запал
+      Sound.creeperHiss();
+    }
+  }
+  const fusing = isCreeper && m.fuse > 0;
+
+  const moving = chase && distH > 1.0 && !fusing;
   const sp = moving ? m.speed : 0;
   m.vel.x = -Math.sin(m.yaw) * sp;
   m.vel.z = -Math.cos(m.yaw) * sp;
@@ -1589,32 +1645,55 @@ function updateMob(m, dt) {
   const bumpedZ = moveEntityAxis(m, 'z', m.vel.z * dt);
   if ((bumpedX || bumpedZ) && m.onGround && moving) m.vel.y = 7.5; // перестрибнути
 
-  // Атака при контакті
+  // Атака при контакті (лише зомбі; кріпер шкодить вибухом)
   if (m.attackCD > 0) m.attackCD -= dt;
-  const vOverlap = player.pos.y < m.pos.y + m.height &&
-                   player.pos.y + player.height > m.pos.y;
-  if (chase && distH < 1.2 && vOverlap && m.attackCD <= 0 && !player.dead) {
-    damagePlayer(3, 'zombie');
-    const k = distH || 1;
-    player.vel.x += (dx / k) * 4;
-    player.vel.z += (dz / k) * 4;
-    player.vel.y += 3;
-    m.attackCD = 1.0;
-    m.attackAnim = 1;
+  if (!isCreeper) {
+    const vOverlap = player.pos.y < m.pos.y + m.height &&
+                     player.pos.y + player.height > m.pos.y;
+    if (chase && distH < 1.2 && vOverlap && m.attackCD <= 0 && !player.dead) {
+      damagePlayer(3, 'zombie');
+      const k = distH || 1;
+      player.vel.x += (dx / k) * 4;
+      player.vel.z += (dz / k) * 4;
+      player.vel.y += 3;
+      m.attackCD = 1.0;
+      m.attackAnim = 1;
+    }
   }
 
-  // Анімація ніг і рук
+  // Анімація ніг (і рук у зомбі)
   if (moving && (m.onGround || inWater)) m.legPhase += dt * 8;
   const legSwing = Math.sin(m.legPhase) * 0.5 * (moving ? 1 : 0);
-  m.legs[0].rotation.x = legSwing;
-  m.legs[1].rotation.x = -legSwing;
-  if (m.attackAnim > 0) m.attackAnim = Math.max(0, m.attackAnim - dt * 3);
-  const armBase = -1.35;                         // витягнуті вперед
-  const armSwing = Math.sin(m.legPhase) * 0.18 + m.attackAnim * 0.6;
-  m.arms[0].rotation.x = armBase - armSwing;
-  m.arms[1].rotation.x = armBase + armSwing;
+  if (isCreeper) {
+    // Чотири лапи: передня й задня діагоналі гойдаються в протифазі
+    m.legs[0].rotation.x = legSwing;
+    m.legs[1].rotation.x = -legSwing;
+    m.legs[2].rotation.x = -legSwing;
+    m.legs[3].rotation.x = legSwing;
+  } else {
+    m.legs[0].rotation.x = legSwing;
+    m.legs[1].rotation.x = -legSwing;
+    if (m.attackAnim > 0) m.attackAnim = Math.max(0, m.attackAnim - dt * 3);
+    const armBase = -1.35;                       // витягнуті вперед
+    const armSwing = Math.sin(m.legPhase) * 0.18 + m.attackAnim * 0.6;
+    m.arms[0].rotation.x = armBase - armSwing;
+    m.arms[1].rotation.x = armBase + armSwing;
+  }
 
-  // Червоний спалах при отриманні удару
+  // Кріпер під час ґноту набрякає й блимає білим у наростаючому ритмі
+  if (isCreeper) {
+    if (m.fuse > 0) {
+      const k = 1 - m.fuse / CREEPER_FUSE_TIME;       // 0 → 1 до вибуху
+      m.group.scale.setScalar(1 + k * 0.35);
+      const blink = Math.sin(k * k * 40) > 0 ? 1 : 0; // частішає до кінця
+      for (const mat of m.mats) mat.emissive.setRGB(blink, blink, blink * 0.7);
+    } else if (m.group.scale.x !== 1) {
+      m.group.scale.setScalar(1);
+      for (const mat of m.mats) mat.emissive.setRGB(0, 0, 0);
+    }
+  }
+
+  // Червоний спалах при отриманні удару (перекриває блимання ґноту)
   if (m.hurt > 0) {
     m.hurt = Math.max(0, m.hurt - dt * 3);
     for (const mat of m.mats) mat.emissive.setRGB(m.hurt * 0.6, 0, 0);
@@ -1636,7 +1715,7 @@ function updateMobs(dt) {
   if (mobs.length > 0) {
     groanTimer -= dt;
     if (groanTimer <= 0) {
-      const near = mobs.some((m) => m.pos.distanceTo(player.pos) < 22);
+      const near = mobs.some((m) => m.type !== 'creeper' && m.pos.distanceTo(player.pos) < 22);
       if (near) Sound.mobGroan();
       groanTimer = 2.5 + Math.random() * 4;
     }
@@ -1644,9 +1723,13 @@ function updateMobs(dt) {
   for (let i = mobs.length - 1; i >= 0; i--) {
     const m = mobs[i];
     if (m.health <= 0) {
-      spawnParticles(m.pos.x, m.pos.y + 0.9, m.pos.z, ZOMBIE_COLOR, 16,
-        { radius: 0.4, speed: 3, upBias: 1.2, life: 0.7, size: 0.13 });
-      Sound.mobDeath();
+      if (!m.detonated) {                            // кріпер, що вибухнув, уже дав ефекти
+        const isCreeper = m.type === 'creeper';
+        spawnParticles(m.pos.x, m.pos.y + 0.9, m.pos.z,
+          isCreeper ? CREEPER_COLOR : ZOMBIE_COLOR, 16,
+          { radius: 0.4, speed: 3, upBias: 1.2, life: 0.7, size: 0.13 });
+        Sound.mobDeath();
+      }
       removeMob(i);
       continue;
     }
@@ -1767,7 +1850,7 @@ function knockback(entity, cx, cy, cz) {
   entity.vel.y += Math.abs(dir.y) * power * 0.5 + power * 0.4;
 }
 
-function explode(cx, cy, cz) {
+function explode(cx, cy, cz, cause = 'tnt') {
   const r = Math.ceil(TNT_RADIUS);
   const bx = Math.floor(cx), by = Math.floor(cy), bz = Math.floor(cz);
   for (let x = bx - r; x <= bx + r; x++) {
@@ -1798,7 +1881,7 @@ function explode(cx, cy, cz) {
     player.pos.z - cz
   );
   if (pd < TNT_RADIUS + 2) {
-    damagePlayer(Math.ceil((1 - pd / (TNT_RADIUS + 2)) * 14), 'tnt');
+    damagePlayer(Math.ceil((1 - pd / (TNT_RADIUS + 2)) * 14), cause);
   }
 
   // Спалах вибуху
@@ -2886,6 +2969,7 @@ const DEATH_CAUSES = {
   drown: 'Потонув',
   tnt: 'Підірвався на динаміті',
   zombie: 'Розтерзаний зомбі',
+  creeper: 'Підірваний кріпером',
   starve: 'Помер від голоду',
 };
 
@@ -3324,6 +3408,17 @@ window.MCDebug = {
       spawnMob(x + 0.5, h + 1.01, z + 0.5);
     }
     return mobs.length;
+  },
+  spawnCreeper: (n = 1) => {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = 4 + Math.random() * 4;
+      const x = Math.floor(player.pos.x + Math.cos(a) * d);
+      const z = Math.floor(player.pos.z + Math.sin(a) * d);
+      const h = heightAt(x, z);
+      spawnMob(x + 0.5, h + 1.01, z + 0.5, 'creeper');
+    }
+    return mobs.filter((m) => m.type === 'creeper').length;
   },
   setWeather: (s) => {
     if (s !== 'rain' && s !== 'snow' && s !== 'clear') return 'use "rain" | "snow" | "clear"';
