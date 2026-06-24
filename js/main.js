@@ -20,6 +20,9 @@ const COAL = 13, IRON = 14, GOLD = 15, DIAMOND = 16;
 // Смолоскип — особливий «предмет», що не зберігається у воксельній сітці:
 // він ставиться окремою сутністю (модель + світло), тож не належить чанку.
 const TORCH = 17;
+// Насіння — теж особливий «предмет»-сутність: садиться на траву/землю й
+// проростає окремою сутністю-посівом (грядка), не змінюючи воксельну сітку.
+const SEEDS = 18;
 
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
@@ -27,13 +30,13 @@ const BLOCK_NAMES = {
   [TNT]: 'Динаміт',
   [COAL]: 'Вугільна руда', [IRON]: 'Залізна руда',
   [GOLD]: 'Золота руда', [DIAMOND]: 'Алмазна руда',
-  [TORCH]: 'Смолоскип',
+  [TORCH]: 'Смолоскип', [SEEDS]: 'Насіння',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
 const ALL_BLOCKS = [
   GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANK, WATER, TNT,
-  COAL, IRON, GOLD, DIAMOND, TORCH,
+  COAL, IRON, GOLD, DIAMOND, TORCH, SEEDS,
 ];
 
 // Хотбар: 10 слотів швидкого доступу (клавіші 1–9 та 0).
@@ -192,6 +195,7 @@ function saveGame() {
       timeOfDay,
       weather: { state: weatherState, timer: weatherTimer, intensity: weatherIntensity },
       torches: [...torches.values()].map((t) => [t.x, t.y, t.z, t.face, t.dx, t.dz]),
+      crops: [...crops.values()].map((c) => [c.x, c.y, c.z, c.stage, +c.growth.toFixed(2)]),
       selectedSlot,
       hotbar: [...hotbar],
       soundOn: Sound.isEnabled(),
@@ -1800,8 +1804,8 @@ function tryAttack() {
 // інакше — почати видобуток блока.
 function startBreakOrAttack() {
   if (tryAttack()) return;
-  // Зняти смолоскип, якщо дивимось на нього (клітинка перед блоком)
-  if (torches.size > 0) {
+  // Зняти смолоскип або зібрати посів, якщо дивимось на нього (клітинка перед блоком)
+  if (torches.size > 0 || crops.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -1810,6 +1814,12 @@ function startBreakOrAttack() {
           { radius: 0.2, speed: 1.4, upBias: 0.8, life: 0.5, size: 0.07, gravity: 6 });
         Sound.torch(0.1);
         removeTorch(key);
+        triggerSwing();
+        return;
+      }
+      const crop = crops.get(key);
+      if (crop) {
+        harvestCrop(crop);
         triggerSwing();
         return;
       }
@@ -1870,6 +1880,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   }
 
   validateTorches();  // вибух міг знести опору або клітинки смолоскипів
+  validateCrops();    // ... і опору/клітинки посівів
   Sound.explosion();
   knockback(player, cx, cy, cz);
   for (const a of animals) knockback(a, cx, cy, cz);
@@ -2268,6 +2279,169 @@ if (savedGame && Array.isArray(savedGame.torches)) {
   }
 }
 
+// ============================================================
+// Землеробство: грядки та посіви (окрема сутність, як смолоскипи)
+// ============================================================
+const crops = new Map();               // "x,y,z" -> { x, y, z, stage, growth, group, mat, phase }
+const CROP_MAX = 512;                   // межа, щоб збереження не розросталося
+const CROP_STAGES = 5;                  // 0..4; 4 — дозрілий колос
+const CROP_GROW_TIME = 11;              // секунд на стадію за повного сонця
+const WHEAT_FOOD = 2;                   // скільки їжі дає зібраний дозрілий колос
+const CROP_HEIGHTS = [0.22, 0.4, 0.58, 0.78, 0.96]; // висота моделі на кожній стадії
+const cropSupportable = (id) => id === GRASS || id === DIRT;
+const cropKey = (x, y, z) => x + ',' + y + ',' + z;
+
+// П'ять процедурних текстур стадій (паросток → золотий колос), без атласу
+const cropTextures = [];
+function makeCropTextures() {
+  const blades = [3, 4, 5, 6, 7];
+  const heights = [4, 7, 10, 13, 15];
+  for (let s = 0; s < CROP_STAGES; s++) {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = TILE;
+    const ctx = cv.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    const ripe = s / (CROP_STAGES - 1);
+    const r = Math.round(95 + ripe * 120);   // зелений → золотий
+    const g = Math.round(174 - ripe * 44);
+    const b = Math.round(62 - ripe * 24);
+    const n = blades[s], h = heights[s];
+    for (let i = 0; i < n; i++) {
+      const x = Math.round(1 + (i + 0.5) * (TILE - 2) / n);
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(x, TILE - h, 1, h);                 // стебло
+      if (h > 5) ctx.fillRect(x - 1, TILE - h + 3, 1, 2); // листочок
+      if (s >= CROP_STAGES - 2) {                      // золота голівка-колос
+        ctx.fillStyle = `rgb(${Math.min(255, r + 46)},${g + 34},${Math.max(0, b)})`;
+        ctx.fillRect(x - 1, TILE - h, 3, 3);
+      }
+    }
+    const tex = new THREE.CanvasTexture(cv);
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    cropTextures.push(tex);
+  }
+}
+makeCropTextures();
+
+// Спільна геометрія: дві перпендикулярні площини (хрест), основа в y=0
+const CROP_PLANE = new THREE.PlaneGeometry(0.9, 1);
+CROP_PLANE.translate(0, 0.5, 0);
+
+function makeCropModel() {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshLambertMaterial({
+    map: cropTextures[0], alphaTest: 0.45,
+    side: THREE.DoubleSide,
+  });
+  const p1 = new THREE.Mesh(CROP_PLANE, mat);
+  const p2 = new THREE.Mesh(CROP_PLANE, mat);
+  p2.rotation.y = Math.PI / 2;
+  g.add(p1, p2);
+  return { group: g, mat };
+}
+
+function applyCropStage(c) {
+  c.group.scale.y = CROP_HEIGHTS[c.stage];
+  c.mat.map = cropTextures[c.stage];
+  c.mat.needsUpdate = true;
+}
+
+function addCrop(x, y, z, stage = 0, growth = 0) {
+  const key = cropKey(x, y, z);
+  if (crops.has(key) || crops.size >= CROP_MAX) return false;
+  const { group, mat } = makeCropModel();
+  group.position.set(x + 0.5, y, z + 0.5);
+  scene.add(group);
+  const c = { x, y, z, stage: 0, growth: 0, group, mat, phase: Math.random() * 6.28 };
+  c.stage = THREE.MathUtils.clamp(Math.floor(stage), 0, CROP_STAGES - 1);
+  c.growth = Math.max(0, growth) || 0;
+  applyCropStage(c);
+  crops.set(key, c);
+  return true;
+}
+
+function removeCrop(key) {
+  const c = crops.get(key);
+  if (!c) return;
+  scene.remove(c.group);
+  c.mat.dispose();           // геометрія CROP_PLANE спільна — не чіпаємо
+  crops.delete(key);
+}
+
+// Зняти посіви, що втратили опору (траву/землю) або клітинку яких зайняв блок
+function validateCrops() {
+  if (crops.size === 0) return;
+  for (const [key, c] of crops) {
+    const occupied = isSolid(blockAt(c.x, c.y, c.z));
+    const supported = cropSupportable(blockAt(c.x, c.y - 1, c.z));
+    if (occupied || !supported) {
+      spawnParticles(c.x + 0.5, c.y + 0.3, c.z + 0.5, new THREE.Color(0x6cae3e), 6,
+        { radius: 0.25, speed: 1.6, upBias: 0.8, life: 0.5, size: 0.08, gravity: 8 });
+      removeCrop(key);
+    }
+  }
+}
+
+// Посадити насіння в клітинку перед прицілом (hit.prev) на траву/землю
+function plantCrop(hit) {
+  const [x, y, z] = hit.prev;
+  if (blockAt(x, y, z) !== AIR) return false;
+  if (crops.has(cropKey(x, y, z)) || torches.has(torchKey(x, y, z))) return false;
+  if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
+  if (!addCrop(x, y, z)) return false;
+  Sound.dig(GRASS);                                          // м'який звук грунту
+  spawnParticles(x + 0.5, y + 0.06, z + 0.5, new THREE.Color(0x6b4a2b), 7,
+    { radius: 0.3, speed: 1.5, upBias: 0.5, life: 0.45, size: 0.09, gravity: 10 });
+  return true;
+}
+
+function harvestCrop(c) {
+  const mature = c.stage >= CROP_STAGES - 1;
+  const color = new THREE.Color(mature ? 0xe7c45a : 0x6cae3e);
+  spawnParticles(c.x + 0.5, c.y + 0.4, c.z + 0.5, color, mature ? 12 : 6,
+    { radius: 0.3, speed: 2.2, upBias: 1.0, life: 0.6, size: 0.1, gravity: 6 });
+  Sound.breakBlock(LEAVES);                                  // шелест
+  if (mature) {
+    player.food = Math.min(FOOD_MAX, player.food + WHEAT_FOOD);
+    updateFoodHud();
+  }
+  removeCrop(cropKey(c.x, c.y, c.z));
+}
+
+let cropClock = 0;
+function updateCrops(dt) {
+  if (crops.size === 0) return;
+  cropClock += dt;
+  for (const c of crops.values()) {
+    // Легке погойдування під «вітром»
+    c.group.rotation.z = Math.sin(cropClock * 1.5 + c.phase) * 0.05;
+    if (c.stage >= CROP_STAGES - 1) continue;
+    // Світло: денне сонце (приглушене негодою); вночі трохи живить смолоскип
+    let light = Math.max(0, dayNightSun) * (1 - weatherDark * 0.5);
+    if (light < 0.25 && torchNear(c.x + 0.5, c.y + 0.5, c.z + 0.5, 7)) {
+      light = Math.max(light, 0.5);
+    }
+    if (light <= 0.02) continue;
+    c.growth += dt * light;
+    if (c.growth >= CROP_GROW_TIME) {
+      c.growth = 0;
+      c.stage++;
+      applyCropStage(c);
+      spawnParticles(c.x + 0.5, c.y + CROP_HEIGHTS[c.stage] * 0.6, c.z + 0.5,
+        new THREE.Color(0x9cd25a), 4,
+        { radius: 0.18, speed: 1.0, upBias: 1.0, life: 0.5, size: 0.06, gravity: -1 });
+    }
+  }
+}
+
+// Відновити збережені посіви (формат: [x, y, z, stage, growth])
+if (savedGame && Array.isArray(savedGame.crops)) {
+  for (const e of savedGame.crops) {
+    if (Array.isArray(e) && e.length >= 3) addCrop(e[0], e[1], e[2], e[3] || 0, e[4] || 0);
+  }
+}
+
 // ===== Поетапний видобуток =====
 let mining = false;                       // утримується кнопка руйнування
 const miningState = { key: null, progress: 0 };
@@ -2320,6 +2494,7 @@ function updateMining(dt, hit) {
     Sound.breakBlock(id);
     setBlock(x, y, z, AIR);
     validateTorches();  // міг зникнути блок-опора смолоскипа
+    validateCrops();    // ... або грунт під посівом
     resetMining();
     return;
   }
@@ -2344,6 +2519,12 @@ function placeBlock() {
     return;
   }
 
+  // Насіння — сутність-посів: садиться на траву/землю, не змінює воксельну сітку
+  if (id === SEEDS) {
+    plantCrop(hit);
+    return;
+  }
+
   const [x, y, z] = hit.prev;
   const target = blockAt(x, y, z);
   if (target !== AIR && !isWaterId(target)) return;
@@ -2361,6 +2542,7 @@ function placeBlock() {
   spawnParticles(x + 0.5, y + 0.5, z + 0.5, blockColor(id), 6,
     { radius: 0.5, speed: 1.4, upBias: 0.3, life: 0.4, size: 0.1, gravity: 10 });
   validateTorches();  // блок міг зайняти клітинку смолоскипа
+  validateCrops();    // ... або клітинку посіву
 }
 
 // ===== Менеджмент чанків =====
@@ -2998,6 +3180,21 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(7, 4, 2, 2);          // ядро полум'я
     return;
   }
+  if (id === SEEDS) {
+    // Процедурна іконка насіння: смужка грунту + паростки й зерна
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#6b4a2b';
+    ctx.fillRect(2, 11, 12, 4);        // грунт
+    ctx.fillStyle = '#6cae3e';
+    ctx.fillRect(5, 5, 1, 7);          // паростки
+    ctx.fillRect(8, 6, 1, 6);
+    ctx.fillRect(11, 5, 1, 7);
+    ctx.fillStyle = '#d9c178';
+    ctx.fillRect(4, 12, 2, 2);         // зерна
+    ctx.fillRect(9, 12, 2, 2);
+    return;
+  }
   const tile = BLOCK_TILES[id].side;
   canvas.getContext('2d').drawImage(
     atlasCanvas,
@@ -3431,6 +3628,27 @@ window.MCDebug = {
   get mobs() { return mobs; },
   get player() { return player; },
   get torches() { return torches.size; },
+  get crops() { return crops.size; },
+  // Миттєво довести всі посіви до зрілості (для тестів)
+  growCrops: () => {
+    for (const c of crops.values()) { c.stage = CROP_STAGES - 1; c.growth = 0; applyCropStage(c); }
+    return crops.size;
+  },
+  // Засіяти грядку поряд із гравцем (для тестів)
+  plantNear: (n = 4) => {
+    let planted = 0;
+    for (let i = 0; i < n; i++) {
+      const x = Math.floor(player.pos.x) + (i % 2) * 2 - 1;
+      const z = Math.floor(player.pos.z) + Math.floor(i / 2) * 2 - 1;
+      for (let y = Math.ceil(player.pos.y) + 2; y > Math.floor(player.pos.y) - 4; y--) {
+        if (cropSupportable(blockAt(x, y - 1, z)) && blockAt(x, y, z) === AIR) {
+          if (addCrop(x, y, z)) planted++;
+          break;
+        }
+      }
+    }
+    return planted;
+  },
 };
 
 const clock = new THREE.Clock();
@@ -3450,6 +3668,7 @@ function animate() {
     updateMobs(dt);
     updateTnt(dt);
     updateTorches(dt);
+    updateCrops(dt);
     updateParticles(dt);
     updateWeather(dt);
     waterTimer -= dt;
