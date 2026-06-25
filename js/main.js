@@ -896,18 +896,23 @@ function makePickaxe() {
   const handle = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.62, 0.07), handleMat);
   g.add(handle);
 
-  // Голівка кирки: поперечка + два загнутих «дзьоби»
+  // Голівка кирки: поперечка з двома загнутими «дзьобами». Повертаємо її навколо
+  // вертикалі, щоб передній дзьоб дивився на блок (углиб екрана), а не широким
+  // боком — раніше кирка «била боком».
+  const headGroup = new THREE.Group();
+  headGroup.position.set(0, 0.3, 0);
+  headGroup.rotation.y = 0.8;
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.09, 0.09), headMat);
-  head.position.set(0, 0.3, 0);
-  g.add(head);
-  const tipL = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.08, 0.08), headMat);
-  tipL.position.set(-0.25, 0.26, 0);
-  tipL.rotation.z = 0.5;
-  g.add(tipL);
-  const tipR = tipL.clone();
-  tipR.position.x = 0.25;
-  tipR.rotation.z = -0.5;
-  g.add(tipR);
+  headGroup.add(head);
+  const tip = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 0.08), headMat);
+  tip.position.set(0.26, -0.03, 0);
+  tip.rotation.z = 0.5;                               // передній дзьоб, загнутий донизу
+  headGroup.add(tip);
+  const tip2 = tip.clone();
+  tip2.position.x = -0.26;
+  tip2.rotation.z = -0.5;                             // задній дзьоб
+  headGroup.add(tip2);
+  g.add(headGroup);
 
   return g;
 }
@@ -925,18 +930,24 @@ viewScene.add(viewModel);
 function makeBowView() {
   const g = new THREE.Group();
   const wood = new THREE.MeshLambertMaterial({ color: 0x7a4a22 });
+  // Дуга у вертикальній площині Y-Z (вздовж прицілу): її видно з ребра збоку,
+  // опуклістю вперед (-Z), а відкритою хордою — до гравця (+Z)
+  const frame = new THREE.Group();
   const limb = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.022, 6, 18, Math.PI * 1.25), wood);
-  limb.rotation.z = -Math.PI * 1.25 / 2;             // симетрична дуга, опуклістю вправо
-  g.add(limb);
-  const string = new THREE.Mesh(
-    new THREE.BoxGeometry(0.006, 0.56, 0.006),
-    new THREE.MeshBasicMaterial({ color: 0xe8e8e8 })
-  );
-  string.position.x = -0.11;                         // хорда дуги (ліворуч)
-  g.add(string);
+  limb.rotation.z = -Math.PI * 1.25 / 2;             // симетрична дуга, опуклістю в +X
+  frame.add(limb);
+  frame.rotation.y = Math.PI / 2;                    // площину дуги повертаємо в Y-Z (+X -> -Z)
+  g.add(frame);
+  // Тятива — два відрізки від кінців дуги до точки накладання стріли; під час
+  // натягу та точка відходить назад і тятива згинається в «галочку»
+  const stringMat = new THREE.MeshBasicMaterial({ color: 0xe8e8e8 });
+  const stringTop = new THREE.Mesh(new THREE.BoxGeometry(0.006, 1, 0.006), stringMat);
+  const stringBot = new THREE.Mesh(new THREE.BoxGeometry(0.006, 1, 0.006), stringMat);
+  g.add(stringTop);
+  g.add(stringBot);
   // Накладена стріла: вістрям уперед (-Z у viewCamera)
   const nock = new THREE.Group();
-  nock.position.x = -0.11;
+  nock.position.z = BOW_NOCK_Z;
   const shaft = new THREE.Mesh(
     new THREE.CylinderGeometry(0.013, 0.013, 0.46, 5),
     new THREE.MeshLambertMaterial({ color: 0xc9a66b })
@@ -952,7 +963,30 @@ function makeBowView() {
   tip.position.z = -0.5;
   nock.add(tip);
   g.add(nock);
-  return { group: g, nock };
+  return { group: g, nock, stringTop, stringBot };
+}
+
+// Кінці дуги (точки кріплення тятиви) та позиція накладеної стріли у спокої
+const BOW_TIP_Y = 0.277;
+const BOW_TIP_Z = 0.115;
+const BOW_NOCK_Z = 0.11;
+
+// Розтягнути тонкий відрізок-«коробку» (висотою 1 по Y) між точками A та B
+const _segDir = new THREE.Vector3();
+const _segUp = new THREE.Vector3(0, 1, 0);
+function stretchSegment(seg, ax, ay, az, bx, by, bz) {
+  _segDir.set(bx - ax, by - ay, bz - az);
+  const len = _segDir.length() || 1e-4;
+  seg.position.set(ax + _segDir.x * 0.5, ay + _segDir.y * 0.5, az + _segDir.z * 0.5);
+  seg.quaternion.setFromUnitVectors(_segUp, _segDir.divideScalar(len));
+  seg.scale.set(1, len, 1);
+}
+
+// Перерахувати тятиву під поточний натяг: верхній і нижній відрізки сходяться
+// в точці накладання стріли (зміщеній назад на drawZ)
+function updateBowString(drawZ) {
+  stretchSegment(bowView.stringTop, 0, BOW_TIP_Y, BOW_TIP_Z, 0, 0, drawZ);
+  stretchSegment(bowView.stringBot, 0, -BOW_TIP_Y, BOW_TIP_Z, 0, 0, drawZ);
 }
 
 const bowView = makeBowView();
@@ -961,6 +995,7 @@ const BOW_VIEW_ROT = new THREE.Euler(0.05, -0.12, 0);
 bowView.group.position.copy(BOW_VIEW_POS);
 bowView.group.rotation.copy(BOW_VIEW_ROT);
 bowView.group.visible = false;
+updateBowString(BOW_NOCK_Z);        // тятива у позі спокою (пряма)
 viewScene.add(bowView.group);
 
 // Стан маху киркою
@@ -982,7 +1017,9 @@ function updateViewModel(dt) {
   bowView.group.visible = holdingBow;
   if (holdingBow) {
     const c = bow.drawing ? bow.charge : 0;               // 0..1 натяг
-    bowView.nock.position.z = c * 0.2;                    // стріла й тятива відходять назад
+    const drawZ = BOW_NOCK_Z + c * 0.2;                   // точка накладання відходить назад
+    bowView.nock.position.z = drawZ;                      // стріла йде разом із тятивою
+    updateBowString(drawZ);                               // тятива згинається в «галочку»
     bowView.group.position.set(
       BOW_VIEW_POS.x - c * 0.07,
       BOW_VIEW_POS.y + c * 0.05,
