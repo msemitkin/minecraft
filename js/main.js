@@ -23,6 +23,9 @@ const TORCH = 17;
 // Насіння — теж особливий «предмет»-сутність: садиться на траву/землю й
 // проростає окремою сутністю-посівом (грядка), не змінюючи воксельну сітку.
 const SEEDS = 18;
+// Лук — особливий «предмет»: ним не ставлять блок, а натягують (утримуючи ЛКМ)
+// і пускають стрілу-снаряд, що летить із гравітацією та б'є істот на відстані.
+const BOW = 19;
 
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
@@ -30,13 +33,13 @@ const BLOCK_NAMES = {
   [TNT]: 'Динаміт',
   [COAL]: 'Вугільна руда', [IRON]: 'Залізна руда',
   [GOLD]: 'Золота руда', [DIAMOND]: 'Алмазна руда',
-  [TORCH]: 'Смолоскип', [SEEDS]: 'Насіння',
+  [TORCH]: 'Смолоскип', [SEEDS]: 'Насіння', [BOW]: 'Лук',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
 const ALL_BLOCKS = [
   GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANK, WATER, TNT,
-  COAL, IRON, GOLD, DIAMOND, TORCH, SEEDS,
+  COAL, IRON, GOLD, DIAMOND, TORCH, SEEDS, BOW,
 ];
 
 // Хотбар: 10 слотів швидкого доступу (клавіші 1–9 та 0).
@@ -380,6 +383,21 @@ const Sound = (() => {
     creeperHiss() {
       noise({ dur: 1.1, gain: 0.28, type: 'highpass', freq: 2600, q: 0.5, attack: 0.25 });
       noise({ dur: 1.1, gain: 0.14, type: 'bandpass', freq: 1400, q: 0.7, attack: 0.25 });
+    },
+    // Лук натягують: тиха висхідна «рипа» дерева й тятиви
+    bowDraw() {
+      tone({ freq: 320, dur: 0.45, type: 'triangle', gain: 0.07, slideTo: 520, attack: 0.05 });
+      noise({ dur: 0.2, gain: 0.04, type: 'bandpass', freq: 1600, q: 0.6, attack: 0.05 });
+    },
+    // Постріл: різкий клац тятиви + свист стріли (сила задає гучність)
+    bowShoot(power = 1) {
+      tone({ freq: 700, dur: 0.1, type: 'square', gain: 0.06 + power * 0.06, slideTo: 240 });
+      noise({ dur: 0.18, gain: 0.05 + power * 0.08, type: 'highpass', freq: 2200, q: 0.5 });
+    },
+    // Стріла встромляється у блок: глухий «тук»
+    arrowHit() {
+      noise({ dur: 0.1, gain: 0.16, type: 'bandpass', freq: 380, q: 1.4 });
+      tone({ freq: 140, dur: 0.1, type: 'sine', gain: 0.08, slideTo: 80 });
     },
     eat() {
       // Два приглушені «хрусти» поспіль — звук жування
@@ -901,6 +919,50 @@ viewModel.position.copy(VIEW_BASE_POS);
 viewModel.rotation.copy(VIEW_BASE_ROT);
 viewScene.add(viewModel);
 
+// ===== Модель лука від першої особи =====
+// Дуга з тора, тятива та накладена стріла; під час натягу стріла й тятива
+// відходять до гравця, а лук трохи піднімається до прицілу.
+function makeBowView() {
+  const g = new THREE.Group();
+  const wood = new THREE.MeshLambertMaterial({ color: 0x7a4a22 });
+  const limb = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.022, 6, 18, Math.PI * 1.25), wood);
+  limb.rotation.z = -Math.PI * 1.25 / 2;             // симетрична дуга, опуклістю вправо
+  g.add(limb);
+  const string = new THREE.Mesh(
+    new THREE.BoxGeometry(0.006, 0.56, 0.006),
+    new THREE.MeshBasicMaterial({ color: 0xe8e8e8 })
+  );
+  string.position.x = -0.11;                         // хорда дуги (ліворуч)
+  g.add(string);
+  // Накладена стріла: вістрям уперед (-Z у viewCamera)
+  const nock = new THREE.Group();
+  nock.position.x = -0.11;
+  const shaft = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.013, 0.013, 0.46, 5),
+    new THREE.MeshLambertMaterial({ color: 0xc9a66b })
+  );
+  shaft.rotation.x = Math.PI / 2;
+  shaft.position.z = -0.23;
+  nock.add(shaft);
+  const tip = new THREE.Mesh(
+    new THREE.ConeGeometry(0.03, 0.08, 5),
+    new THREE.MeshLambertMaterial({ color: 0x6b6f78 })
+  );
+  tip.rotation.x = -Math.PI / 2;
+  tip.position.z = -0.5;
+  nock.add(tip);
+  g.add(nock);
+  return { group: g, nock };
+}
+
+const bowView = makeBowView();
+const BOW_VIEW_POS = new THREE.Vector3(0.3, -0.3, -0.72);
+const BOW_VIEW_ROT = new THREE.Euler(0.05, -0.12, 0);
+bowView.group.position.copy(BOW_VIEW_POS);
+bowView.group.rotation.copy(BOW_VIEW_ROT);
+bowView.group.visible = false;
+viewScene.add(bowView.group);
+
 // Стан маху киркою
 const swing = { active: false, t: 0 };
 const SWING_DUR = 0.28;
@@ -914,6 +976,23 @@ function triggerSwing() {
 let bobPhase = 0;
 
 function updateViewModel(dt) {
+  // Перемикання між киркою та луком за активним предметом хотбара
+  const holdingBow = hotbar[selectedSlot] === BOW;
+  viewModel.visible = !holdingBow;
+  bowView.group.visible = holdingBow;
+  if (holdingBow) {
+    const c = bow.drawing ? bow.charge : 0;               // 0..1 натяг
+    bowView.nock.position.z = c * 0.2;                    // стріла й тятива відходять назад
+    bowView.group.position.set(
+      BOW_VIEW_POS.x - c * 0.07,
+      BOW_VIEW_POS.y + c * 0.05,
+      BOW_VIEW_POS.z + c * 0.04
+    );
+    // Легке тремтіння повністю натягнутого лука
+    if (c > 0.98) bowView.group.position.x += Math.sin(bobPhase * 8) * 0.004;
+    return;
+  }
+
   // Прогрес маху; під час видобутку — безперервно
   if (swing.active) {
     swing.t += dt / SWING_DUR;
@@ -1158,6 +1237,7 @@ function die() {
   player.dead = true;
   player.vel.set(0, 0, 0);
   mining = false;
+  cancelBowDraw();
   resetMining();
   if (isLocked()) document.exitPointerLock();
   showDeathScreen(player.lastCause);
@@ -1772,23 +1852,32 @@ function tryAttack() {
   for (const a of animals) consider(a, true);
   if (!best) return false;
 
-  best.health -= 5;
-  best.hurt = 1;
-  const dx = best.pos.x - player.pos.x, dz = best.pos.z - player.pos.z;
-  const d = Math.hypot(dx, dz) || 1;
-  best.vel.x += (dx / d) * 8;
-  best.vel.z += (dz / d) * 8;
-  best.vel.y += 4;
   triggerSwing();
+  // Напрям відкидання — від гравця до істоти, по горизонталі
+  const dx = best.pos.x - player.pos.x, dz = best.pos.z - player.pos.z;
+  damageEntity(best, bestIsAnimal, 5, dx, dz, 4);
+  return true;
+}
 
-  if (bestIsAnimal) {
-    best.panic = 4;                               // тварина кидається тікати
-    if (best.health <= 0) {
-      player.food = Math.min(FOOD_MAX, player.food + best.foodValue);
-      spawnParticles(best.pos.x, best.pos.y + best.height * 0.5, best.pos.z,
+// Спільне завдання шкоди істоті (зомбі/кріпер або тварина) ударом чи стрілою.
+// Зомбі/кріпери гинуть у updateMobs (там ефекти смерті); тварини — тут, лишаючи
+// сире м'ясо. (kx,kz) — горизонтальний напрям відкидання, kup — вертикальний поштовх.
+function damageEntity(entity, isAnimal, dmg, kx, kz, kup) {
+  entity.health -= dmg;
+  entity.hurt = 1;
+  const d = Math.hypot(kx, kz) || 1;
+  entity.vel.x += (kx / d) * 8;
+  entity.vel.z += (kz / d) * 8;
+  entity.vel.y += kup;
+
+  if (isAnimal) {
+    entity.panic = 4;                              // тварина кидається тікати
+    if (entity.health <= 0) {
+      player.food = Math.min(FOOD_MAX, player.food + entity.foodValue);
+      spawnParticles(entity.pos.x, entity.pos.y + entity.height * 0.5, entity.pos.z,
         MEAT_COLOR, 12, { radius: 0.35, speed: 2.6, upBias: 1.1, life: 0.7, size: 0.12 });
       Sound.mobDeath();
-      const idx = animals.indexOf(best);
+      const idx = animals.indexOf(entity);
       if (idx >= 0) removeAnimal(idx);
       updateFoodHud();
     } else {
@@ -1797,12 +1886,12 @@ function tryAttack() {
   } else {
     Sound.mobHit();
   }
-  return true;
 }
 
 // Спільний обробник ЛКМ / кнопки «добувати»: спершу удар по істоті,
 // інакше — почати видобуток блока.
 function startBreakOrAttack() {
+  if (hotbar[selectedSlot] === BOW) { startBowDraw(); return; }
   if (tryAttack()) return;
   // Зняти смолоскип або зібрати посів, якщо дивимось на нього (клітинка перед блоком)
   if (torches.size > 0 || crops.size > 0) {
@@ -1826,6 +1915,164 @@ function startBreakOrAttack() {
     }
   }
   mining = true;
+}
+
+// ============================================================
+// Лук і стріли: натягування лука та снаряди-стріли
+// ============================================================
+// Стріла — короткоживуча сутність-снаряд (як TNT/частинки): летить із
+// гравітацією, б'є істот на відстані й встромляється у блоки, не змінюючи
+// воксельну сітку. Стан натягу лука керує силою (швидкість + шкода).
+const arrows = [];
+const ARROW_MAX = 24;            // межа одночасних стріл у світі
+const ARROW_GRAVITY = 18;        // прискорення падіння стріли, бл/с²
+const ARROW_STUCK_LIFE = 12;     // секунд, поки встромлена стріла зникне
+const ARROW_FLY_LIFE = 8;        // секунд польоту до зникнення (промах)
+const ARROW_HIT_R = 0.45;        // радіус влучання стріли в істоту
+const BOW_DRAW_TIME = 0.85;      // секунд до повного натягу
+const BOW_MIN_POWER = 0.12;      // менший натяг — постріл не відбувається
+const _arrowDir = new THREE.Vector3();
+const _arrowFwd = new THREE.Vector3(0, 0, 1); // поздовжня вісь геометрії стріли
+
+// Спільні ресурси моделі стріли (геометрії/матеріали не дублюються на кожну стрілу)
+const ARROW_SHAFT_GEO = new THREE.CylinderGeometry(0.02, 0.02, 0.55, 5);
+ARROW_SHAFT_GEO.rotateX(Math.PI / 2);                       // уздовж +Z
+const ARROW_HEAD_GEO = new THREE.ConeGeometry(0.045, 0.13, 5);
+ARROW_HEAD_GEO.rotateX(Math.PI / 2);
+ARROW_HEAD_GEO.translate(0, 0, 0.33);
+const ARROW_FLETCH_GEO = new THREE.PlaneGeometry(0.11, 0.09);
+ARROW_FLETCH_GEO.translate(0, 0, -0.24);
+const ARROW_SHAFT_MAT = new THREE.MeshLambertMaterial({ color: 0xc9a66b });
+const ARROW_HEAD_MAT = new THREE.MeshLambertMaterial({ color: 0x6b6f78 });
+const ARROW_FLETCH_MAT = new THREE.MeshLambertMaterial({ color: 0xe2e2e2, side: THREE.DoubleSide });
+
+function makeArrowModel() {
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(ARROW_SHAFT_GEO, ARROW_SHAFT_MAT));
+  g.add(new THREE.Mesh(ARROW_HEAD_GEO, ARROW_HEAD_MAT));
+  const f1 = new THREE.Mesh(ARROW_FLETCH_GEO, ARROW_FLETCH_MAT);
+  const f2 = new THREE.Mesh(ARROW_FLETCH_GEO, ARROW_FLETCH_MAT);
+  f2.rotation.z = Math.PI / 2;
+  g.add(f1, f2);
+  return g;
+}
+
+function disposeArrow(a) {
+  scene.remove(a.group);                                    // спільні геометрії — не чіпаємо
+}
+
+function orientArrow(a) {
+  if (a.vel.lengthSq() < 1e-6) return;
+  _arrowDir.copy(a.vel).normalize();
+  a.group.quaternion.setFromUnitVectors(_arrowFwd, _arrowDir);
+}
+
+// Натяг лука (power 0..1) задає швидкість і шкоду стріли
+function spawnArrow(power) {
+  if (arrows.length >= ARROW_MAX) disposeArrow(arrows.shift());
+  camera.getWorldDirection(_arrowDir);
+  const speed = 22 + power * 30;                            // 22..52 бл/с
+  const group = makeArrowModel();
+  const a = {
+    group,
+    pos: new THREE.Vector3(
+      camera.position.x + _arrowDir.x * 0.5,
+      camera.position.y + _arrowDir.y * 0.5 - 0.06,
+      camera.position.z + _arrowDir.z * 0.5
+    ),
+    vel: _arrowDir.clone().multiplyScalar(speed),
+    life: 0,
+    stuck: false,
+    dmg: Math.round(3 + power * 5),                         // 3..8 (мілі-удар = 5)
+  };
+  group.position.copy(a.pos);
+  orientArrow(a);
+  scene.add(group);
+  arrows.push(a);
+  return a;
+}
+
+// Перевірити влучання стріли в найближчу істоту (зомбі/кріпер або тварину)
+function arrowHitEntity(a) {
+  const check = (e) => {
+    const dy = a.pos.y - (e.pos.y + e.height * 0.5);
+    if (Math.abs(dy) > e.height * 0.5 + ARROW_HIT_R) return false;
+    const dx = a.pos.x - e.pos.x, dz = a.pos.z - e.pos.z;
+    const r = ARROW_HIT_R + e.halfW;
+    return dx * dx + dz * dz <= r * r;
+  };
+  for (const m of mobs) {
+    if (check(m)) { damageEntity(m, false, a.dmg, a.vel.x, a.vel.z, 3); return true; }
+  }
+  for (const an of animals) {
+    if (check(an)) { damageEntity(an, true, a.dmg, a.vel.x, a.vel.z, 3); return true; }
+  }
+  return false;
+}
+
+function updateArrows(dt) {
+  for (let i = arrows.length - 1; i >= 0; i--) {
+    const a = arrows[i];
+    a.life += dt;
+    if (a.stuck) {
+      if (a.life > ARROW_STUCK_LIFE) { disposeArrow(a); arrows.splice(i, 1); }
+      continue;
+    }
+    a.vel.y -= ARROW_GRAVITY * dt;
+    // Рух дрібними підкроками, щоб швидка стріла не «прострілювала» блок/істоту
+    const steps = Math.max(1, Math.ceil(a.vel.length() * dt / 0.3));
+    let outcome = '';                                       // '' | 'entity' | 'block'
+    for (let s = 0; s < steps; s++) {
+      a.pos.x += a.vel.x * dt / steps;
+      a.pos.y += a.vel.y * dt / steps;
+      a.pos.z += a.vel.z * dt / steps;
+      if (arrowHitEntity(a)) { outcome = 'entity'; break; }
+      const bid = blockAt(Math.floor(a.pos.x), Math.floor(a.pos.y), Math.floor(a.pos.z));
+      if (isSolid(bid)) {
+        outcome = 'block';
+        Sound.arrowHit();
+        spawnParticles(a.pos.x, a.pos.y, a.pos.z, blockColor(bid), 4,
+          { radius: 0.18, speed: 1.6, upBias: 0.6, life: 0.4, size: 0.07, gravity: 10 });
+        break;
+      }
+    }
+    if (outcome === 'entity') {
+      disposeArrow(a); arrows.splice(i, 1);
+    } else if (outcome === 'block') {
+      a.stuck = true; a.life = 0;
+      a.group.position.copy(a.pos);
+    } else if (a.pos.y < -20 || a.life > ARROW_FLY_LIFE) {
+      disposeArrow(a); arrows.splice(i, 1);
+    } else {
+      a.group.position.copy(a.pos);
+      orientArrow(a);
+    }
+  }
+}
+
+// ===== Стан натягу лука =====
+const bow = { drawing: false, charge: 0 };
+
+function startBowDraw() {
+  if (bow.drawing) return;
+  bow.drawing = true;
+  bow.charge = 0;
+  Sound.bowDraw();
+}
+
+function cancelBowDraw() {
+  bow.drawing = false;
+  bow.charge = 0;
+}
+
+function releaseBow() {
+  if (!bow.drawing) return;
+  const power = bow.charge;
+  cancelBowDraw();
+  if (power < BOW_MIN_POWER) return;                        // ледь натягнутий — без пострілу
+  spawnArrow(power);
+  Sound.bowShoot(power);
+  triggerSwing();
 }
 
 // ============================================================
@@ -2507,6 +2754,7 @@ function updateMining(dt, hit) {
 }
 
 function placeBlock() {
+  if (hotbar[selectedSlot] === BOW) return;   // луком не ставлять блок
   triggerSwing();
   const hit = raycastBlock();
   if (!hit || !hit.prev) return;
@@ -3195,6 +3443,29 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(9, 12, 2, 2);
     return;
   }
+  if (id === BOW) {
+    // Процедурна іконка лука: дерев'яна дуга, тятива й накладена стріла
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.strokeStyle = '#8a5a2b';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(4, 8, 9, -Math.PI / 2.6, Math.PI / 2.6);  // дуга лука
+    ctx.stroke();
+    ctx.strokeStyle = '#e8e0d0';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(4, 1); ctx.lineTo(4, 15);              // тятива
+    ctx.stroke();
+    ctx.strokeStyle = '#d9c178';
+    ctx.beginPath();
+    ctx.moveTo(3, 8); ctx.lineTo(14, 8);              // древко стріли
+    ctx.stroke();
+    ctx.fillStyle = '#9099a3';
+    ctx.beginPath();                                   // вістря
+    ctx.moveTo(14, 6); ctx.lineTo(16, 8); ctx.lineTo(14, 10); ctx.fill();
+    return;
+  }
   const tile = BLOCK_TILES[id].side;
   canvas.getContext('2d').drawImage(
     atlasCanvas,
@@ -3345,6 +3616,7 @@ function exitMobileMode() {
   joy.x = joy.y = 0;
   keys['Space'] = false;
   mining = false;
+  cancelBowDraw();
   overlay.style.display = 'flex';
   hud.hidden = true;
   touchControls.hidden = true;
@@ -3371,6 +3643,7 @@ document.addEventListener('pointerlockchange', () => {
     touchControls.hidden = true;
   } else if (!mobilePlaying && !blockMenuOpen && !player.dead) {
     mining = false;
+    cancelBowDraw();
     overlay.style.display = 'flex';
     hud.hidden = true;
   }
@@ -3466,7 +3739,7 @@ bindTouchButton('btn-jump', () => { keys['Space'] = true; }, () => { keys['Space
 
 bindTouchButton('btn-break',
   () => { startBreakOrAttack(); },
-  () => { mining = false; });
+  () => { mining = false; releaseBow(); });
 
 bindTouchButton('btn-place', () => placeBlock());
 
@@ -3495,7 +3768,7 @@ document.addEventListener('mousedown', (e) => {
 });
 
 document.addEventListener('mouseup', (e) => {
-  if (e.button === 0) mining = false;
+  if (e.button === 0) { mining = false; releaseBow(); }
 });
 
 document.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -3629,6 +3902,15 @@ window.MCDebug = {
   get player() { return player; },
   get torches() { return torches.size; },
   get crops() { return crops.size; },
+  get arrows() { return arrows.length; },
+  // Випустити стрілу із заданою силою натягу (0..1) — для тестів лука
+  shootArrow: (power = 1) => {
+    spawnArrow(THREE.MathUtils.clamp(power, 0, 1));
+    Sound.bowShoot(power);
+    return arrows.length;
+  },
+  // Дати лук у поточний слот хотбара (зручно для тестів)
+  giveBow: () => { assignBlockToSlot(BOW); return BLOCK_NAMES[BOW]; },
   // Миттєво довести всі посіви до зрілості (для тестів)
   growCrops: () => {
     for (const c of crops.values()) { c.stage = CROP_STAGES - 1; c.growth = 0; applyCropStage(c); }
@@ -3669,6 +3951,8 @@ function animate() {
     updateTnt(dt);
     updateTorches(dt);
     updateCrops(dt);
+    if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
+    updateArrows(dt);
     updateParticles(dt);
     updateWeather(dt);
     waterTimer -= dt;
