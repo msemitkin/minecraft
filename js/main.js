@@ -1595,7 +1595,8 @@ function updateAnimals(dt) {
 }
 
 // ============================================================
-// Вороги: зомбі (з'являються вночі, переслідують і б'ють гравця)
+// Вороги (з'являються вночі): зомбі б'ють упритул, кріпери підриваються,
+// скелети тримають дистанцію й стріляють з лука
 // ============================================================
 const MOB_MAX = 6;
 const MOB_DESPAWN_DIST = 80;
@@ -1603,6 +1604,7 @@ let dayNightSun = 1; // оновлюється в updateDayNight: 1 — полу
 
 const ZOMBIE_COLOR = new THREE.Color(0x4f7a44);
 const CREEPER_COLOR = new THREE.Color(0x5fa64d);
+const SKELETON_COLOR = new THREE.Color(0xd8d6cc);
 const SMOKE_COLOR = new THREE.Color(0x4a4a4a);
 const mobs = [];
 
@@ -1640,10 +1642,45 @@ function buildZombie(g) {
   return { legs: [legL, legR], arms: [armL, armR] };
 }
 
+// Будує кістлявого скелета, що тримає лук у правій руці; повертає кінцівки.
+// Модель дивиться в -Z (як гравець при yaw = 0). Лук закріплено на правій руці,
+// тож під час пострілу (рука піднімається) дуга наводиться на ціль.
+function buildSkeleton(g) {
+  const bone = 0xd8d6cc, dark = 0x171712, bowCol = 0x8a5a2b;
+  animalBox(g, 0.34, 0.66, 0.2, bone, 0, 1.16, 0);          // тулуб (вузький)
+  animalBox(g, 0.42, 0.42, 0.42, bone, 0, 1.72, 0);         // голова-череп
+  animalBox(g, 0.12, 0.1, 0.03, dark, -0.1, 1.74, -0.215);  // очні западини
+  animalBox(g, 0.12, 0.1, 0.03, dark, 0.1, 1.74, -0.215);
+  // Тонкі кінцівки; руки витягнуті вперед, права тримає лук
+  const armL = animalLeg(g, 0.12, 0.6, bone, -0.27, 1.44, 0);
+  const armR = animalLeg(g, 0.12, 0.6, bone, 0.27, 1.44, 0);
+  const legL = animalLeg(g, 0.13, 0.78, bone, -0.1, 0.78, 0);
+  const legR = animalLeg(g, 0.13, 0.78, bone, 0.1, 0.78, 0);
+  // Лук кріпиться до правої руки (пивот руки вгорі — лук опускаємо до «кисті»)
+  const bowG = new THREE.Group();
+  const limb = new THREE.Mesh(
+    new THREE.TorusGeometry(0.26, 0.025, 5, 12, Math.PI * 1.25),
+    new THREE.MeshLambertMaterial({ color: bowCol })
+  );
+  limb.rotation.z = Math.PI / 2;                             // дуга у вертикалі
+  bowG.add(limb);
+  const string = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.006, 0.006, 0.46, 4),
+    new THREE.MeshLambertMaterial({ color: 0xe8e8e8 })
+  );
+  string.position.z = 0.13;
+  bowG.add(string);
+  bowG.position.set(0, -0.5, -0.16);                         // біля кисті, попереду
+  armR.add(bowG);
+  return { legs: [legL, legR], arms: [armL, armR] };
+}
+
 function spawnMob(x, y, z, type = 'zombie') {
   const group = new THREE.Group();
   const isCreeper = type === 'creeper';
-  const built = isCreeper ? buildCreeper(group) : buildZombie(group);
+  const isSkeleton = type === 'skeleton';
+  const built = isCreeper ? buildCreeper(group)
+    : isSkeleton ? buildSkeleton(group) : buildZombie(group);
   group.position.set(x, y, z);
   scene.add(group);
   const mats = [];
@@ -1656,16 +1693,18 @@ function spawnMob(x, y, z, type = 'zombie') {
     targetYaw: 0,
     halfW: isCreeper ? 0.28 : 0.3,
     height: isCreeper ? 2.1 : 1.9,
-    speed: isCreeper ? 2.6 : 2.2,
+    speed: isCreeper ? 2.6 : isSkeleton ? 2.0 : 2.2,
     onGround: false,
     legPhase: 0,
-    health: isCreeper ? 10 : 14,
+    health: isCreeper ? 10 : isSkeleton ? 12 : 14,
     hurt: 0,        // спалах при ударі (0..1)
     attackCD: 0,    // перезарядка атаки
     attackAnim: 0,  // мах руками при ударі
     burn: 0,        // час горіння під сонцем
     fuse: 0,        // кріпер: час, що лишився до вибуху (0 — ґніт не горить)
     detonated: false,
+    shootCD: 1 + Math.random(),  // скелет: перезарядка пострілу з лука
+    aimAnim: 0,                  // скелет: підняття рук під час прицілювання (0..1)
   });
 }
 
@@ -1683,8 +1722,10 @@ function trySpawnMob() {
   if (!isSolid(blockAt(x, h, z))) return;       // тверда опора
   if (isSolid(blockAt(x, h + 1, z)) || isSolid(blockAt(x, h + 2, z))) return; // є місце
   if (torchNear(x + 0.5, h + 1, z + 0.5, 7)) return; // світло смолоскипа відлякує нечисть
-  // Десь третина нічної нечисті — кріпери (тихі підривники)
-  spawnMob(x + 0.5, h + 1.01, z + 0.5, Math.random() < 0.33 ? 'creeper' : 'zombie');
+  // Нічна нечисть: ~чверть кріпери (підривники), ~чверть скелети (лучники), решта зомбі
+  const r = Math.random();
+  const type = r < 0.25 ? 'creeper' : r < 0.5 ? 'skeleton' : 'zombie';
+  spawnMob(x + 0.5, h + 1.01, z + 0.5, type);
 }
 
 function removeMob(index) {
@@ -1701,10 +1742,34 @@ const CREEPER_IGNITE_DIST = 2.7;
 const CREEPER_DEFUSE_DIST = 4.2;
 const CREEPER_FUSE_TIME = 1.4;
 
+// Скелет: межі кайтингу (відступ/наближення), дальність і перезарядка пострілу
+const SKEL_NEAR = 4.5;          // ближче — відступає
+const SKEL_FAR = 11;            // далі — наближається
+const SKEL_SHOOT_RANGE = 16;    // максимальна дальність пострілу
+const SKEL_SHOOT_CD = 1.8;      // секунд між пострілами (+ розкид)
+
+// Груба перевірка лінії зору від голови моба до грудей гравця:
+// семплимо відрізок і шукаємо тверді блоки на шляху.
+function mobCanSeePlayer(m) {
+  const ox = m.pos.x, oy = m.pos.y + 1.7, oz = m.pos.z;
+  const tx = player.pos.x, ty = player.pos.y + player.height * 0.5, tz = player.pos.z;
+  const dist = Math.hypot(tx - ox, ty - oy, tz - oz);
+  const steps = Math.ceil(dist / 0.7);
+  for (let s = 1; s < steps; s++) {
+    const t = s / steps;
+    const bx = Math.floor(ox + (tx - ox) * t);
+    const by = Math.floor(oy + (ty - oy) * t);
+    const bz = Math.floor(oz + (tz - oz) * t);
+    if (isSolid(blockAt(bx, by, bz))) return false;
+  }
+  return true;
+}
+
 function updateMob(m, dt) {
   const isCreeper = m.type === 'creeper';
+  const isSkeleton = m.type === 'skeleton';
 
-  // Удень зомбі займаються вогнем і швидко гинуть; кріпери — ні (загроза вдень)
+  // Удень зомбі та скелети займаються вогнем і швидко гинуть; кріпери — ні
   if (!isCreeper && dayNightSun > 0.15) {
     m.burn += dt;
     if (Math.random() < dt * 7) {
@@ -1749,8 +1814,33 @@ function updateMob(m, dt) {
   }
   const fusing = isCreeper && m.fuse > 0;
 
-  const moving = chase && distH > 1.0 && !fusing;
-  const sp = moving ? m.speed : 0;
+  // Скелет: тримає дистанцію (кайтить) і пускає стрілу, маючи лінію зору
+  let skelMove = 0;       // -1 відступ, 0 стояти й стріляти, +1 наближення
+  if (isSkeleton && chase) {
+    if (distH < SKEL_NEAR) skelMove = -1;
+    else if (distH > SKEL_FAR) skelMove = 1;
+    if (m.shootCD > 0) m.shootCD -= dt;
+    const canShoot = distH < SKEL_SHOOT_RANGE && m.shootCD <= 0 && mobCanSeePlayer(m);
+    if (canShoot) {
+      m.aimAnim = Math.min(1, m.aimAnim + dt * 4);   // ~0.25 с на натяг — видимий «тель»
+      if (m.aimAnim >= 1) {
+        spawnMobArrow(m);
+        m.shootCD = SKEL_SHOOT_CD + Math.random() * 0.8;
+        m.aimAnim = 0;
+      }
+    } else {
+      m.aimAnim = Math.max(0, m.aimAnim - dt * 3);
+    }
+  }
+
+  let moving, sp;
+  if (isSkeleton) {
+    moving = chase && skelMove !== 0;
+    sp = skelMove * m.speed;                          // знак задає напрям (наближення/відступ)
+  } else {
+    moving = chase && distH > 1.0 && !fusing;
+    sp = moving ? m.speed : 0;
+  }
   m.vel.x = -Math.sin(m.yaw) * sp;
   m.vel.z = -Math.cos(m.yaw) * sp;
 
@@ -1766,9 +1856,9 @@ function updateMob(m, dt) {
   const bumpedZ = moveEntityAxis(m, 'z', m.vel.z * dt);
   if ((bumpedX || bumpedZ) && m.onGround && moving) m.vel.y = 7.5; // перестрибнути
 
-  // Атака при контакті (лише зомбі; кріпер шкодить вибухом)
+  // Атака при контакті (лише зомбі; кріпер шкодить вибухом, скелет — стрілами)
   if (m.attackCD > 0) m.attackCD -= dt;
-  if (!isCreeper) {
+  if (!isCreeper && !isSkeleton) {
     const vOverlap = player.pos.y < m.pos.y + m.height &&
                      player.pos.y + player.height > m.pos.y;
     if (chase && distH < 1.2 && vOverlap && m.attackCD <= 0 && !player.dead) {
@@ -1791,6 +1881,13 @@ function updateMob(m, dt) {
     m.legs[1].rotation.x = -legSwing;
     m.legs[2].rotation.x = -legSwing;
     m.legs[3].rotation.x = legSwing;
+  } else if (isSkeleton) {
+    m.legs[0].rotation.x = legSwing;
+    m.legs[1].rotation.x = -legSwing;
+    // Руки витягнуті вперед із луком; під час прицілювання піднімаються до горизонталі
+    const armBase = -1.2 - m.aimAnim * 0.37;     // 0 → майже -π/2 (на рівень очей)
+    m.arms[0].rotation.x = armBase;              // ліва тягне «тятиву»
+    m.arms[1].rotation.x = armBase;              // права тримає лук
   } else {
     m.legs[0].rotation.x = legSwing;
     m.legs[1].rotation.x = -legSwing;
@@ -1836,7 +1933,7 @@ function updateMobs(dt) {
   if (mobs.length > 0) {
     groanTimer -= dt;
     if (groanTimer <= 0) {
-      const near = mobs.some((m) => m.type !== 'creeper' && m.pos.distanceTo(player.pos) < 22);
+      const near = mobs.some((m) => m.type === 'zombie' && m.pos.distanceTo(player.pos) < 22);
       if (near) Sound.mobGroan();
       groanTimer = 2.5 + Math.random() * 4;
     }
@@ -1845,9 +1942,9 @@ function updateMobs(dt) {
     const m = mobs[i];
     if (m.health <= 0) {
       if (!m.detonated) {                            // кріпер, що вибухнув, уже дав ефекти
-        const isCreeper = m.type === 'creeper';
-        spawnParticles(m.pos.x, m.pos.y + 0.9, m.pos.z,
-          isCreeper ? CREEPER_COLOR : ZOMBIE_COLOR, 16,
+        const deathColor = m.type === 'creeper' ? CREEPER_COLOR
+          : m.type === 'skeleton' ? SKELETON_COLOR : ZOMBIE_COLOR;
+        spawnParticles(m.pos.x, m.pos.y + 0.9, m.pos.z, deathColor, 16,
           { radius: 0.4, speed: 3, upBias: 1.2, life: 0.7, size: 0.13 });
         Sound.mobDeath();
       }
@@ -2021,11 +2118,52 @@ function spawnArrow(power) {
     life: 0,
     stuck: false,
     dmg: Math.round(3 + power * 5),                         // 3..8 (мілі-удар = 5)
+    fromMob: false,                                         // стріла гравця — б'є ворогів
   };
   group.position.copy(a.pos);
   orientArrow(a);
   scene.add(group);
   arrows.push(a);
+  return a;
+}
+
+// Стріла скелета: летить у гравця з компенсацією падіння й невеликим розкидом
+const MOB_ARROW_SPEED = 26;
+const MOB_ARROW_DMG = 3;
+const _mobArrowDir = new THREE.Vector3();
+
+function spawnMobArrow(m) {
+  if (arrows.length >= ARROW_MAX) disposeArrow(arrows.shift());
+  const ox = m.pos.x - Math.sin(m.yaw) * 0.3;              // біля «кисті» скелета
+  const oy = m.pos.y + 1.5;
+  const oz = m.pos.z - Math.cos(m.yaw) * 0.3;
+  const dx = player.pos.x - ox;
+  const dz = player.pos.z - oz;
+  const horiz = Math.hypot(dx, dz) || 0.0001;
+  const t = horiz / MOB_ARROW_SPEED;                       // приблизний час польоту
+  const drop = 0.5 * ARROW_GRAVITY * t * t;                // підняти приціл на падіння стріли
+  const aimY = (player.pos.y + player.height * 0.5) + drop - oy;
+  _mobArrowDir.set(dx, aimY, dz).normalize();
+  const spread = 0.04;                                     // легкий розкид — не снайпер
+  _mobArrowDir.x += (Math.random() - 0.5) * spread;
+  _mobArrowDir.y += (Math.random() - 0.5) * spread;
+  _mobArrowDir.z += (Math.random() - 0.5) * spread;
+  _mobArrowDir.normalize();
+  const group = makeArrowModel();
+  const a = {
+    group,
+    pos: new THREE.Vector3(ox, oy, oz),
+    vel: _mobArrowDir.clone().multiplyScalar(MOB_ARROW_SPEED),
+    life: 0,
+    stuck: false,
+    dmg: MOB_ARROW_DMG,
+    fromMob: true,                                         // стріла ворога — б'є гравця
+  };
+  group.position.copy(a.pos);
+  orientArrow(a);
+  scene.add(group);
+  arrows.push(a);
+  Sound.bowShoot(0.6);
   return a;
 }
 
@@ -2047,6 +2185,21 @@ function arrowHitEntity(a) {
   return false;
 }
 
+// Влучання стріли скелета в гравця: відкид у напрямі польоту + шкода
+function arrowHitPlayer(a) {
+  if (player.dead) return false;
+  const dy = a.pos.y - (player.pos.y + player.height * 0.5);
+  if (Math.abs(dy) > player.height * 0.5 + ARROW_HIT_R) return false;
+  const dx = a.pos.x - player.pos.x, dz = a.pos.z - player.pos.z;
+  const r = ARROW_HIT_R + player.halfW;
+  if (dx * dx + dz * dz > r * r) return false;
+  damagePlayer(a.dmg, 'arrow');
+  const k = Math.hypot(a.vel.x, a.vel.z) || 1;
+  player.vel.x += (a.vel.x / k) * 3;
+  player.vel.z += (a.vel.z / k) * 3;
+  return true;
+}
+
 function updateArrows(dt) {
   for (let i = arrows.length - 1; i >= 0; i--) {
     const a = arrows[i];
@@ -2063,7 +2216,8 @@ function updateArrows(dt) {
       a.pos.x += a.vel.x * dt / steps;
       a.pos.y += a.vel.y * dt / steps;
       a.pos.z += a.vel.z * dt / steps;
-      if (arrowHitEntity(a)) { outcome = 'entity'; break; }
+      const hit = a.fromMob ? arrowHitPlayer(a) : arrowHitEntity(a);
+      if (hit) { outcome = 'entity'; break; }
       const bid = blockAt(Math.floor(a.pos.x), Math.floor(a.pos.y), Math.floor(a.pos.z));
       if (isSolid(bid)) {
         outcome = 'block';
@@ -3437,6 +3591,7 @@ const DEATH_CAUSES = {
   tnt: 'Підірвався на динаміті',
   zombie: 'Розтерзаний зомбі',
   creeper: 'Підірваний кріпером',
+  arrow: 'Застрелений скелетом',
   starve: 'Помер від голоду',
 };
 
@@ -3926,6 +4081,17 @@ window.MCDebug = {
       spawnMob(x + 0.5, h + 1.01, z + 0.5, 'creeper');
     }
     return mobs.filter((m) => m.type === 'creeper').length;
+  },
+  spawnSkeleton: (n = 1) => {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = 7 + Math.random() * 4;
+      const x = Math.floor(player.pos.x + Math.cos(a) * d);
+      const z = Math.floor(player.pos.z + Math.sin(a) * d);
+      const h = heightAt(x, z);
+      spawnMob(x + 0.5, h + 1.01, z + 0.5, 'skeleton');
+    }
+    return mobs.filter((m) => m.type === 'skeleton').length;
   },
   setWeather: (s) => {
     if (s !== 'rain' && s !== 'snow' && s !== 'clear') return 'use "rain" | "snow" | "clear"';
