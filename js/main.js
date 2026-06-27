@@ -26,6 +26,10 @@ const SEEDS = 18;
 // Лук — особливий «предмет»: ним не ставлять блок, а натягують (утримуючи ЛКМ)
 // і пускають стрілу-снаряд, що летить із гравітацією та б'є істот на відстані.
 const BOW = 19;
+// Ліжко — особливий «предмет»-сутність (як смолоскип): ставиться на тверду
+// опору, не належить воксельній сітці. Подивившись на нього (ПКМ) уночі,
+// можна проспати ніч до світанку й закріпити точку відродження.
+const BED = 20;
 
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
@@ -33,13 +37,13 @@ const BLOCK_NAMES = {
   [TNT]: 'Динаміт',
   [COAL]: 'Вугільна руда', [IRON]: 'Залізна руда',
   [GOLD]: 'Золота руда', [DIAMOND]: 'Алмазна руда',
-  [TORCH]: 'Смолоскип', [SEEDS]: 'Насіння', [BOW]: 'Лук',
+  [TORCH]: 'Смолоскип', [SEEDS]: 'Насіння', [BOW]: 'Лук', [BED]: 'Ліжко',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
 const ALL_BLOCKS = [
   GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANK, WATER, TNT,
-  COAL, IRON, GOLD, DIAMOND, TORCH, SEEDS, BOW,
+  COAL, IRON, GOLD, DIAMOND, TORCH, SEEDS, BOW, BED,
 ];
 
 // Хотбар: 10 слотів швидкого доступу (клавіші 1–9 та 0).
@@ -199,6 +203,8 @@ function saveGame() {
       weather: { state: weatherState, timer: weatherTimer, intensity: weatherIntensity },
       torches: [...torches.values()].map((t) => [t.x, t.y, t.z, t.face, t.dx, t.dz]),
       crops: [...crops.values()].map((c) => [c.x, c.y, c.z, c.stage, +c.growth.toFixed(2)]),
+      beds: [...beds.values()].map((b) => [b.x, b.y, b.z, b.yaw]),
+      spawn: spawnPoint,
       selectedSlot,
       hotbar: [...hotbar],
       soundOn: Sound.isEnabled(),
@@ -1073,6 +1079,11 @@ const EAT_COOLDOWN = 0.9;       // пауза між поїданнями, с
 const HUNGER_PER_EXHAUSTION = 4; // одиниць виснаження на 1 одиницю голоду
 const FALL_SAFE = 3;            // блоки падіння без шкоди
 const SPAWN = { x: 8, z: 8 };
+// Точка відродження: null — стандартний спавн; інакше {x,z} закріплене ліжком (сном)
+let spawnPoint = (savedGame && savedGame.spawn &&
+                  Number.isFinite(savedGame.spawn.x) && Number.isFinite(savedGame.spawn.z))
+  ? { x: savedGame.spawn.x, z: savedGame.spawn.z }
+  : null;
 
 const player = {
   pos: new THREE.Vector3(8.5, heightAt(8, 8) + 2, 8.5),
@@ -1291,8 +1302,11 @@ function respawn() {
   player.hurtFlash = 0;
   player.sinceHurt = 999;
   player.dead = false;
-  const sy = safeSpawnY(SPAWN.x, SPAWN.z);
-  player.pos.set(SPAWN.x + 0.5, sy, SPAWN.z + 0.5);
+  // Відродження біля ліжка (сон закріпив точку), інакше — стандартний спавн
+  const rx = spawnPoint ? spawnPoint.x : SPAWN.x;
+  const rz = spawnPoint ? spawnPoint.z : SPAWN.z;
+  const sy = safeSpawnY(rx, rz);
+  player.pos.set(rx + 0.5, sy, rz + 0.5);
   player.vel.set(0, 0, 0);
   player.fallPeakY = player.pos.y;
   player.prevOnGround = true;
@@ -2319,6 +2333,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
 
   validateTorches();  // вибух міг знести опору або клітинки смолоскипів
   validateCrops();    // ... і опору/клітинки посівів
+  validateBeds();     // ... і опору/клітинки ліжок
   Sound.explosion();
   knockback(player, cx, cy, cz);
   for (const a of animals) knockback(a, cx, cy, cz);
@@ -2880,6 +2895,168 @@ if (savedGame && Array.isArray(savedGame.crops)) {
   }
 }
 
+// ============================================================
+// Ліжка: проспати ніч до світанку й закріпити точку відродження
+// ============================================================
+// Ліжко — окрема сутність (як смолоскип/посів): ставиться на тверду опору й не
+// належить воксельній сітці. Подивившись на нього (ПКМ) уночі та без монстрів
+// поряд, гравець «засинає»: екран тьмяніє, час перескакує до світанку (нічна
+// нечисть на сонці згоряє) і ліжко стає точкою відродження.
+const beds = new Map();                 // "x,y,z" -> { x, y, z, yaw, group }
+const BED_MAX = 64;                     // межа, щоб збереження не розросталося
+const bedKey = (x, y, z) => x + ',' + y + ',' + z;
+
+// Процедурна модель ліжка в межах однієї клітинки (нуль зовнішніх ассетів):
+// 4 ніжки + дерев'яний каркас, червоний матрац і біла подушка з боку голови.
+function makeBedModel() {
+  const g = new THREE.Group();
+  const wood = 0x6b4a2b, red = 0xb53a2e, white = 0xe8e4dc, dark = 0x4a3219;
+  for (const [lx, lz] of [[-0.38, -0.38], [0.38, -0.38], [-0.38, 0.38], [0.38, 0.38]]) {
+    animalBox(g, 0.14, 0.16, 0.14, dark, lx, 0.08, lz);       // ніжки по кутах
+  }
+  animalBox(g, 0.94, 0.12, 0.94, wood, 0, 0.22, 0);           // каркас
+  animalBox(g, 0.86, 0.16, 0.86, red, 0, 0.36, 0);            // матрац
+  animalBox(g, 0.66, 0.12, 0.30, white, 0, 0.50, -0.30);      // подушка (бік голови, −Z)
+  return g;
+}
+
+function addBed(x, y, z, yaw = 0) {
+  const key = bedKey(x, y, z);
+  if (beds.has(key) || beds.size >= BED_MAX) return false;
+  const group = makeBedModel();
+  group.position.set(x + 0.5, y, z + 0.5);
+  group.rotation.y = yaw;
+  scene.add(group);
+  beds.set(key, { x, y, z, yaw, group });
+  return true;
+}
+
+function removeBed(key) {
+  const b = beds.get(key);
+  if (!b) return;
+  scene.remove(b.group);
+  b.group.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
+  beds.delete(key);
+}
+
+// Прибрати ліжка, що втратили опору або клітинку яких зайняв блок
+function validateBeds() {
+  if (beds.size === 0) return;
+  for (const [key, b] of beds) {
+    const occupied = isSolid(blockAt(b.x, b.y, b.z));
+    const supported = isSolid(blockAt(b.x, b.y - 1, b.z));
+    if (occupied || !supported) {
+      spawnParticles(b.x + 0.5, b.y + 0.3, b.z + 0.5, new THREE.Color(0xb53a2e), 7,
+        { radius: 0.3, speed: 1.6, upBias: 0.7, life: 0.5, size: 0.09, gravity: 9 });
+      removeBed(key);
+    }
+  }
+}
+
+// Поставити ліжко у клітинку перед прицілом (hit.prev) на тверду опору
+function placeBed(hit) {
+  const [x, y, z] = hit.prev;
+  if (blockAt(x, y, z) !== AIR) return false;
+  if (beds.has(bedKey(x, y, z)) || torches.has(torchKey(x, y, z)) || crops.has(cropKey(x, y, z))) return false;
+  if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
+  // Не ставити ліжко всередину гравця
+  const p = player.pos;
+  if (x + 1 > p.x - PLAYER_W && x < p.x + PLAYER_W &&
+      y + 1 > p.y && y < p.y + PLAYER_H &&
+      z + 1 > p.z - PLAYER_W && z < p.z + PLAYER_W) return false;
+  const yaw = Math.round(player.yaw / (Math.PI / 2)) * (Math.PI / 2);  // повернути за поглядом
+  if (!addBed(x, y, z, yaw)) return false;
+  Sound.place(PLANK);
+  spawnParticles(x + 0.5, y + 0.3, z + 0.5, blockColor(PLANK), 6,
+    { radius: 0.4, speed: 1.4, upBias: 0.3, life: 0.4, size: 0.1, gravity: 9 });
+  return true;
+}
+
+// ===== Сон =====
+let sleeping = false;
+let sleepT = 0;
+let sleepJumped = false;
+const SLEEP_FADE = 0.5;                  // тривалість затемнення/прояснення
+const SLEEP_HOLD = 0.3;                  // пауза в темряві
+const SLEEP_WAKE = DAY_LENGTH * 0.05;    // мить пробудження (світанок)
+
+// Достатньо темно, щоб спати (той самий поріг, що й спавн нічної нечисті)
+const canSleepNow = () => dayNightSun <= -0.05;
+// Чи поряд (у радіусі r) є вороже мобі — тоді не заснути
+const monstersNear = (r) => mobs.some((m) => m.pos.distanceTo(player.pos) < r);
+
+// Затемнення на час сну + короткий текст-підказка (створюються в JS — без правок HTML)
+const sleepOverlay = document.createElement('div');
+sleepOverlay.style.cssText =
+  'position:fixed;inset:0;background:#000;opacity:0;pointer-events:none;z-index:40;display:none';
+document.body.appendChild(sleepOverlay);
+const sleepMsg = document.createElement('div');
+sleepMsg.style.cssText =
+  'position:fixed;left:50%;bottom:42%;transform:translateX(-50%);max-width:80%;' +
+  'color:#fff;font:600 18px system-ui,Arial,sans-serif;text-align:center;' +
+  'text-shadow:0 1px 4px #000;opacity:0;pointer-events:none;z-index:41;transition:opacity .3s';
+document.body.appendChild(sleepMsg);
+let sleepMsgTimer = 0;
+function sleepToast(msg) {
+  sleepMsg.textContent = msg;
+  sleepMsg.style.opacity = '1';
+  sleepMsgTimer = 1.6;
+}
+
+// Спроба заснути в ліжку. Повертає true, якщо сон почався.
+function trySleep(bed) {
+  if (sleeping || player.dead || !bed) return false;
+  if (!canSleepNow()) { sleepToast('Спати можна лише вночі'); return false; }
+  if (monstersNear(8)) { sleepToast('Поряд монстри — не заснути'); return false; }
+  sleeping = true;
+  sleepT = 0;
+  sleepJumped = false;
+  mining = false;
+  cancelBowDraw();
+  spawnPoint = { x: bed.x, z: bed.z };   // закріпити точку відродження біля ліжка
+  sleepMsg.style.opacity = '0';
+  return true;
+}
+
+function updateSleep(dt) {
+  if (sleepMsgTimer > 0) {
+    sleepMsgTimer -= dt;
+    if (sleepMsgTimer <= 0) sleepMsg.style.opacity = '0';
+  }
+  if (!sleeping) return;
+  sleepT += dt;
+  let op;
+  if (sleepT < SLEEP_FADE) {
+    op = sleepT / SLEEP_FADE;                                  // затемнення
+  } else if (sleepT < SLEEP_FADE + SLEEP_HOLD) {
+    op = 1;
+    if (!sleepJumped) {                                        // у пітьмі — проспати ніч
+      sleepJumped = true;
+      timeOfDay = SLEEP_WAKE;
+      player.sinceHurt = 999;                                  // дозволити регенерацію після сну
+      player.air = MAX_AIR;
+      if (player.hunger >= 6 && player.health < MAX_HEALTH) {  // легкий «відпочилий» бонус
+        player.health = Math.min(MAX_HEALTH, player.health + 4);
+      }
+      saveGame();
+    }
+  } else if (sleepT < SLEEP_FADE * 2 + SLEEP_HOLD) {
+    op = 1 - (sleepT - SLEEP_FADE - SLEEP_HOLD) / SLEEP_FADE;  // прояснення
+  } else {
+    op = 0;
+    sleeping = false;
+  }
+  sleepOverlay.style.opacity = op.toFixed(3);
+  sleepOverlay.style.display = (sleeping || op > 0) ? 'block' : 'none';
+}
+
+// Відновити збережені ліжка (формат: [x, y, z, yaw])
+if (savedGame && Array.isArray(savedGame.beds)) {
+  for (const e of savedGame.beds) {
+    if (Array.isArray(e) && e.length >= 3) addBed(e[0], e[1], e[2], e[3] || 0);
+  }
+}
+
 // ===== Поетапний видобуток =====
 let mining = false;                       // утримується кнопка руйнування
 const miningState = { key: null, progress: 0 };
@@ -2933,6 +3110,7 @@ function updateMining(dt, hit) {
     setBlock(x, y, z, AIR);
     validateTorches();  // міг зникнути блок-опора смолоскипа
     validateCrops();    // ... або грунт під посівом
+    validateBeds();     // ... або опора під ліжком
     resetMining();
     return;
   }
@@ -2945,11 +3123,17 @@ function updateMining(dt, hit) {
 }
 
 function placeBlock() {
-  if (hotbar[selectedSlot] === BOW) return;   // луком не ставлять блок
   triggerSwing();
   const hit = raycastBlock();
   if (!hit || !hit.prev) return;
 
+  // Сон має пріоритет: дивимось на ліжко (ПКМ) → лягти спати (з будь-яким предметом)
+  if (beds.size > 0) {
+    const bk = bedKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    if (beds.has(bk)) { trySleep(beds.get(bk)); return; }
+  }
+
+  if (hotbar[selectedSlot] === BOW) return;   // луком не ставлять блок
   const id = hotbar[selectedSlot];
 
   // Смолоскип — особлива сутність: ставиться на опору, не змінює воксельну сітку
@@ -2961,6 +3145,12 @@ function placeBlock() {
   // Насіння — сутність-посів: садиться на траву/землю, не змінює воксельну сітку
   if (id === SEEDS) {
     plantCrop(hit);
+    return;
+  }
+
+  // Ліжко — особлива сутність: ставиться на тверду опору, не змінює воксельну сітку
+  if (id === BED) {
+    placeBed(hit);
     return;
   }
 
@@ -2982,6 +3172,7 @@ function placeBlock() {
     { radius: 0.5, speed: 1.4, upBias: 0.3, life: 0.4, size: 0.1, gravity: 10 });
   validateTorches();  // блок міг зайняти клітинку смолоскипа
   validateCrops();    // ... або клітинку посіву
+  validateBeds();     // ... або клітинку ліжка
 }
 
 // ===== Менеджмент чанків =====
@@ -3658,6 +3849,21 @@ function drawBlockIcon(canvas, id) {
     ctx.moveTo(14, 6); ctx.lineTo(16, 8); ctx.lineTo(14, 10); ctx.fill();
     return;
   }
+  if (id === BED) {
+    // Процедурна іконка ліжка: дерев'яний каркас, червоний матрац, біла подушка
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#6b4a2b';
+    ctx.fillRect(1, 9, 14, 5);          // каркас
+    ctx.fillStyle = '#b53a2e';
+    ctx.fillRect(2, 6, 12, 4);          // матрац
+    ctx.fillStyle = '#e8e4dc';
+    ctx.fillRect(2, 6, 4, 4);           // подушка
+    ctx.fillStyle = '#4a3219';
+    ctx.fillRect(1, 13, 2, 2);          // ніжки
+    ctx.fillRect(13, 13, 2, 2);
+    return;
+  }
   const tile = BLOCK_TILES[id].side;
   canvas.getContext('2d').drawImage(
     atlasCanvas,
@@ -4134,6 +4340,26 @@ window.MCDebug = {
     }
     return planted;
   },
+  // Поставити ліжко поряд із гравцем на тверду опору (для тестів)
+  placeBed: () => {
+    const x = Math.floor(player.pos.x), z = Math.floor(player.pos.z) + 1;
+    for (let y = Math.ceil(player.pos.y) + 1; y > Math.floor(player.pos.y) - 4; y--) {
+      if (isSolid(blockAt(x, y - 1, z)) && blockAt(x, y, z) === AIR) {
+        addBed(x, y, z, 0);
+        break;
+      }
+    }
+    return beds.size;
+  },
+  // Лягти спати в найближче ліжко (повертає true, якщо сон почався)
+  sleep: () => trySleep([...beds.values()][0]),
+  // Прибрати всю нічну нечисть (зручно перед тестом сну)
+  clearMobs: () => { for (let i = mobs.length - 1; i >= 0; i--) removeMob(i); return mobs.length; },
+  get beds() { return beds.size; },
+  get sleeping() { return sleeping; },
+  get spawnPoint() { return spawnPoint ? { ...spawnPoint } : null; },
+  get time() { return timeOfDay; },
+  get active() { return gameActive(); },
 };
 
 const clock = new THREE.Clock();
@@ -4146,7 +4372,7 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
 
-  if (gameActive() && !player.dead) {
+  if (gameActive() && !player.dead && !sleeping) {
     updatePlayer(dt);
     updateSurvival(dt);
     updateAnimals(dt);
@@ -4169,6 +4395,8 @@ function animate() {
       saveTimer = 5;
     }
   }
+
+  if (gameActive()) updateSleep(dt);
 
   chunkTimer -= dt;
   if (chunkTimer <= 0) {
