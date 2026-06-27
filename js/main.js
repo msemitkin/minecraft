@@ -30,6 +30,9 @@ const BOW = 19;
 // опору, не належить воксельній сітці. Подивившись на нього (ПКМ) уночі,
 // можна проспати ніч до світанку й закріпити точку відродження.
 const BED = 20;
+// Біомні блоки: сніг (поверхня снігової тундри) і кактус (стовпами в пустелі).
+// Звичайні воксельні блоки — генеруються рельєфом, добуваються та ставляться.
+const SNOW = 21, CACTUS = 22;
 
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
@@ -38,12 +41,13 @@ const BLOCK_NAMES = {
   [COAL]: 'Вугільна руда', [IRON]: 'Залізна руда',
   [GOLD]: 'Золота руда', [DIAMOND]: 'Алмазна руда',
   [TORCH]: 'Смолоскип', [SEEDS]: 'Насіння', [BOW]: 'Лук', [BED]: 'Ліжко',
+  [SNOW]: 'Сніг', [CACTUS]: 'Кактус',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
 const ALL_BLOCKS = [
-  GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANK, WATER, TNT,
-  COAL, IRON, GOLD, DIAMOND, TORCH, SEEDS, BOW, BED,
+  GRASS, DIRT, STONE, SAND, SNOW, LOG, LEAVES, PLANK, WATER, TNT,
+  COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, BOW, BED,
 ];
 
 // Хотбар: 10 слотів швидкого доступу (клавіші 1–9 та 0).
@@ -62,6 +66,7 @@ const BLOCK_HARDNESS = {
   [GRASS]: 0.5, [DIRT]: 0.5, [SAND]: 0.55,
   [LEAVES]: 0.3, [LOG]: 1.0, [PLANK]: 0.9, [STONE]: 1.6,
   [COAL]: 2.2, [IRON]: 2.8, [GOLD]: 2.8, [DIAMOND]: 3.6,
+  [SNOW]: 0.4, [CACTUS]: 0.5,
 };
 const DEFAULT_HARDNESS = 0.6;
 
@@ -105,7 +110,38 @@ function heightAt(x, z) {
   return Math.max(2, Math.min(HEIGHT - 10, Math.floor(h)));
 }
 
-const treeAt = (x, z) => ihash(x + 39163, z - 21577) < 0.02;
+// ===== Біоми: великі регіони з власною поверхнею та рослинністю =====
+// Біом задає низькочастотний шум (регіони ~150–200 блоків), тож сусідні колони
+// майже завжди в одному біомі — переходи плавні, без «шахівниці».
+const BIOME = { PLAINS: 0, FOREST: 1, DESERT: 2, SNOWY: 3 };
+const BIOME_NAMES = { 0: 'Рівнина', 1: 'Ліс', 2: 'Пустеля', 3: 'Снігова тундра' };
+
+// Окремий згладжений шум для біомів: лише 2 октави й велика база, тож регіони
+// виходять великими та плавними (4-октавний fbm рельєфу подрібнив би їх у
+// «шахівницю»).
+function biomeNoise(x, z, ox, oz, scale) {
+  return valueNoise(x / scale + ox, z / scale + oz) * 0.68 +
+         valueNoise(x / (scale * 0.5) + ox + 50, z / (scale * 0.5) + oz + 50) * 0.32;
+}
+
+function biomeAt(x, z) {
+  // «Температура» розводить теплі (пустеля) й холодні (тундра) краї карти.
+  const temp = biomeNoise(x, z, 555.5, -311.5, 200);
+  if (temp < 0.42) return BIOME.SNOWY;
+  if (temp > 0.60) return BIOME.DESERT;
+  // Помірний пояс: окремий шум «вологості» ділить його на ліс і рівнину.
+  const wet = biomeNoise(x, z, -88.5, 200.5, 170);
+  return wet > 0.52 ? BIOME.FOREST : BIOME.PLAINS;
+}
+
+// Імовірність дерева в колоні залежить від біому: густий ліс, рідка рівнина,
+// поодинокі засніжені ялинки в тундрі, жодного дерева в пустелі.
+const TREE_DENSITY = { 0: 0.018, 1: 0.06, 2: 0, 3: 0.012 };
+const treeAt = (x, z) => ihash(x + 39163, z - 21577) < TREE_DENSITY[biomeAt(x, z)];
+
+// Кактус: поодинокі стовпи 1–3 блоки лише на сухій поверхні пустелі.
+const cactusAt = (x, z) => biomeAt(x, z) === BIOME.DESERT &&
+  ihash(x + 14771, z - 50261) < 0.020;
 
 // ===== Печери: 3D-шум вирізає тунелі =====
 function ihash3(x, y, z) {
@@ -173,8 +209,9 @@ const blockIndex = (lx, ly, lz) => (ly * CHUNK + lz) * CHUNK + lx;
 // ============================================================
 // Збереження світу в localStorage
 // ============================================================
-// v3: версія генератора (печери + нові висоти) — старі сейви несумісні
-const SAVE_KEY = `mineclone:${SEED}:v3`;
+// v4: версія генератора (біоми: пустеля/тундра/ліс + сніг і кактуси) —
+// старі сейви несумісні, бо поверхня тих самих координат тепер інша
+const SAVE_KEY = `mineclone:${SEED}:v4`;
 
 function loadGame() {
   try {
@@ -441,12 +478,19 @@ function genChunkData(cx, cz) {
     for (let lz = 0; lz < CHUNK; lz++) {
       const wx = wx0 + lx, wz = wz0 + lz;
       const h = heightAt(wx, wz);
-      const noCaves = h <= SEA + 1; // не дірявити дно озер і пляжі
+      const beach = h <= SEA + 1;           // пляжі та дно озер — завжди пісок
+      const biome = beach ? -1 : biomeAt(wx, wz);
+      const noCaves = beach;                // не дірявити дно озер і пляжі
+      // Поверхневий і підповерхневий блок задає біом.
+      let surf = GRASS, sub = DIRT;
+      if (beach) { surf = SAND; sub = DIRT; }
+      else if (biome === BIOME.DESERT) { surf = SAND; sub = SAND; }
+      else if (biome === BIOME.SNOWY) { surf = SNOW; sub = DIRT; }
       for (let y = 0; y <= h; y++) {
         if (!noCaves && caveAt(wx, y, wz, h)) continue;
         let id;
-        if (y === h) id = h <= SEA + 1 ? SAND : GRASS;
-        else if (y > h - 4) id = DIRT;
+        if (y === h) id = surf;
+        else if (y > h - 4) id = sub;
         else id = oreAt(wx, y, wz);
         data[blockIndex(lx, y, lz)] = id;
       }
@@ -485,6 +529,18 @@ function genChunkData(cx, cz) {
       for (let dy = 1; dy <= trunkH; dy++) {
         setInChunk(tx, h + dy, tz, LOG, false);
       }
+    }
+  }
+
+  // Кактуси: стовпи 1–3 блоки на сухій поверхні пустелі (запас на краях — нема
+  // крони, але тримаємо ту саму схему обходу, що й дерева).
+  for (let tx = wx0; tx < wx0 + CHUNK; tx++) {
+    for (let tz = wz0; tz < wz0 + CHUNK; tz++) {
+      const h = heightAt(tx, tz);
+      if (h <= SEA + 1 || !cactusAt(tx, tz)) continue;
+      if (caveAt(tx, h, tz, h)) continue; // не ставити над входом у печеру
+      const ch = 1 + Math.floor(ihash(tx + 5, tz + 5) * 3); // 1..3
+      for (let dy = 1; dy <= ch; dy++) setInChunk(tx, h + dy, tz, CACTUS, true);
     }
   }
 
@@ -610,7 +666,7 @@ function processWaterQueue() {
 // ============================================================
 // Текстурний атлас (малюється на canvas, без зовнішніх файлів)
 // ============================================================
-const TILE = 16, ATLAS_COLS = 4, ATLAS_ROWS = 4;
+const TILE = 16, ATLAS_COLS = 4, ATLAS_ROWS = 6;
 let atlasCanvas;
 
 function makeAtlas() {
@@ -668,6 +724,12 @@ function makeAtlas() {
   oreTile(14, () => vary(243, 207, 71, 10), 22);  // 14 золото
   oreTile(15, () => vary(98, 214, 214, 12), 20);  // 15 алмаз
 
+  // Біомні блоки
+  paint(16, () => vary(238, 242, 250, 6));                                        // 16 сніг
+  paint(17, (x) => (x % 5 === 2) ? vary(40, 110, 46, 8) : vary(58, 138, 64, 10)); // 17 кактус (бік, ребра)
+  paint(18, (x, y) => (x > 3 && x < 12 && y > 3 && y < 12)
+    ? vary(92, 172, 96, 8) : vary(58, 138, 64, 10));                              // 18 кактус (зріз)
+
   const tex = new THREE.CanvasTexture(atlasCanvas);
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
@@ -693,6 +755,8 @@ const BLOCK_TILES = {
   [IRON]:    { top: 13, bottom: 13, side: 13 },
   [GOLD]:    { top: 14, bottom: 14, side: 14 },
   [DIAMOND]: { top: 15, bottom: 15, side: 15 },
+  [SNOW]:    { top: 16, bottom: 16, side: 16 },
+  [CACTUS]:  { top: 18, bottom: 18, side: 17 },
 };
 
 function tileUV(tile) {
@@ -4360,6 +4424,54 @@ window.MCDebug = {
   get spawnPoint() { return spawnPoint ? { ...spawnPoint } : null; },
   get time() { return timeOfDay; },
   get active() { return gameActive(); },
+  // Біом під гравцем (для тестів)
+  get biome() {
+    return BIOME_NAMES[biomeAt(Math.floor(player.pos.x), Math.floor(player.pos.z))];
+  },
+  // Телепортувати гравця до найближчого сухого регіону вказаного біому.
+  // Приймає укр./англ. назву: 'desert'|'пустеля', 'snowy'|'тундра',
+  // 'forest'|'ліс', 'plains'|'рівнина'. Повертає координати або null.
+  tpBiome: (name) => {
+    const aliases = {
+      plains: BIOME.PLAINS, рівнина: BIOME.PLAINS,
+      forest: BIOME.FOREST, ліс: BIOME.FOREST,
+      desert: BIOME.DESERT, пустеля: BIOME.DESERT,
+      snowy: BIOME.SNOWY, tundra: BIOME.SNOWY, тундра: BIOME.SNOWY,
+    };
+    const target = aliases[String(name).toLowerCase()];
+    if (target === undefined) return 'use: plains | forest | desert | snowy';
+    // Точка вважається «всередині» біому, якщо вона й проби за 24 блоки в
+    // 8 напрямках усі того ж біому — так не приземлятися на край регіону.
+    const interior = (x, z) => {
+      if (biomeAt(x, z) !== target) return false;
+      for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
+        if (biomeAt(x + Math.round(Math.cos(a) * 24),
+                    z + Math.round(Math.sin(a) * 24)) !== target) return false;
+      }
+      return true;
+    };
+    const ox = Math.floor(player.pos.x), oz = Math.floor(player.pos.z);
+    let fallback = null;
+    for (let r = 0; r <= 2400; r += 8) {
+      for (let a = 0; a < Math.PI * 2; a += Math.PI / 16) {
+        const x = ox + Math.round(Math.cos(a) * r);
+        const z = oz + Math.round(Math.sin(a) * r);
+        if (biomeAt(x, z) !== target) continue;
+        if (heightAt(x, z) <= SEA + 1) continue; // уникати води
+        if (!fallback) fallback = { x, z };
+        if (!interior(x, z)) continue;
+        player.pos.set(x + 0.5, safeSpawnY(x, z), z + 0.5);
+        player.vel.set(0, 0, 0);
+        return { x, z, biome: BIOME_NAMES[target] };
+      }
+    }
+    if (fallback) { // регіон існує, але вузький — стати хоч на край
+      player.pos.set(fallback.x + 0.5, safeSpawnY(fallback.x, fallback.z), fallback.z + 0.5);
+      player.vel.set(0, 0, 0);
+      return { ...fallback, biome: BIOME_NAMES[target], edge: true };
+    }
+    return null;
+  },
 };
 
 const clock = new THREE.Clock();
