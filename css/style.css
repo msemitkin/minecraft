@@ -202,11 +202,32 @@ kbd {
   white-space: pre;
 }
 
+/* ===== Мінімапа та компас ===== */
+#minimap {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  width: 132px;
+  height: 132px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  background: rgba(0, 0, 0, 0.35);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  image-rendering: pixelated;
+  cursor: pointer;
+  touch-action: manipulation;
+  z-index: 6;
+}
+
+#minimap.hidden {
+  display: none;
+}
+
 /* ===== Вимикач звуку ===== */
 #btn-sound {
   position: fixed;
-  top: 8px;
-  right: 8px;
+  top: 156px;
+  right: 12px;
   width: 40px;
   height: 40px;
   border-radius: 6px;
@@ -518,8 +539,8 @@ kbd {
 
 #btn-pause {
   position: fixed;
-  top: 10px;
-  right: 58px;
+  top: 156px;
+  right: 62px;
   width: 44px;
   height: 44px;
   font-size: 16px;
@@ -541,6 +562,17 @@ kbd {
   }
   #status {
     bottom: 60px;
+  }
+  #minimap {
+    width: 96px;
+    height: 96px;
+  }
+  #btn-sound {
+    top: 116px;
+  }
+  #btn-pause {
+    top: 116px;
+    right: 62px;
   }
   #overlay-content h1 {
     font-size: 40px;

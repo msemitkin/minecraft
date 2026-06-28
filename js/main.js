@@ -4244,6 +4244,7 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'KeyM') { Sound.resume(); applySoundState(Sound.toggle()); return; }
+  if (e.code === 'KeyN') { toggleMinimap(); return; }
   if (e.code === 'KeyF') { Sound.resume(); eatFood(); return; }
   // Клавіші 1–9 та 0 — вибір слота хотбара (0 = десятий слот)
   if (e.code.startsWith('Digit')) {
@@ -4325,6 +4326,248 @@ applySoundState(Sound.isEnabled());
 if (savedGame && Number.isInteger(savedGame.selectedSlot)) {
   selectSlot(savedGame.selectedSlot % HOTBAR_SIZE);
 }
+
+// ===== Мінімапа та компас =====
+// Топ-даун карта місцевості навколо гравця. Поверхню семплимо процедурними
+// функціями heightAt/biomeAt (без генерації чанків — швидко й без сайд-ефектів),
+// поверх кладемо зміни гравця, тварин, нечисть і ліжка. Північ (−Z, напрям
+// погляду при yaw=0) — догори; масштаб перемикається тапом по мінімапі.
+const minimapCanvas = document.getElementById('minimap');
+const mmCtx = minimapCanvas.getContext('2d');
+const MM_DISPLAY = minimapCanvas.width;       // px полотна (квадрат)
+const MM_RADIUS_PX = MM_DISPLAY / 2 - 3;      // радіус кружка в пікселях
+const MM_CENTER = MM_DISPLAY / 2;
+const MM_FIELD = 72;                          // роздільність семплінгу місцевості
+const MM_ZOOMS = [32, 56, 88];                // радіус огляду в блоках (тап перемикає)
+const TAU = Math.PI * 2;
+let mmZoomIdx = 1;
+let minimapOn = true;
+let mmTimer = 0;                              // throttle важкого ресемплінгу поля
+
+const mmField = document.createElement('canvas');
+mmField.width = mmField.height = MM_FIELD;
+const mmFieldCtx = mmField.getContext('2d');
+const mmImage = mmFieldCtx.createImageData(MM_FIELD, MM_FIELD);
+const mmHeights = new Int16Array(MM_FIELD * MM_FIELD);
+let mmFieldReady = false;
+
+// Налаштування мінімапи зберігаємо окремо від світу (щоб не чіпати версію сейва).
+try {
+  const s = JSON.parse(localStorage.getItem('mineclone:minimap') || '{}');
+  if (typeof s.on === 'boolean') minimapOn = s.on;
+  if (Number.isInteger(s.zoom) && s.zoom >= 0 && s.zoom < MM_ZOOMS.length) mmZoomIdx = s.zoom;
+} catch (e) { /* перший запуск — типові налаштування */ }
+
+function saveMinimapPrefs() {
+  try {
+    localStorage.setItem('mineclone:minimap', JSON.stringify({ on: minimapOn, zoom: mmZoomIdx }));
+  } catch (e) { /* приватний режим — ігноруємо */ }
+}
+
+function applyMinimapVisibility() {
+  minimapCanvas.classList.toggle('hidden', !minimapOn);
+}
+applyMinimapVisibility();
+
+// Колір верхнього блока змін гравця, що визирає на мінімапі.
+const MM_BLOCK_COLORS = {
+  [GRASS]: [96, 150, 64], [DIRT]: [120, 86, 56], [STONE]: [128, 128, 132],
+  [SAND]: [216, 202, 150], [LOG]: [108, 80, 48], [LEAVES]: [56, 104, 48],
+  [PLANK]: [170, 132, 80], [TNT]: [184, 64, 48], [TORCH]: [240, 196, 90],
+  [COAL]: [60, 60, 64], [IRON]: [176, 150, 128], [GOLD]: [222, 188, 70],
+  [DIAMOND]: [110, 208, 214], [SNOW]: [232, 238, 244], [CACTUS]: [78, 132, 66],
+  [BED]: [196, 60, 60],
+};
+
+// Найвищий ненульовий блок гравцевих змін у кожній колоні (id видно зверху).
+function buildEditTops() {
+  const tops = new Map();
+  for (const [key, id] of edits) {
+    if (id === AIR || isWaterId(id)) continue;
+    const p = key.split(',');
+    const y = +p[1];
+    const col = p[0] + ',' + p[2];
+    const prev = tops.get(col);
+    if (!prev || y > prev.y) tops.set(col, id);
+  }
+  return tops;
+}
+
+// Базовий колір поверхні за вже відомою висотою h (без повторного heightAt).
+function mmBaseColor(wx, wz, h, out) {
+  if (h <= SEA) {                              // вода: глибше — темніше
+    const d = Math.min(SEA - h, 8) / 8;
+    out[0] = 60 - d * 28; out[1] = 104 - d * 46; out[2] = 176 - d * 40;
+    return true;                               // true — вода (рельєфну тінь не накладаємо)
+  }
+  if (h <= SEA + 1) { out[0] = 214; out[1] = 198; out[2] = 146; return false; } // пляж
+  const b = biomeAt(wx, wz);
+  if (b === BIOME.DESERT)      { out[0] = 214; out[1] = 196; out[2] = 138; }
+  else if (b === BIOME.SNOWY)  { out[0] = 230; out[1] = 236; out[2] = 244; }
+  else if (b === BIOME.FOREST) { out[0] = 58;  out[1] = 110; out[2] = 52;  }
+  else                         { out[0] = 104; out[1] = 158; out[2] = 70;  } // рівнина
+  return false;
+}
+
+// Перемалювати растрове поле місцевості (важка частина — throttle у animate).
+const mmRGB = [0, 0, 0];
+function updateMinimapField() {
+  const R = MM_ZOOMS[mmZoomIdx];
+  const N = MM_FIELD;
+  const step = (R * 2) / N;
+  const x0 = player.pos.x - R, z0 = player.pos.z - R;
+  const editTops = buildEditTops();
+
+  // Прохід 1: висоти (по одному heightAt на клітинку — для рельєфної тіні).
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      const wx = Math.floor(x0 + i * step), wz = Math.floor(z0 + j * step);
+      mmHeights[j * N + i] = heightAt(wx, wz);
+    }
+  }
+
+  // Прохід 2: колір. Світло з північного заходу дає легкий об'єм рельєфу.
+  const data = mmImage.data;
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      const wx = Math.floor(x0 + i * step), wz = Math.floor(z0 + j * step);
+      const h = mmHeights[j * N + i];
+      const edit = editTops.get(wx + ',' + wz);
+      let r, g, b;
+      if (edit !== undefined) {
+        const c = MM_BLOCK_COLORS[edit] || [150, 150, 150];
+        r = c[0]; g = c[1]; b = c[2];
+      } else {
+        const water = mmBaseColor(wx, wz, h, mmRGB);
+        r = mmRGB[0]; g = mmRGB[1]; b = mmRGB[2];
+        if (!water) {
+          const hl = i > 0 ? mmHeights[j * N + i - 1] : h;
+          const hu = j > 0 ? mmHeights[(j - 1) * N + i] : h;
+          const f = THREE.MathUtils.clamp(1 + ((h - hl) + (h - hu)) * 0.09, 0.68, 1.3);
+          r *= f; g *= f; b *= f;
+        }
+      }
+      const o = (j * N + i) * 4;
+      data[o] = Math.max(0, Math.min(255, r));
+      data[o + 1] = Math.max(0, Math.min(255, g));
+      data[o + 2] = Math.max(0, Math.min(255, b));
+      data[o + 3] = 255;
+    }
+  }
+  mmFieldCtx.putImageData(mmImage, 0, 0);
+  mmFieldReady = true;
+}
+
+// Намалювати маркер сутності, якщо вона в межах огляду.
+function mmDot(ctx, dx, dz, R, color, size) {
+  if (Math.abs(dx) > R || Math.abs(dz) > R) return;
+  const sx = MM_CENTER + (dx / R) * MM_RADIUS_PX;
+  const sy = MM_CENTER + (dz / R) * MM_RADIUS_PX;
+  ctx.beginPath();
+  ctx.arc(sx, sy, size, 0, TAU);
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+  ctx.stroke();
+}
+
+const MM_ANIMAL_COLORS = { pig: '#eba6a0', cow: '#9c7b56', chicken: '#f2f0ea' };
+
+// Композиція кадру мінімапи: кешоване поле + живі маркери щокадру (дешево).
+function drawMinimap() {
+  const R = MM_ZOOMS[mmZoomIdx];
+  const px = player.pos.x, pz = player.pos.z;
+  mmCtx.clearRect(0, 0, MM_DISPLAY, MM_DISPLAY);
+
+  mmCtx.save();
+  mmCtx.beginPath();
+  mmCtx.arc(MM_CENTER, MM_CENTER, MM_RADIUS_PX, 0, TAU);
+  mmCtx.clip();
+
+  if (mmFieldReady) {
+    mmCtx.imageSmoothingEnabled = false;
+    mmCtx.drawImage(mmField, 0, 0, MM_FIELD, MM_FIELD, 0, 0, MM_DISPLAY, MM_DISPLAY);
+  } else {
+    mmCtx.fillStyle = '#1a1f15';
+    mmCtx.fillRect(0, 0, MM_DISPLAY, MM_DISPLAY);
+  }
+
+  // Ліжка (закріплена точка відродження орієнтує мандрівника).
+  for (const bed of beds.values()) {
+    mmDot(mmCtx, bed.x + 0.5 - px, bed.z + 0.5 - pz, R, '#d65b6e', 3);
+  }
+  // Тварини.
+  for (const a of animals) {
+    mmDot(mmCtx, a.pos.x - px, a.pos.z - pz, R, MM_ANIMAL_COLORS[a.type] || '#cfcfcf', 2.5);
+  }
+  // Нечисть.
+  for (const m of mobs) {
+    mmDot(mmCtx, m.pos.x - px, m.pos.z - pz, R, '#e8412e', 3);
+  }
+
+  // Гравець у центрі: трикутник за напрямком погляду (вперед = (−sin,−cos)).
+  const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
+  const rx = -fz, rz = fx;        // вектор «праворуч»
+  mmCtx.beginPath();
+  mmCtx.moveTo(MM_CENTER + fx * 7, MM_CENTER + fz * 7);
+  mmCtx.lineTo(MM_CENTER - fx * 4 + rx * 4, MM_CENTER - fz * 4 + rz * 4);
+  mmCtx.lineTo(MM_CENTER - fx * 4 - rx * 4, MM_CENTER - fz * 4 - rz * 4);
+  mmCtx.closePath();
+  mmCtx.fillStyle = '#ffffff';
+  mmCtx.fill();
+  mmCtx.lineWidth = 1.5;
+  mmCtx.strokeStyle = '#1a1a1a';
+  mmCtx.stroke();
+  mmCtx.restore();
+
+  // Кільце-рамка.
+  mmCtx.beginPath();
+  mmCtx.arc(MM_CENTER, MM_CENTER, MM_RADIUS_PX, 0, TAU);
+  mmCtx.lineWidth = 2;
+  mmCtx.strokeStyle = 'rgba(255,255,255,0.45)';
+  mmCtx.stroke();
+
+  // Компас (північ догори — мітки статичні) + поточний масштаб.
+  mmCtx.fillStyle = 'rgba(255,255,255,0.9)';
+  mmCtx.font = 'bold 11px system-ui, sans-serif';
+  mmCtx.textAlign = 'center';
+  mmCtx.textBaseline = 'middle';
+  mmCtx.shadowColor = 'rgba(0,0,0,0.85)';
+  mmCtx.shadowBlur = 2;
+  const ringR = MM_RADIUS_PX - 8;
+  mmCtx.fillStyle = '#ff8a7a';
+  mmCtx.fillText('Пн', MM_CENTER, MM_CENTER - ringR);
+  mmCtx.fillStyle = 'rgba(255,255,255,0.9)';
+  mmCtx.fillText('Сх', MM_CENTER + ringR, MM_CENTER);
+  mmCtx.fillText('Пд', MM_CENTER, MM_CENTER + ringR);
+  mmCtx.fillText('Зх', MM_CENTER - ringR, MM_CENTER);
+  mmCtx.shadowBlur = 0;
+  mmCtx.font = '9px system-ui, sans-serif';
+  mmCtx.fillStyle = 'rgba(255,255,255,0.75)';
+  mmCtx.fillText('±' + R, MM_CENTER, MM_DISPLAY - 7);
+  mmCtx.textAlign = 'start';
+  mmCtx.textBaseline = 'alphabetic';
+}
+
+function cycleMinimapZoom() {
+  mmZoomIdx = (mmZoomIdx + 1) % MM_ZOOMS.length;
+  mmTimer = 0;            // негайно перемалювати поле під новий масштаб
+  saveMinimapPrefs();
+}
+
+function toggleMinimap() {
+  minimapOn = !minimapOn;
+  applyMinimapVisibility();
+  if (minimapOn) mmTimer = 0;
+  saveMinimapPrefs();
+}
+
+minimapCanvas.addEventListener('click', cycleMinimapZoom);
+minimapCanvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  cycleMinimapZoom();
+}, { passive: false });
 // Невеликий діагностичний інтерфейс (ручне тестування зомбі та циклу доби з консолі)
 window.MCDebug = {
   setTime: (t) => { timeOfDay = ((t % DAY_LENGTH) + DAY_LENGTH) % DAY_LENGTH; },
@@ -4424,6 +4667,15 @@ window.MCDebug = {
   get spawnPoint() { return spawnPoint ? { ...spawnPoint } : null; },
   get time() { return timeOfDay; },
   get active() { return gameActive(); },
+  // Мінімапа: керування з консолі для ручного тестування.
+  toggleMinimap: () => { toggleMinimap(); return minimapOn; },
+  minimapZoom: (i) => {
+    if (Number.isInteger(i)) {
+      mmZoomIdx = ((i % MM_ZOOMS.length) + MM_ZOOMS.length) % MM_ZOOMS.length;
+      mmTimer = 0; saveMinimapPrefs();
+    }
+    return { index: mmZoomIdx, radius: MM_ZOOMS[mmZoomIdx], on: minimapOn };
+  },
   // Біом під гравцем (для тестів)
   get biome() {
     return BIOME_NAMES[biomeAt(Math.floor(player.pos.x), Math.floor(player.pos.z))];
@@ -4541,6 +4793,13 @@ function animate() {
     (weatherState !== 'clear' ? `\n${weatherState === 'rain' ? '🌧' : '🌨'} ${weatherState}` : '');
 
   updateSurvivalHud();
+
+  // Мінімапа: важкий ресемплінг поля throttle-имо (~5 Гц), маркери — щокадру.
+  if (gameActive() && minimapOn) {
+    mmTimer -= dt;
+    if (mmTimer <= 0) { updateMinimapField(); mmTimer = 0.18; }
+    drawMinimap();
+  }
 
   // Небо малюємо першим проходом: заливка кольором неба + сонце/місяць/зорі,
   // далі світ (з очищенням глибини), далі кирка — кожне поверх попереднього
