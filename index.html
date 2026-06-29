@@ -36,6 +36,7 @@
         <div><kbd>F</kbd> — з'їсти м'ясо / зерно (відновити голод)</div>
         <div><kbd>M</kbd> — увімкнути / вимкнути звук</div>
         <div><kbd>N</kbd> — сховати / показати мінімапу • тап по ній — масштаб</div>
+        <div><kbd>J</kbd> — журнал досягнень 🏆</div>
         <div><kbd>Esc</kbd> — пауза</div>
       </div>
       <div class="controls" id="controls-touch">
@@ -49,6 +50,7 @@
         <div>🛏 Ліжко (меню ▤) — ▦ поставити; ▦ по ліжку вночі — проспати ніч і закріпити відродження</div>
         <div>🍖 — з'їсти м'ясо / зерно</div>
         <div>🗺 Мінімапа (вгорі праворуч) — тап перемикає масштаб</div>
+        <div>🏆 — журнал досягнень (кнопка праворуч)</div>
         <div>▤ — меню всіх блоків</div>
         <div>Тап по слоту внизу — вибір блока</div>
       </div>
@@ -71,6 +73,8 @@
     <div id="debug"></div>
     <canvas id="minimap" width="150" height="150" title="Мінімапа (N — сховати, тап — масштаб)"></canvas>
     <button id="btn-sound" title="Звук (M)">🔊</button>
+    <button id="btn-ach" title="Досягнення (J)">🏆</button>
+    <div id="ach-toasts"></div>
 
     <div id="touch-controls" hidden>
       <div id="joystick"><div id="stick"></div></div>
@@ -102,6 +106,15 @@
       <p class="menu-hint">Виберіть блок для активного слота • <kbd>Tab</kbd>/<kbd>Esc</kbd> — закрити</p>
       <div id="block-grid"></div>
       <div id="menu-hotbar"></div>
+    </div>
+  </div>
+
+  <div id="ach-panel" hidden>
+    <div id="ach-panel-inner">
+      <button id="ach-close" title="Закрити">✕</button>
+      <h2>🏆 Досягнення <span id="ach-count">0 / 0</span></h2>
+      <p class="menu-hint">Виконуйте завдання у світі, щоб відкривати здобутки • <kbd>J</kbd>/<kbd>Esc</kbd> — закрити</p>
+      <div id="ach-grid"></div>
     </div>
   </div>
 
