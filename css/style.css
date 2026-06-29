@@ -547,6 +547,192 @@ kbd {
   z-index: 6;
 }
 
+/* ===== Досягнення: кнопка, спливаючі сповіщення та журнал ===== */
+#btn-ach {
+  position: fixed;
+  top: 204px;
+  right: 12px;
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 6;
+  touch-action: manipulation;
+}
+
+#btn-ach:hover {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+#ach-toasts {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  z-index: 9;
+  pointer-events: none;
+}
+
+.ach-toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 240px;
+  max-width: 86vw;
+  padding: 10px 18px 10px 12px;
+  background: linear-gradient(135deg, rgba(40, 46, 64, 0.96), rgba(28, 32, 44, 0.96));
+  border: 2px solid #d9b54a;
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
+  color: #fff;
+  opacity: 0;
+  transform: translateY(-18px) scale(0.96);
+  transition: opacity 0.35s ease, transform 0.35s ease;
+}
+
+.ach-toast.show {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.ach-toast-icon {
+  font-size: 30px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.ach-toast-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.ach-toast-text b {
+  color: #f1d27a;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.ach-toast-text span {
+  font-size: 15px;
+}
+
+#ach-panel {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 15, 30, 0.7);
+  backdrop-filter: blur(3px);
+  z-index: 10;
+}
+
+#ach-panel[hidden] {
+  display: none;
+}
+
+#ach-panel-inner {
+  position: relative;
+  width: min(94vw, 620px);
+  max-height: 86vh;
+  overflow-y: auto;
+  padding: 20px;
+  background: rgba(28, 32, 44, 0.97);
+  border: 2px solid #555;
+  border-radius: 10px;
+  color: #fff;
+  text-align: center;
+}
+
+#ach-panel-inner h2 {
+  font-size: 22px;
+  letter-spacing: 1px;
+  text-shadow: 2px 2px 0 #1a1a1a;
+}
+
+#ach-count {
+  color: #f1d27a;
+  font-variant-numeric: tabular-nums;
+}
+
+#ach-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+  color: #ddd;
+  background: #444;
+  border: 1px solid #222;
+  border-radius: 4px;
+  font-size: 16px;
+}
+
+#ach-close:hover {
+  background: #663333;
+}
+
+#ach-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+  text-align: left;
+}
+
+.ach-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: rgba(60, 60, 70, 0.6);
+  border: 2px solid #666;
+  border-radius: 6px;
+}
+
+.ach-cell.unlocked {
+  border-color: #d9b54a;
+  background: rgba(80, 70, 40, 0.55);
+}
+
+.ach-cell.locked {
+  opacity: 0.55;
+}
+
+.ach-icon {
+  font-size: 26px;
+  line-height: 1;
+  flex: 0 0 auto;
+  width: 30px;
+  text-align: center;
+}
+
+.ach-info {
+  min-width: 0;
+}
+
+.ach-title {
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.ach-desc {
+  font-size: 12px;
+  color: #aab;
+}
+
 /* Вузькі екрани: менший хотбар, приховати десктопну довідку */
 @media (max-width: 620px) {
   .slot {
@@ -569,6 +755,9 @@ kbd {
   }
   #btn-sound {
     top: 116px;
+  }
+  #btn-ach {
+    top: 160px;
   }
   #btn-pause {
     top: 116px;

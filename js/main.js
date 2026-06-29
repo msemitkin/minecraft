@@ -451,6 +451,15 @@ const Sound = (() => {
         noise({ dur: 0.08, gain: 0.13, type: 'lowpass', freq: 560, q: 0.8 });
       }, 130);
     },
+    // Здобуте досягнення: коротка висхідна мажорна фанфара (C-E-G-C)
+    achievement() {
+      if (!ctx || !enabled) return;
+      const notes = [523.25, 659.25, 783.99, 1046.5];
+      notes.forEach((f, i) => setTimeout(() => {
+        if (!enabled) return;
+        tone({ freq: f, dur: 0.18, type: 'triangle', gain: 0.12, attack: 0.004 });
+      }, i * 95));
+    },
     // Рівень дощу 0..1 — плавно піднімає/опускає гучність зацикленого шуму
     setRain(level) {
       if (!ctx && level <= 0) return;
@@ -1333,6 +1342,7 @@ function damagePlayer(amount, cause) {
   player.invuln = 0.5;
   player.sinceHurt = 0;
   player.lastCause = cause || '';
+  unlockAch('ouch');
   if (player.health <= 0) die();
 }
 
@@ -1352,6 +1362,7 @@ function die() {
   cancelBowDraw();
   resetMining();
   if (isLocked()) document.exitPointerLock();
+  unlockAch('death');
   showDeathScreen(player.lastCause);
 }
 
@@ -1440,7 +1451,21 @@ function updateSurvival(dt) {
       player.exhaustion += 3;
     }
   }
+
+  // ===== Досягнення довкілля (висота, плавання, біом) — throttle ~2.5 Гц =====
+  achEnvTimer -= dt;
+  if (achEnvTimer <= 0) {
+    achEnvTimer = 0.4;
+    if (player.pos.y < 6) unlockAch('deep');
+    if (player.pos.y > 52) unlockAch('peak');
+    if (player.prevInWater) unlockAch('swim');
+    const b = biomeAt(Math.floor(player.pos.x), Math.floor(player.pos.z));
+    unlockAch(b === BIOME.FOREST ? 'biome_forest'
+      : b === BIOME.DESERT ? 'biome_desert'
+      : b === BIOME.SNOWY ? 'biome_snowy' : 'biome_plains');
+  }
 }
+let achEnvTimer = 0;
 
 // Зʼїсти одну порцію сирого м'яса (клавіша F / кнопка 🍖)
 function eatFood() {
@@ -1450,6 +1475,7 @@ function eatFood() {
   player.hunger = Math.min(MAX_HUNGER, player.hunger + EAT_AMOUNT);
   player.eatTimer = EAT_COOLDOWN;
   Sound.eat();
+  unlockAch('eat');
   updateFoodHud();
 }
 
@@ -2026,6 +2052,9 @@ function updateMobs(dt) {
           { radius: 0.4, speed: 3, upBias: 1.2, life: 0.7, size: 0.13 });
         Sound.mobDeath();
       }
+      if (m.type === 'creeper') unlockAch('creeper');
+      else if (m.type === 'skeleton') unlockAch('skeleton');
+      else unlockAch('zombie');
       removeMob(i);
       continue;
     }
@@ -2092,6 +2121,7 @@ function damageEntity(entity, isAnimal, dmg, kx, kz, kup) {
       const idx = animals.indexOf(entity);
       if (idx >= 0) removeAnimal(idx);
       updateFoodHud();
+      unlockAch('hunt');
     } else {
       Sound.mobHit();
     }
@@ -2342,6 +2372,7 @@ function releaseBow() {
   spawnArrow(power);
   Sound.bowShoot(power);
   triggerSwing();
+  unlockAch('archer');
 }
 
 // ============================================================
@@ -2354,6 +2385,7 @@ const explosionFx = [];
 
 function igniteTnt(x, y, z, fuse = TNT_FUSE) {
   setBlock(x, y, z, AIR);
+  unlockAch('boom');
   const mesh = new THREE.Mesh(
     new THREE.BoxGeometry(0.98, 0.98, 0.98),
     new THREE.MeshLambertMaterial({ color: 0xb53a2e })
@@ -2732,6 +2764,7 @@ function placeTorch(hit) {
     Sound.torch(0.16);
     spawnParticles(x + 0.5, y + 0.55, z + 0.5, torchEmber, 6,
       { radius: 0.15, speed: 1.4, upBias: 1.2, life: 0.5, size: 0.07, gravity: -2 });
+    unlockAch('torch');
   }
   return ok;
 }
@@ -2910,6 +2943,7 @@ function plantCrop(hit) {
   Sound.dig(GRASS);                                          // м'який звук грунту
   spawnParticles(x + 0.5, y + 0.06, z + 0.5, new THREE.Color(0x6b4a2b), 7,
     { radius: 0.3, speed: 1.5, upBias: 0.5, life: 0.45, size: 0.09, gravity: 10 });
+  unlockAch('plant');
   return true;
 }
 
@@ -2922,6 +2956,7 @@ function harvestCrop(c) {
   if (mature) {
     player.food = Math.min(FOOD_MAX, player.food + WHEAT_FOOD);
     updateFoodHud();
+    unlockAch('harvest');
   }
   removeCrop(cropKey(c.x, c.y, c.z));
 }
@@ -3102,6 +3137,7 @@ function updateSleep(dt) {
       if (player.hunger >= 6 && player.health < MAX_HEALTH) {  // легкий «відпочилий» бонус
         player.health = Math.min(MAX_HEALTH, player.health + 4);
       }
+      unlockAch('sleep');
       saveGame();
     }
   } else if (sleepT < SLEEP_FADE * 2 + SLEEP_HOLD) {
@@ -3175,6 +3211,12 @@ function updateMining(dt, hit) {
     validateTorches();  // міг зникнути блок-опора смолоскипа
     validateCrops();    // ... або грунт під посівом
     validateBeds();     // ... або опора під ліжком
+    unlockAch('first_block');
+    if (id === LOG) unlockAch('chop_wood');
+    else if (id === COAL) unlockAch('coal');
+    else if (id === IRON) unlockAch('iron');
+    else if (id === GOLD) unlockAch('gold');
+    else if (id === DIAMOND) unlockAch('diamond');
     resetMining();
     return;
   }
@@ -3231,6 +3273,7 @@ function placeBlock() {
 
   setBlock(x, y, z, id);
   Sound.place(id);
+  unlockAch('place_block');
   // Невеликий пил при встановленні блока
   spawnParticles(x + 0.5, y + 0.5, z + 0.5, blockColor(id), 6,
     { radius: 0.5, speed: 1.4, upBias: 0.3, life: 0.4, size: 0.1, gravity: 10 });
@@ -4103,7 +4146,7 @@ document.addEventListener('pointerlockchange', () => {
     overlay.style.display = 'none';
     hud.hidden = false;
     touchControls.hidden = true;
-  } else if (!mobilePlaying && !blockMenuOpen && !player.dead) {
+  } else if (!mobilePlaying && !blockMenuOpen && !achPanelOpen && !player.dead) {
     mining = false;
     cancelBowDraw();
     overlay.style.display = 'flex';
@@ -4245,6 +4288,7 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyM') { Sound.resume(); applySoundState(Sound.toggle()); return; }
   if (e.code === 'KeyN') { toggleMinimap(); return; }
+  if (e.code === 'KeyJ') { toggleAchPanel(); return; }
   if (e.code === 'KeyF') { Sound.resume(); eatFood(); return; }
   // Клавіші 1–9 та 0 — вибір слота хотбара (0 = десятий слот)
   if (e.code.startsWith('Digit')) {
@@ -4255,6 +4299,10 @@ document.addEventListener('keydown', (e) => {
   if (blockMenuOpen && e.code === 'Escape') {
     e.preventDefault();
     closeBlockMenu();
+  }
+  if (achPanelOpen && e.code === 'Escape') {
+    e.preventDefault();
+    closeAchPanel();
   }
 });
 
@@ -4568,6 +4616,157 @@ minimapCanvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
   cycleMinimapZoom();
 }, { passive: false });
+
+// ============================================================
+// Досягнення (Advancements): прогрес-система поверх усіх механік
+// ============================================================
+// Здобуті досягнення зберігаються окремо від світу (свій ключ localStorage),
+// тож «Нова гра» чи зміна версії сейва їх не чіпають — це наскрізні здобутки.
+// unlockAch(id) — ідемпотентний: повторний виклик нічого не робить. Виклики
+// розкидані по ігрових функціях (видобуток, бій, ферма, сон, мандри…).
+const ACHIEVEMENTS = [
+  { id: 'first_block', icon: '⛏', title: 'Перший удар',        desc: 'Зруйнувати свій перший блок' },
+  { id: 'place_block', icon: '🧱', title: 'Будівничий',         desc: 'Поставити блок' },
+  { id: 'chop_wood',   icon: '🪵', title: 'Лісоруб',            desc: 'Добути деревину' },
+  { id: 'coal',        icon: '⚫', title: 'Паливо',             desc: 'Видобути вугілля' },
+  { id: 'iron',        icon: '⛓',  title: 'Залізна доба',       desc: 'Видобути залізо' },
+  { id: 'gold',        icon: '🟡', title: 'Золота лихоманка',   desc: 'Видобути золото' },
+  { id: 'diamond',     icon: '💎', title: 'Найкращі друзі',     desc: 'Видобути алмаз' },
+  { id: 'geologist',   icon: '🪨', title: 'Геолог',             desc: 'Видобути всі чотири руди' },
+  { id: 'deep',        icon: '🕳', title: 'Надра землі',        desc: 'Спуститися глибше за y=6' },
+  { id: 'peak',        icon: '🏔', title: 'Підкорювач вершин',  desc: 'Піднятися вище за y=52' },
+  { id: 'swim',        icon: '🏊', title: 'Плавець',            desc: 'Поплавати у воді' },
+  { id: 'boom',        icon: '🧨', title: 'Бабах!',             desc: 'Підірвати динаміт' },
+  { id: 'torch',       icon: '🔦', title: 'Світло у пітьмі',    desc: 'Поставити смолоскип' },
+  { id: 'plant',       icon: '🌱', title: 'Фермер',             desc: 'Посіяти насіння' },
+  { id: 'harvest',     icon: '🌾', title: 'Урожай',             desc: 'Зібрати дозрілий колос' },
+  { id: 'eat',         icon: '🍖', title: 'Перекус',            desc: "З'їсти їжу" },
+  { id: 'hunt',        icon: '🐷', title: 'Мисливець',          desc: 'Уполювати тварину' },
+  { id: 'archer',      icon: '🏹', title: 'Лучник',             desc: 'Випустити стрілу з лука' },
+  { id: 'ouch',        icon: '💢', title: 'Боляче',             desc: 'Дістати поранення' },
+  { id: 'death',       icon: '💀', title: 'І знову початок',    desc: 'Загинути' },
+  { id: 'zombie',      icon: '🧟', title: 'Нічний вартовий',    desc: 'Здолати зомбі' },
+  { id: 'creeper',     icon: '💥', title: 'Знешкоджено',        desc: 'Здолати кріпера' },
+  { id: 'skeleton',    icon: '☠',  title: 'Дуель лучників',     desc: 'Здолати скелета' },
+  { id: 'sleep',       icon: '🛏', title: 'На добраніч',        desc: 'Проспати ніч у ліжку' },
+  { id: 'biome_plains',icon: '🌳', title: 'Рівнини',            desc: 'Побувати на рівнині' },
+  { id: 'biome_forest',icon: '🌲', title: 'Хащі',               desc: 'Побувати в лісі' },
+  { id: 'biome_desert',icon: '🌵', title: 'Спека',              desc: 'Побувати в пустелі' },
+  { id: 'biome_snowy', icon: '❄', title: 'Мерзлота',           desc: 'Побувати в сніговій тундрі' },
+  { id: 'cartographer',icon: '🗺', title: 'Картограф',          desc: 'Відвідати всі чотири біоми' },
+  { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
+];
+const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
+const ACH_KEY = 'mineclone:achievements';
+const achUnlocked = new Set();
+
+try {
+  const raw = JSON.parse(localStorage.getItem(ACH_KEY) || '[]');
+  if (Array.isArray(raw)) raw.forEach((id) => { if (ACH_BY_ID[id]) achUnlocked.add(id); });
+} catch (e) { /* перший запуск — порожній набір */ }
+
+function saveAchievements() {
+  try { localStorage.setItem(ACH_KEY, JSON.stringify([...achUnlocked])); } catch (e) { /* ignore */ }
+}
+
+const achToastsEl = document.getElementById('ach-toasts');
+const achPanelEl = document.getElementById('ach-panel');
+const achGridEl = document.getElementById('ach-grid');
+const achCountEl = document.getElementById('ach-count');
+let achPanelOpen = false;
+
+function showAchToast(a) {
+  if (!achToastsEl) return;
+  const el = document.createElement('div');
+  el.className = 'ach-toast';
+  const icon = document.createElement('span');
+  icon.className = 'ach-toast-icon';
+  icon.textContent = a.icon;
+  const text = document.createElement('span');
+  text.className = 'ach-toast-text';
+  const head = document.createElement('b');
+  head.textContent = 'Досягнення здобуто!';
+  const title = document.createElement('span');
+  title.textContent = a.title;
+  text.append(head, title);
+  el.append(icon, text);
+  achToastsEl.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+  setTimeout(() => {
+    el.classList.remove('show');
+    setTimeout(() => el.remove(), 450);
+  }, 4200);
+}
+
+// Головна точка входу: позначити досягнення здобутим (ідемпотентно).
+function unlockAch(id) {
+  const a = ACH_BY_ID[id];
+  if (!a || achUnlocked.has(id)) return;
+  achUnlocked.add(id);
+  saveAchievements();
+  showAchToast(a);
+  Sound.achievement();
+  if (achPanelOpen) renderAchPanel();
+  // Похідні (мета) досягнення — перевіряємо після кожного нового здобутку
+  if (['coal', 'iron', 'gold', 'diamond'].every((k) => achUnlocked.has(k))) unlockAch('geologist');
+  if (['biome_plains', 'biome_forest', 'biome_desert', 'biome_snowy'].every((k) => achUnlocked.has(k))) unlockAch('cartographer');
+  if (ACHIEVEMENTS.every((x) => x.id === 'master' || achUnlocked.has(x.id))) unlockAch('master');
+}
+
+function renderAchPanel() {
+  if (!achGridEl) return;
+  achCountEl.textContent = `${achUnlocked.size} / ${ACHIEVEMENTS.length}`;
+  achGridEl.innerHTML = '';
+  for (const a of ACHIEVEMENTS) {
+    const got = achUnlocked.has(a.id);
+    const cell = document.createElement('div');
+    cell.className = 'ach-cell ' + (got ? 'unlocked' : 'locked');
+    const ic = document.createElement('div');
+    ic.className = 'ach-icon';
+    ic.textContent = got ? a.icon : '🔒';
+    const info = document.createElement('div');
+    info.className = 'ach-info';
+    const t = document.createElement('div');
+    t.className = 'ach-title';
+    t.textContent = got ? a.title : '???';
+    const d = document.createElement('div');
+    d.className = 'ach-desc';
+    d.textContent = a.desc;
+    info.append(t, d);
+    cell.append(ic, info);
+    achGridEl.appendChild(cell);
+  }
+}
+
+function openAchPanel() {
+  if (achPanelOpen || !gameActive()) return;
+  if (blockMenuOpen) closeBlockMenu();
+  achPanelOpen = true;
+  mining = false;
+  cancelBowDraw();
+  renderAchPanel();
+  achPanelEl.hidden = false;
+  if (isLocked()) document.exitPointerLock();   // звільнити курсор для перегляду
+}
+
+function closeAchPanel() {
+  if (!achPanelOpen) return;
+  achPanelOpen = false;
+  achPanelEl.hidden = true;
+  if (!IS_TOUCH && !mobilePlaying && renderer.domElement.requestPointerLock) {
+    renderer.domElement.requestPointerLock();
+  }
+}
+
+function toggleAchPanel() { achPanelOpen ? closeAchPanel() : openAchPanel(); }
+
+document.getElementById('ach-close').addEventListener('click', closeAchPanel);
+achPanelEl.addEventListener('click', (e) => { if (e.target === achPanelEl) closeAchPanel(); });
+
+const achBtn = document.getElementById('btn-ach');
+achBtn.addEventListener('click', toggleAchPanel);
+achBtn.addEventListener('touchstart', (e) => { e.preventDefault(); toggleAchPanel(); }, { passive: false });
+
 // Невеликий діагностичний інтерфейс (ручне тестування зомбі та циклу доби з консолі)
 window.MCDebug = {
   setTime: (t) => { timeOfDay = ((t % DAY_LENGTH) + DAY_LENGTH) % DAY_LENGTH; },
@@ -4664,6 +4863,19 @@ window.MCDebug = {
   clearMobs: () => { for (let i = mobs.length - 1; i >= 0; i--) removeMob(i); return mobs.length; },
   get beds() { return beds.size; },
   get sleeping() { return sleeping; },
+  // Досягнення: ручне тестування з консолі
+  get achievements() {
+    return ACHIEVEMENTS.map((a) => ({ id: a.id, title: a.title, got: achUnlocked.has(a.id) }));
+  },
+  get achProgress() { return `${achUnlocked.size} / ${ACHIEVEMENTS.length}`; },
+  unlock: (id) => { unlockAch(id); return achUnlocked.has(id); },
+  unlockAll: () => { for (const a of ACHIEVEMENTS) unlockAch(a.id); return achUnlocked.size; },
+  resetAchievements: () => {
+    achUnlocked.clear(); saveAchievements();
+    if (achPanelOpen) renderAchPanel();
+    return achUnlocked.size;
+  },
+  toggleAchPanel: () => { toggleAchPanel(); return achPanelOpen; },
   get spawnPoint() { return spawnPoint ? { ...spawnPoint } : null; },
   get time() { return timeOfDay; },
   get active() { return gameActive(); },
