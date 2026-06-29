@@ -475,6 +475,14 @@ const Sound = (() => {
       tone({ freq: 72, dur: 1.4, type: 'sine', gain: 0.3, slideTo: 30, attack: 0.04 });
       tone({ freq: 120, dur: 0.9, type: 'triangle', gain: 0.14, slideTo: 45, attack: 0.06 });
     },
+    // Гавкіт шиби: два коротких висхідних «гав-гав»
+    bark() {
+      tone({ freq: 420, dur: 0.1, type: 'square', gain: 0.1, slideTo: 620, attack: 0.004 });
+      setTimeout(() => {
+        if (!enabled) return;
+        tone({ freq: 480, dur: 0.09, type: 'square', gain: 0.09, slideTo: 700, attack: 0.004 });
+      }, 130);
+    },
   };
 })();
 
@@ -1558,18 +1566,53 @@ const ANIMAL_TYPES = {
       ];
     },
   },
+  // Шиба-іну — єдина приручна тварина (tameable): погодуй сирим м'ясом (ПКМ),
+  // і вона ходитиме за тобою; повторний ПКМ — команда «сидіти».
+  shiba: {
+    speed: 2.0, halfW: 0.28, height: 0.7, hp: 8, food: 2, tameable: true,
+    build(g) {
+      const rust = 0xc8743a, cream = 0xf0e4cf, nose = 0x2a2420, eye = 0x1a1512;
+      animalBox(g, 0.42, 0.42, 0.7, rust, 0, 0.5, 0.05);        // тулуб
+      animalBox(g, 0.4, 0.16, 0.66, cream, 0, 0.34, 0.05);      // кремове черевце
+      animalBox(g, 0.4, 0.38, 0.36, rust, 0, 0.62, -0.42);      // голова
+      animalBox(g, 0.34, 0.14, 0.2, cream, 0, 0.5, -0.5);       // кремові щоки/підборіддя
+      animalBox(g, 0.22, 0.18, 0.2, cream, 0, 0.54, -0.62);     // морда
+      animalBox(g, 0.1, 0.08, 0.06, nose, 0, 0.6, -0.73);       // ніс
+      animalBox(g, 0.06, 0.07, 0.03, eye, -0.11, 0.66, -0.605); // очі
+      animalBox(g, 0.06, 0.07, 0.03, eye, 0.11, 0.66, -0.605);
+      animalBox(g, 0.12, 0.16, 0.06, rust, -0.13, 0.86, -0.34); // гострі вушка
+      animalBox(g, 0.12, 0.16, 0.06, rust, 0.13, 0.86, -0.34);
+      // Закручений хвіст-«бублик»: окрема група з віссю біля крупа, щоб махати
+      const tail = new THREE.Group();
+      tail.position.set(0, 0.72, 0.38);
+      animalBox(tail, 0.12, 0.12, 0.22, rust, 0, 0, 0.04);
+      animalBox(tail, 0.12, 0.2, 0.12, rust, 0, 0.1, 0.13);
+      animalBox(tail, 0.12, 0.12, 0.22, cream, 0, 0.2, 0.02);   // кремчастий кінчик завитка
+      g.add(tail);
+      const legs = [
+        animalLeg(g, 0.13, 0.32, rust, -0.14, 0.32, -0.2),
+        animalLeg(g, 0.13, 0.32, rust, 0.14, 0.32, -0.2),
+        animalLeg(g, 0.13, 0.32, rust, -0.14, 0.32, 0.28),
+        animalLeg(g, 0.13, 0.32, rust, 0.14, 0.32, 0.28),
+      ];
+      return { legs, tail };
+    },
+  },
 };
 
 function spawnAnimal(type, x, y, z) {
   const def = ANIMAL_TYPES[type];
   const group = new THREE.Group();
-  const legs = def.build(group);
+  const built = def.build(group);
+  // build() повертає або масив ніг, або { legs, tail } для тварин із хвостом
+  const legs = Array.isArray(built) ? built : built.legs;
   group.position.set(x, y, z);
   scene.add(group);
   const mats = [];
   group.traverse((o) => { if (o.isMesh) mats.push(o.material); });
   animals.push({
     type, group, legs, mats,
+    tail: Array.isArray(built) ? null : (built.tail || null),
     pos: new THREE.Vector3(x, y, z),
     vel: new THREE.Vector3(),
     yaw: Math.random() * Math.PI * 2,
@@ -1585,6 +1628,10 @@ function spawnAnimal(type, x, y, z) {
     foodValue: def.food,
     hurt: 0,       // спалах при ударі (0..1)
     panic: 0,      // тікає від гравця після удару
+    tameable: !!def.tameable, // чи можна приручити (лише шиба)
+    tamed: false,  // приручена — ходить за господарем
+    sitting: false,// команда «сидіти»: лишається на місці
+    wag: 0,        // фаза виляння хвостом (для приручених)
   });
 }
 
@@ -1614,10 +1661,42 @@ function removeAnimal(index) {
   animals.splice(index, 1);
 }
 
+const PET_FOLLOW_DIST = 3;     // далі — біжить за господарем
+const PET_TELEPORT_DIST = 24;  // зовсім відстала — телепортується ближче
+
+// Телепортує приручену тварину на вільну ділянку біля гравця (коли відстала)
+function teleportPet(a) {
+  for (let i = 0; i < 10; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const r = 2 + Math.random() * 2;
+    const x = Math.floor(player.pos.x + Math.cos(ang) * r);
+    const z = Math.floor(player.pos.z + Math.sin(ang) * r);
+    const h = heightAt(x, z);
+    if (h <= SEA) continue;
+    if (isSolid(blockAt(x, h + 1, z))) continue;
+    a.pos.set(x + 0.5, h + 1.01, z + 0.5);
+    a.vel.set(0, 0, 0);
+    return true;
+  }
+  return false;
+}
+
 function updateAnimal(a, dt) {
-  // Паніка після удару: тікає геть від гравця прискорено
-  const panicking = a.panic > 0;
-  if (panicking) {
+  // Приручена шиба: сидить або біжить за господарем (має пріоритет над блуканням)
+  const tamedActive = a.tamed;
+  // Паніка після удару: тікає геть від гравця прискорено (приручені не панікують)
+  const panicking = a.panic > 0 && !tamedActive;
+  if (tamedActive) {
+    const distToPlayer = a.pos.distanceTo(player.pos);
+    if (distToPlayer > PET_TELEPORT_DIST) teleportPet(a);
+    if (a.sitting || distToPlayer <= PET_FOLLOW_DIST) {
+      a.state = 'idle';
+    } else {
+      a.state = 'walk';
+    }
+    // Дивиться на господаря (рух «до гравця» — yaw = atan2(a−p))
+    a.targetYaw = Math.atan2(a.pos.x - player.pos.x, a.pos.z - player.pos.z);
+  } else if (panicking) {
     a.panic -= dt;
     // Дивиться геть від гравця: «до гравця» — atan2(a−p); напрям утечі — протилежний
     a.targetYaw = Math.atan2(player.pos.x - a.pos.x, player.pos.z - a.pos.z);
@@ -1642,7 +1721,7 @@ function updateAnimal(a, dt) {
   a.yaw += dyaw * Math.min(1, dt * (panicking ? 8 : 3));
 
   const moving = panicking || a.state === 'walk';
-  const sp = moving ? a.speed * (panicking ? 2.2 : 1) : 0;
+  const sp = moving ? a.speed * (panicking ? 2.2 : tamedActive ? 1.6 : 1) : 0;
   a.vel.x = -Math.sin(a.yaw) * sp;
   a.vel.z = -Math.cos(a.yaw) * sp;
 
@@ -1670,6 +1749,16 @@ function updateAnimal(a, dt) {
     leg.rotation.x = i % 2 === 0 ? swing : -swing;
   });
 
+  // Приручена шиба радісно махає хвостом (швидше, коли біжить)
+  if (a.tail) {
+    if (tamedActive) {
+      a.wag += dt * (moving ? 13 : 7);
+      a.tail.rotation.y = Math.sin(a.wag) * 0.6;
+    } else {
+      a.tail.rotation.y = 0;
+    }
+  }
+
   // Червоний спалах при отриманні удару
   if (a.hurt > 0) {
     a.hurt = Math.max(0, a.hurt - dt * 3);
@@ -1678,6 +1767,12 @@ function updateAnimal(a, dt) {
 
   a.group.position.copy(a.pos);
   a.group.rotation.y = a.yaw;
+
+  // Поза «сидіти»: підгортаємо задні лапи й трохи присідаємо
+  if (tamedActive && a.sitting) {
+    a.legs[2].rotation.x = a.legs[3].rotation.x = -1.15;
+    a.group.position.y -= 0.12;
+  }
 }
 
 let animalSpawnTimer = 0;
@@ -1690,7 +1785,8 @@ function updateAnimals(dt) {
   }
   for (let i = animals.length - 1; i >= 0; i--) {
     const a = animals[i];
-    if (a.pos.distanceTo(player.pos) > ANIMAL_DESPAWN_DIST || a.pos.y < -10) {
+    // Приручені тварини не деспавняться за відстанню (телепортуються в updateAnimal)
+    if ((!a.tamed && a.pos.distanceTo(player.pos) > ANIMAL_DESPAWN_DIST) || a.pos.y < -10) {
       removeAnimal(i);
     } else {
       updateAnimal(a, dt);
@@ -2070,6 +2166,7 @@ function updateMobs(dt) {
 // тоді цей клік не починає видобуток блока.
 const MELEE_REACH = 3.4;
 const MEAT_COLOR = new THREE.Color(0xc0392b);
+const HEART_COLOR = new THREE.Color(0xff5c8a);
 const _atkDir = new THREE.Vector3();
 
 // Удар гравця по найближчій істоті в прицілі (зомбі або тварині).
@@ -2112,7 +2209,7 @@ function damageEntity(entity, isAnimal, dmg, kx, kz, kup) {
   entity.vel.y += kup;
 
   if (isAnimal) {
-    entity.panic = 4;                              // тварина кидається тікати
+    if (!entity.tamed) entity.panic = 4;           // дика тварина кидається тікати
     if (entity.health <= 0) {
       player.food = Math.min(FOOD_MAX, player.food + entity.foodValue);
       spawnParticles(entity.pos.x, entity.pos.y + entity.height * 0.5, entity.pos.z,
@@ -2128,6 +2225,60 @@ function damageEntity(entity, isAnimal, dmg, kx, kz, kup) {
   } else {
     Sound.mobHit();
   }
+}
+
+// Рожеві серця над приученою/нагодованою твариною
+function spawnHearts(a) {
+  spawnParticles(a.pos.x, a.pos.y + a.height + 0.2, a.pos.z, HEART_COLOR, 6,
+    { radius: 0.18, speed: 1.0, upBias: 1.4, life: 0.9, size: 0.13, gravity: -2 });
+}
+
+// ПКМ по приручній тварині (шибі) у прицілі: годуємо сирим м'ясом, щоб
+// приручити, а приручену — садимо/піднімаємо. Повертає true, якщо клік оброблено.
+function tryPetInteract() {
+  if (!animals.length) return false;
+  camera.getWorldDirection(_atkDir);
+  const ox = camera.position.x, oy = camera.position.y, oz = camera.position.z;
+  let best = null, bestDist = Infinity;
+  for (const a of animals) {
+    if (!a.tameable) continue;
+    const tx = a.pos.x - ox;
+    const ty = a.pos.y + a.height * 0.5 - oy;
+    const tz = a.pos.z - oz;
+    const dist = Math.hypot(tx, ty, tz);
+    if (dist > MELEE_REACH) continue;
+    const dot = (tx * _atkDir.x + ty * _atkDir.y + tz * _atkDir.z) / (dist || 1);
+    if (dot < 0.55) continue;
+    if (dist < bestDist) { bestDist = dist; best = a; }
+  }
+  if (!best) return false;
+
+  triggerSwing();
+  if (best.tamed) {
+    // Перемикаємо «сидіти / йти за мною»
+    best.sitting = !best.sitting;
+    best.vel.x = best.vel.z = 0;
+    if (!best.sitting) { best.legs[2].rotation.x = best.legs[3].rotation.x = 0; }
+    Sound.bark();
+    return true;
+  }
+  // Дика шиба: годуємо сирим м'ясом (потрібна їжа в торбі)
+  if (player.food <= 0) { Sound.bark(); return true; }
+  player.food -= 1;
+  updateFoodHud();
+  Sound.eat();
+  best.panic = 0;
+  if (Math.random() < 0.34) {            // ~⅓ шанс приручити з однієї порції
+    best.tamed = true;
+    spawnHearts(best);
+    Sound.bark();
+    unlockAch('tame');
+  } else {
+    // Не вдалося — летять крихти м'яса
+    spawnParticles(best.pos.x, best.pos.y + best.height * 0.6, best.pos.z,
+      MEAT_COLOR, 5, { radius: 0.2, speed: 1.6, upBias: 0.8, life: 0.5, size: 0.09 });
+  }
+  return true;
 }
 
 // Спільний обробник ЛКМ / кнопки «добувати»: спершу удар по істоті,
@@ -3229,6 +3380,8 @@ function updateMining(dt, hit) {
 }
 
 function placeBlock() {
+  // Взаємодія з приручною твариною (шибою) має пріоритет над встановленням блока
+  if (tryPetInteract()) return;
   triggerSwing();
   const hit = raycastBlock();
   if (!hit || !hit.prev) return;
@@ -4642,6 +4795,7 @@ const ACHIEVEMENTS = [
   { id: 'harvest',     icon: '🌾', title: 'Урожай',             desc: 'Зібрати дозрілий колос' },
   { id: 'eat',         icon: '🍖', title: 'Перекус',            desc: "З'їсти їжу" },
   { id: 'hunt',        icon: '🐷', title: 'Мисливець',          desc: 'Уполювати тварину' },
+  { id: 'tame',        icon: '🐕', title: 'Гарний хлопчик',      desc: 'Приручити шиба-іну' },
   { id: 'archer',      icon: '🏹', title: 'Лучник',             desc: 'Випустити стрілу з лука' },
   { id: 'ouch',        icon: '💢', title: 'Боляче',             desc: 'Дістати поранення' },
   { id: 'death',       icon: '💀', title: 'І знову початок',    desc: 'Загинути' },
@@ -4861,6 +5015,18 @@ window.MCDebug = {
   sleep: () => trySleep([...beds.values()][0]),
   // Прибрати всю нічну нечисть (зручно перед тестом сну)
   clearMobs: () => { for (let i = mobs.length - 1; i >= 0; i--) removeMob(i); return mobs.length; },
+  get animals() { return animals; },
+  // Спавнити шибу-іну поряд із гравцем; tamed=true — одразу приручена (для тестів)
+  spawnShiba: (tamed = false) => {
+    const ang = Math.random() * Math.PI * 2;
+    const d = 2 + Math.random() * 2;
+    const x = Math.floor(player.pos.x + Math.cos(ang) * d);
+    const z = Math.floor(player.pos.z + Math.sin(ang) * d);
+    const h = heightAt(x, z);
+    spawnAnimal('shiba', x + 0.5, h + 1.01, z + 0.5);
+    if (tamed) { animals[animals.length - 1].tamed = true; }
+    return animals.filter((a) => a.type === 'shiba').length;
+  },
   get beds() { return beds.size; },
   get sleeping() { return sleeping; },
   // Досягнення: ручне тестування з консолі
