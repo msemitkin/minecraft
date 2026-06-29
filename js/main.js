@@ -1569,32 +1569,50 @@ const ANIMAL_TYPES = {
   // Шиба-іну — єдина приручна тварина (tameable): погодуй сирим м'ясом (ПКМ),
   // і вона ходитиме за тобою; повторний ПКМ — команда «сидіти».
   shiba: {
-    speed: 2.0, halfW: 0.28, height: 0.7, hp: 8, food: 2, tameable: true,
+    speed: 2.0, halfW: 0.3, height: 0.8, hp: 8, food: 2, tameable: true,
     build(g) {
-      const rust = 0xc8743a, cream = 0xf0e4cf, nose = 0x2a2420, eye = 0x1a1512;
-      animalBox(g, 0.42, 0.42, 0.7, rust, 0, 0.5, 0.05);        // тулуб
-      animalBox(g, 0.4, 0.16, 0.66, cream, 0, 0.34, 0.05);      // кремове черевце
-      animalBox(g, 0.4, 0.38, 0.36, rust, 0, 0.62, -0.42);      // голова
-      animalBox(g, 0.34, 0.14, 0.2, cream, 0, 0.5, -0.5);       // кремові щоки/підборіддя
-      animalBox(g, 0.22, 0.18, 0.2, cream, 0, 0.54, -0.62);     // морда
-      animalBox(g, 0.1, 0.08, 0.06, nose, 0, 0.6, -0.73);       // ніс
-      animalBox(g, 0.06, 0.07, 0.03, eye, -0.11, 0.66, -0.605); // очі
-      animalBox(g, 0.06, 0.07, 0.03, eye, 0.11, 0.66, -0.605);
-      animalBox(g, 0.12, 0.16, 0.06, rust, -0.13, 0.86, -0.34); // гострі вушка
-      animalBox(g, 0.12, 0.16, 0.06, rust, 0.13, 0.86, -0.34);
+      // Яскраво-руда шуба з білими підпалами «urajiro», чорний ніс, гострі вушка
+      const coat = 0xe6913a, cream = 0xf4efe2, nose = 0x161616,
+        eye = 0x111111, tongue = 0xd98b97, earIn = 0xf0e6d4;
+      // Тулуб: рудий верх + кремовий низ, що піднімається по боках, і нагрудник
+      animalBox(g, 0.46, 0.44, 0.74, coat, 0, 0.56, 0.04);       // тулуб
+      animalBox(g, 0.5, 0.24, 0.72, cream, 0, 0.4, 0.04);        // біле черевце/боки
+      animalBox(g, 0.46, 0.34, 0.14, cream, 0, 0.46, -0.32);     // білий нагрудник
+      // Голова
+      animalBox(g, 0.44, 0.42, 0.4, coat, 0, 0.74, -0.5);        // голова
+      animalBox(g, 0.12, 0.26, 0.34, cream, -0.22, 0.66, -0.5);  // флер білих щік
+      animalBox(g, 0.12, 0.26, 0.34, cream, 0.22, 0.66, -0.5);
+      animalBox(g, 0.26, 0.22, 0.22, cream, 0, 0.66, -0.74);     // біла мордочка
+      animalBox(g, 0.13, 0.1, 0.08, nose, 0, 0.72, -0.87);       // чорний ніс
+      animalBox(g, 0.12, 0.06, 0.1, tongue, 0, 0.59, -0.85);     // рожевий язичок
+      animalBox(g, 0.07, 0.09, 0.04, eye, -0.13, 0.8, -0.705);   // очі
+      animalBox(g, 0.07, 0.09, 0.04, eye, 0.13, 0.8, -0.705);
+      // Гострі трикутні вушка: рудий низ + вузький кінчик + кремова середина
+      animalBox(g, 0.16, 0.16, 0.08, coat, -0.16, 1.0, -0.46);
+      animalBox(g, 0.16, 0.16, 0.08, coat, 0.16, 1.0, -0.46);
+      animalBox(g, 0.09, 0.13, 0.05, coat, -0.16, 1.15, -0.46);  // кінчики вух
+      animalBox(g, 0.09, 0.13, 0.05, coat, 0.16, 1.15, -0.46);
+      animalBox(g, 0.07, 0.13, 0.04, earIn, -0.16, 1.0, -0.51);  // кремова середина вуха
+      animalBox(g, 0.07, 0.13, 0.04, earIn, 0.16, 1.0, -0.51);
       // Закручений хвіст-«бублик»: окрема група з віссю біля крупа, щоб махати
       const tail = new THREE.Group();
-      tail.position.set(0, 0.72, 0.38);
-      animalBox(tail, 0.12, 0.12, 0.22, rust, 0, 0, 0.04);
-      animalBox(tail, 0.12, 0.2, 0.12, rust, 0, 0.1, 0.13);
-      animalBox(tail, 0.12, 0.12, 0.22, cream, 0, 0.2, 0.02);   // кремчастий кінчик завитка
+      tail.position.set(0, 0.82, 0.42);
+      animalBox(tail, 0.15, 0.15, 0.22, coat, 0, 0.02, 0.06);
+      animalBox(tail, 0.15, 0.22, 0.15, coat, 0, 0.16, 0.14);
+      animalBox(tail, 0.15, 0.15, 0.2, cream, 0, 0.28, 0.04);    // кремовий кінчик завитка
       g.add(tail);
-      const legs = [
-        animalLeg(g, 0.13, 0.32, rust, -0.14, 0.32, -0.2),
-        animalLeg(g, 0.13, 0.32, rust, 0.14, 0.32, -0.2),
-        animalLeg(g, 0.13, 0.32, rust, -0.14, 0.32, 0.28),
-        animalLeg(g, 0.13, 0.32, rust, 0.14, 0.32, 0.28),
-      ];
+      // Лапи: рудий верх + кремові «шкарпетки» (діти меша — гойдаються з лапою)
+      const mkLeg = (x, z) => {
+        const leg = animalLeg(g, 0.15, 0.36, coat, x, 0.36, z);
+        const sock = new THREE.Mesh(
+          new THREE.BoxGeometry(0.17, 0.15, 0.17),
+          new THREE.MeshLambertMaterial({ color: cream })
+        );
+        sock.position.set(0, -0.3, 0);  // біля «лапки» (пивот ноги вгорі)
+        leg.add(sock);
+        return leg;
+      };
+      const legs = [mkLeg(-0.15, -0.22), mkLeg(0.15, -0.22), mkLeg(-0.15, 0.3), mkLeg(0.15, 0.3)];
       return { legs, tail };
     },
   },
