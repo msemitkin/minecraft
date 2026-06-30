@@ -33,6 +33,9 @@ const BED = 20;
 // Біомні блоки: сніг (поверхня снігової тундри) і кактус (стовпами в пустелі).
 // Звичайні воксельні блоки — генеруються рельєфом, добуваються та ставляться.
 const SNOW = 21, CACTUS = 22;
+// Гравій — сипкий блок: генерується кишенями в камені й, як і пісок, підкоряється
+// гравітації (падає окремою сутністю, коли під ним зникає опора).
+const GRAVEL = 23;
 
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
@@ -41,14 +44,19 @@ const BLOCK_NAMES = {
   [COAL]: 'Вугільна руда', [IRON]: 'Залізна руда',
   [GOLD]: 'Золота руда', [DIAMOND]: 'Алмазна руда',
   [TORCH]: 'Смолоскип', [SEEDS]: 'Насіння', [BOW]: 'Лук', [BED]: 'Ліжко',
-  [SNOW]: 'Сніг', [CACTUS]: 'Кактус',
+  [SNOW]: 'Сніг', [CACTUS]: 'Кактус', [GRAVEL]: 'Гравій',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
 const ALL_BLOCKS = [
-  GRASS, DIRT, STONE, SAND, SNOW, LOG, LEAVES, PLANK, WATER, TNT,
+  GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, WATER, TNT,
   COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, BOW, BED,
 ];
+
+// Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
+// ними немає твердої опори (порожнеча або вода). Падіння запускає лише оновлення
+// блоків (видобуток/встановлення/вибух), тож згенерований рельєф лишається на місці.
+const isFalling = (id) => id === SAND || id === GRAVEL;
 
 // Хотбар: 10 слотів швидкого доступу (клавіші 1–9 та 0).
 // Блоки, які не вмістилися, доступні через меню (Tab) і призначаються в слот.
@@ -66,7 +74,7 @@ const BLOCK_HARDNESS = {
   [GRASS]: 0.5, [DIRT]: 0.5, [SAND]: 0.55,
   [LEAVES]: 0.3, [LOG]: 1.0, [PLANK]: 0.9, [STONE]: 1.6,
   [COAL]: 2.2, [IRON]: 2.8, [GOLD]: 2.8, [DIAMOND]: 3.6,
-  [SNOW]: 0.4, [CACTUS]: 0.5,
+  [SNOW]: 0.4, [CACTUS]: 0.5, [GRAVEL]: 0.7,
 };
 const DEFAULT_HARDNESS = 0.6;
 
@@ -180,6 +188,8 @@ function oreAt(x, y, z) {
   if (y <= 24 && oreVein(x, y, z, 503, 0.0035)) return GOLD;
   if (y <= 42 && oreVein(x, y, z, 307, 0.0075)) return IRON;
   if (y <= 54 && oreVein(x, y, z, 109, 0.012)) return COAL;
+  // Гравій: широкі кишені в камені на будь-якій глибині (~6% каменю).
+  if (oreVein(x, y, z, 211, 0.03)) return GRAVEL;
   return STONE;
 }
 
@@ -593,6 +603,7 @@ function setBlock(wx, wy, wz, id) {
   if (lz === 0) dirtyChunks.add(chunkKey(cx, cz - 1));
   if (lz === CHUNK - 1) dirtyChunks.add(chunkKey(cx, cz + 1));
   scheduleWaterAround(wx, wy, wz);
+  scheduleGravityAround(wx, wy, wz);
 }
 
 // ============================================================
@@ -612,6 +623,19 @@ function scheduleWaterAround(x, y, z) {
   scheduleWater(x, y - 1, z);
   scheduleWater(x, y, z + 1);
   scheduleWater(x, y, z - 1);
+}
+
+// ===== Гравітація сипких блоків (пісок, гравій) =====
+// Зміна блока може позбавити сусіда опори — плануємо перевірку падіння.
+const gravityQueue = new Set();
+
+function scheduleGravity(x, y, z) {
+  if (y >= 0 && y < HEIGHT) gravityQueue.add(x + ',' + y + ',' + z);
+}
+
+function scheduleGravityAround(x, y, z) {
+  scheduleGravity(x, y, z);      // щойно поставлений сипкий блок може почати падати
+  scheduleGravity(x, y + 1, z);  // блок над зміненою клітинкою міг утратити опору
 }
 
 const HORIZ_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -739,6 +763,21 @@ function makeAtlas() {
   paint(18, (x, y) => (x > 3 && x < 12 && y > 3 && y < 12)
     ? vary(92, 172, 96, 8) : vary(58, 138, 64, 10));                              // 18 кактус (зріз)
 
+  // Гравій: сірувата основа з детермінованими темними та світлими камінцями
+  {
+    let s = 0x9e3779b1 >>> 0;
+    const r = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+    const dark = new Set(), light = new Set();
+    for (let n = 0; n < 30; n++) dark.add(Math.floor(r() * TILE) * TILE + Math.floor(r() * TILE));
+    for (let n = 0; n < 18; n++) light.add(Math.floor(r() * TILE) * TILE + Math.floor(r() * TILE));
+    paint(19, (x, y) => {
+      const k = x * TILE + y;
+      if (dark.has(k)) return vary(96, 92, 88, 6);
+      if (light.has(k)) return vary(180, 176, 170, 6);
+      return vary(140, 134, 126, 8);
+    });                                                                            // 19 гравій
+  }
+
   const tex = new THREE.CanvasTexture(atlasCanvas);
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
@@ -766,6 +805,7 @@ const BLOCK_TILES = {
   [DIAMOND]: { top: 15, bottom: 15, side: 15 },
   [SNOW]:    { top: 16, bottom: 16, side: 16 },
   [CACTUS]:  { top: 18, bottom: 18, side: 17 },
+  [GRAVEL]:  { top: 19, bottom: 19, side: 19 },
 };
 
 function tileUV(tile) {
@@ -2487,6 +2527,82 @@ function updateTnt(dt) {
     } else {
       e.mesh.scale.setScalar(1 + k * (TNT_RADIUS + 1.5));
       e.mesh.material.opacity = 0.9 * (1 - k);
+    }
+  }
+}
+
+// ============================================================
+// Сипкі блоки під гравітацією: пісок і гравій падають окремою сутністю,
+// коли під ними зникає опора (видобуток, вибух, потік води). Сутність — куб
+// із текстурою блока; досягнувши твердої поверхні, знову стає вокселем.
+// ============================================================
+const fallingBlocks = [];
+const FALL_GRAVITY = 26;          // прискорення падіння, бл/с²
+const FALL_MAX = 96;              // запобіжник: межа одночасних падаючих блоків
+
+// Геометрія куба з UV, напнутими на бічний тайл блока (кеш на тип блока).
+const _fallGeoCache = new Map();
+function fallingGeo(id) {
+  if (_fallGeoCache.has(id)) return _fallGeoCache.get(id);
+  const tile = (BLOCK_TILES[id] || BLOCK_TILES[STONE]).side;
+  const { u0, u1, v0, v1 } = tileUV(tile);
+  const geo = new THREE.BoxGeometry(0.96, 0.96, 0.96);
+  const uv = geo.attributes.uv;
+  const corners = [[u0, v1], [u1, v1], [u0, v0], [u1, v0]];
+  for (let f = 0; f < 6; f++) {
+    for (let c = 0; c < 4; c++) uv.setXY(f * 4 + c, corners[c][0], corners[c][1]);
+  }
+  uv.needsUpdate = true;
+  _fallGeoCache.set(id, geo);
+  return geo;
+}
+
+// Створити падаючий блок із клітинки (x,y,z); y — нижня грань куба (ціле).
+function spawnFallingBlock(x, y, z, id) {
+  if (fallingBlocks.length >= FALL_MAX) return;
+  const mesh = new THREE.Mesh(fallingGeo(id), materials.solid);
+  mesh.position.set(x + 0.5, y + 0.5, z + 0.5);
+  scene.add(mesh);
+  fallingBlocks.push({ mesh, x, y, z, id, vel: 0 });
+}
+
+function updateFallingBlocks(dt) {
+  // 1) Запустити падіння для запланованих клітинок (сипкий блок без опори знизу)
+  if (gravityQueue.size) {
+    const cells = [...gravityQueue];
+    gravityQueue.clear();
+    for (const key of cells) {
+      const [x, y, z] = key.split(',').map(Number);
+      if (y <= 0 || !isFalling(blockAt(x, y, z))) continue;
+      if (isSolid(blockAt(x, y - 1, z))) continue;   // є тверда опора — лишається
+      // Пул заповнений: не видаляти воксель (інакше блок зник би) — перепланувати.
+      if (fallingBlocks.length >= FALL_MAX) { scheduleGravity(x, y, z); continue; }
+      const id = blockAt(x, y, z);
+      setBlock(x, y, z, AIR);          // прибрати воксель (перепланує клітинку вище — ланцюг)
+      spawnFallingBlock(x, y, z, id);
+    }
+  }
+  // 2) Просувати наявні падаючі блоки й приземляти на першій твердій поверхні
+  for (let i = fallingBlocks.length - 1; i >= 0; i--) {
+    const f = fallingBlocks[i];
+    f.vel -= FALL_GRAVITY * dt;
+    f.y += f.vel * dt;
+    f.mesh.position.y = f.y + 0.5;
+    const cellBelow = Math.floor(f.y);               // клітинка, у яку зайшла нижня грань
+    if (cellBelow >= 0 && !isSolid(blockAt(f.x, cellBelow, f.z))) continue;  // ще летить
+    // Приземлення: стати на першу порожню клітинку над опорою
+    let landY = cellBelow + 1;
+    while (landY < HEIGHT && isSolid(blockAt(f.x, landY, f.z))) landY++;
+    scene.remove(f.mesh);
+    fallingBlocks.splice(i, 1);
+    if (landY >= 0 && landY < HEIGHT) {
+      setBlock(f.x, landY, f.z, f.id);
+      Sound.land();
+      spawnParticles(f.x + 0.5, landY + 0.05, f.z + 0.5, blockColor(f.id), 8,
+        { radius: 0.4, speed: 1.6, upBias: 0.4, life: 0.4, size: 0.1, gravity: 12 });
+      validateTorches();  // блок міг зайняти клітинку смолоскипа/посіву/ліжка
+      validateCrops();
+      validateBeds();
     }
   }
 }
@@ -4936,6 +5052,19 @@ window.MCDebug = {
     }
     return null;
   },
+  // Гравітація сипких блоків — інспекція з консолі для тестів.
+  get falling() { return fallingBlocks.length; },
+  blockAt: (x, y, z) => blockAt(x, y, z),
+  // Поставити сипкий блок на `up` клітинок над поверхнею під гравцем — він
+  // має впасти й приземлитися на опору. Повертає координати джерела та цілі.
+  dropBlock: (id = GRAVEL, up = 5) => {
+    const x = Math.floor(player.pos.x), z = Math.floor(player.pos.z);
+    let gy = Math.min(HEIGHT - 1, Math.floor(player.pos.y) + 2);
+    while (gy > 1 && !isSolid(blockAt(x, gy - 1, z))) gy--;  // перша порожня над опорою
+    const fy = Math.min(HEIGHT - 1, gy + up);
+    setBlock(x, fy, z, id);                                   // setBlock запланує падіння
+    return { src: { x, y: fy, z }, expectLand: { x, y: gy, z }, name: BLOCK_NAMES[id] };
+  },
 };
 
 const clock = new THREE.Clock();
@@ -4958,6 +5087,7 @@ function animate() {
     updateCrops(dt);
     if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
     updateArrows(dt);
+    updateFallingBlocks(dt);
     updateParticles(dt);
     updateWeather(dt);
     waterTimer -= dt;
