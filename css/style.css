@@ -320,6 +320,18 @@ kbd {
   transition: opacity 0.08s linear;
 }
 
+/* ===== Помаранчевий спалах, коли гравець горить у лаві ===== */
+#fire-vignette {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 6;
+  background: radial-gradient(ellipse at center,
+    rgba(255, 110, 0, 0) 35%, rgba(255, 80, 0, 0.55) 85%, rgba(120, 20, 0, 0.9) 100%);
+  transition: opacity 0.12s linear;
+}
+
 /* ===== Екран смерті ===== */
 #death-overlay {
   position: fixed;
