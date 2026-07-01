@@ -75,9 +75,11 @@ const isSolid = (id) => id !== AIR && !isFluid(id);
 // Рівень води: джерело = 4, потоки = 3..1
 const WATER_LEVEL = { [WATER]: 4, [FLOW3]: 3, [FLOW2]: 2, [FLOW1]: 1 };
 const FLOW_OF_LEVEL = { 3: FLOW3, 2: FLOW2, 1: FLOW1 };
-// Рівень лави: джерело = 3, потоки = 2..1 (тече не так далеко, як вода)
-const LAVA_LEVEL = { [LAVA]: 3, [LFLOW3]: 3, [LFLOW2]: 2, [LFLOW1]: 1 };
-const LFLOW_OF_LEVEL = { 2: LFLOW2, 1: LFLOW1 };
+// Рівень лави дзеркалить воду (джерело=4 над стелею потоку=3), щоб вертикальні
+// струмені були стабільні й не «мигали» між рівнями. Коротшу дальність
+// розтікання дає жорсткіший поріг у tickLavaCell (lvl > 2), а не менші числа.
+const LAVA_LEVEL = { [LAVA]: 4, [LFLOW3]: 3, [LFLOW2]: 2, [LFLOW1]: 1 };
+const LFLOW_OF_LEVEL = { 3: LFLOW3, 2: LFLOW2, 1: LFLOW1 };
 const LAVA_SEA_Y = 8;   // до цієї висоти лава заливає дно печер у надрах
 
 // Скільки секунд утримувати ЛКМ, щоб видобути блок
@@ -757,7 +759,7 @@ function lavaMeetsWater(x, y, z, id) {
 }
 
 function lavaSupport(x, y, z) {
-  if (isLavaId(blockAt(x, y + 1, z))) return 2;
+  if (isLavaId(blockAt(x, y + 1, z))) return 3;   // лава згори тримає повний потік
   let best = 0;
   for (const [dx, dz] of HORIZ_DIRS) {
     const lvl = LAVA_LEVEL[blockAt(x + dx, y, z + dz)] || 0;
@@ -791,8 +793,9 @@ function tickLavaCell(x, y, z) {
   }
   if (isWaterId(below)) { setBlock(x, y - 1, z, STONE); return; }
 
-  // Розтікається вбік лише над твердою опорою (інакше тільки падає)
-  if (isSolid(below) && lvl > 1) {
+  // Розтікається вбік лише над твердою опорою (інакше тільки падає). Поріг
+  // lvl > 2 (а не > 1, як у води) робить розлив коротшим — лише ~2 клітинки.
+  if (isSolid(below) && lvl > 2) {
     for (const [dx, dz] of HORIZ_DIRS) {
       const nb = blockAt(x + dx, y, z + dz);
       if (nb === AIR || (isLavaId(nb) && nb !== LAVA && LAVA_LEVEL[nb] < lvl - 1)) {
