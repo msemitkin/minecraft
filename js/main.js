@@ -36,6 +36,10 @@ const SNOW = 21, CACTUS = 22;
 // Гравій — сипкий блок: генерується кишенями в камені й, як і пісок, підкоряється
 // гравітації (падає окремою сутністю, коли під ним зникає опора).
 const GRAVEL = 23;
+// Лава — гарячий флюїд (як вода, але світиться, тече повільніше й недалеко, палить
+// усе живе). Джерело + три рівні потоку. Генерується озерами в надрах печер, а
+// зустрівшись із водою — застигає в камінь.
+const LAVA = 24, LFLOW3 = 25, LFLOW2 = 26, LFLOW1 = 27;
 
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
@@ -44,12 +48,12 @@ const BLOCK_NAMES = {
   [COAL]: 'Вугільна руда', [IRON]: 'Залізна руда',
   [GOLD]: 'Золота руда', [DIAMOND]: 'Алмазна руда',
   [TORCH]: 'Смолоскип', [SEEDS]: 'Насіння', [BOW]: 'Лук', [BED]: 'Ліжко',
-  [SNOW]: 'Сніг', [CACTUS]: 'Кактус', [GRAVEL]: 'Гравій',
+  [SNOW]: 'Сніг', [CACTUS]: 'Кактус', [GRAVEL]: 'Гравій', [LAVA]: 'Лава',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
 const ALL_BLOCKS = [
-  GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, WATER, TNT,
+  GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, WATER, LAVA, TNT,
   COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, BOW, BED,
 ];
 
@@ -64,10 +68,17 @@ const HOTBAR_SIZE = 10;
 const DEFAULT_HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANK, WATER, TNT, TORCH];
 
 const isWaterId = (id) => id === WATER || (id >= FLOW3 && id <= FLOW1);
-const isSolid = (id) => id !== AIR && !isWaterId(id);
+// Лава — окремий флюїд: джерело LAVA + потоки LFLOW3..1
+const isLavaId = (id) => id === LAVA || (id >= LFLOW3 && id <= LFLOW1);
+const isFluid = (id) => isWaterId(id) || isLavaId(id);
+const isSolid = (id) => id !== AIR && !isFluid(id);
 // Рівень води: джерело = 4, потоки = 3..1
 const WATER_LEVEL = { [WATER]: 4, [FLOW3]: 3, [FLOW2]: 2, [FLOW1]: 1 };
 const FLOW_OF_LEVEL = { 3: FLOW3, 2: FLOW2, 1: FLOW1 };
+// Рівень лави: джерело = 3, потоки = 2..1 (тече не так далеко, як вода)
+const LAVA_LEVEL = { [LAVA]: 3, [LFLOW3]: 3, [LFLOW2]: 2, [LFLOW1]: 1 };
+const LFLOW_OF_LEVEL = { 2: LFLOW2, 1: LFLOW1 };
+const LAVA_SEA_Y = 8;   // до цієї висоти лава заливає дно печер у надрах
 
 // Скільки секунд утримувати ЛКМ, щоб видобути блок
 const BLOCK_HARDNESS = {
@@ -420,6 +431,16 @@ const Sound = (() => {
       noise({ dur: 0.12, gain, type: 'highpass', freq: 1900, q: 0.6, attack: 0.002 });
       noise({ dur: 0.07, gain: gain * 0.7, type: 'bandpass', freq: 900, q: 0.8 });
     },
+    // Лава: глухе булькотливе гудіння (фон поблизу озера)
+    lava(gain = 0.05) {
+      noise({ dur: 0.55, gain, type: 'lowpass', freq: 190, q: 0.6, attack: 0.06 });
+      tone({ freq: 60, dur: 0.5, type: 'sine', gain: gain * 0.6, slideTo: 44 });
+    },
+    // Сичання пари, коли лава застигає у воді
+    lavaHiss() {
+      noise({ dur: 0.4, gain: 0.18, type: 'highpass', freq: 2400, q: 0.5, attack: 0.004 });
+      noise({ dur: 0.24, gain: 0.1, type: 'bandpass', freq: 780, q: 0.7 });
+    },
     mobHit() {
       noise({ dur: 0.14, gain: 0.2, type: 'bandpass', freq: 450, q: 1.2 });
       tone({ freq: 160, dur: 0.12, type: 'square', gain: 0.08, slideTo: 90 });
@@ -506,7 +527,11 @@ function genChunkData(cx, cz) {
       else if (biome === BIOME.DESERT) { surf = SAND; sub = SAND; }
       else if (biome === BIOME.SNOWY) { surf = SNOW; sub = DIRT; }
       for (let y = 0; y <= h; y++) {
-        if (!noCaves && caveAt(wx, y, wz, h)) continue;
+        if (!noCaves && caveAt(wx, y, wz, h)) {
+          // Дно печер у надрах заливає статична лава (до LAVA_SEA_Y)
+          if (y > 0 && y <= LAVA_SEA_Y) data[blockIndex(lx, y, lz)] = LAVA;
+          continue;
+        }
         let id;
         if (y === h) id = surf;
         else if (y > h - 4) id = sub;
@@ -603,6 +628,7 @@ function setBlock(wx, wy, wz, id) {
   if (lz === 0) dirtyChunks.add(chunkKey(cx, cz - 1));
   if (lz === CHUNK - 1) dirtyChunks.add(chunkKey(cx, cz + 1));
   scheduleWaterAround(wx, wy, wz);
+  scheduleLavaAround(wx, wy, wz);
   scheduleGravityAround(wx, wy, wz);
 }
 
@@ -697,6 +723,96 @@ function processWaterQueue() {
 }
 
 // ============================================================
+// Симуляція лави: як вода, але тече повільніше й недалеко, а зустрівши
+// воду — застигає в камінь (з парою й сичанням).
+// ============================================================
+const lavaQueue = new Set();
+
+function scheduleLava(x, y, z) {
+  if (y >= 0 && y < HEIGHT) lavaQueue.add(x + ',' + y + ',' + z);
+}
+
+function scheduleLavaAround(x, y, z) {
+  scheduleLava(x, y, z);
+  scheduleLava(x + 1, y, z);
+  scheduleLava(x - 1, y, z);
+  scheduleLava(x, y + 1, z);
+  scheduleLava(x, y - 1, z);
+  scheduleLava(x, y, z + 1);
+  scheduleLava(x, y, z - 1);
+}
+
+// Лаву поряд із водою застигає в камінь (обидві клітинки, якщо потік)
+function lavaMeetsWater(x, y, z, id) {
+  for (const [dx, dy, dz] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]) {
+    if (isWaterId(blockAt(x + dx, y + dy, z + dz))) {
+      setBlock(x, y, z, STONE);
+      spawnParticles(x + 0.5, y + 0.9, z + 0.5, SMOKE_COLOR, 8,
+        { radius: 0.4, speed: 1.2, upBias: 1.4, life: 0.9, size: 0.14, gravity: -4 });
+      Sound.lavaHiss();
+      return true;
+    }
+  }
+  return false;
+}
+
+function lavaSupport(x, y, z) {
+  if (isLavaId(blockAt(x, y + 1, z))) return 2;
+  let best = 0;
+  for (const [dx, dz] of HORIZ_DIRS) {
+    const lvl = LAVA_LEVEL[blockAt(x + dx, y, z + dz)] || 0;
+    best = Math.max(best, lvl - 1);
+  }
+  return best;
+}
+
+function tickLavaCell(x, y, z) {
+  const id = blockAt(x, y, z);
+  if (!isLavaId(id)) return;
+  if (lavaMeetsWater(x, y, z, id)) return;   // зіткнення з водою → камінь
+
+  let lvl = LAVA_LEVEL[id];
+
+  // Потік без підживлення висихає (джерела вічні)
+  if (id !== LAVA) {
+    const support = lavaSupport(x, y, z);
+    if (support < lvl) {
+      setBlock(x, y, z, support >= 1 ? LFLOW_OF_LEVEL[support] : AIR);
+      if (support < 1) return;
+      lvl = support;
+    }
+  }
+
+  // Тече вниз
+  const below = blockAt(x, y - 1, z);
+  if (below === AIR || (isLavaId(below) && below !== LAVA && LAVA_LEVEL[below] < 3)) {
+    setBlock(x, y - 1, z, LFLOW3);
+    return;
+  }
+  if (isWaterId(below)) { setBlock(x, y - 1, z, STONE); return; }
+
+  // Розтікається вбік лише над твердою опорою (інакше тільки падає)
+  if (isSolid(below) && lvl > 1) {
+    for (const [dx, dz] of HORIZ_DIRS) {
+      const nb = blockAt(x + dx, y, z + dz);
+      if (nb === AIR || (isLavaId(nb) && nb !== LAVA && LAVA_LEVEL[nb] < lvl - 1)) {
+        setBlock(x + dx, y, z + dz, LFLOW_OF_LEVEL[lvl - 1]);
+      }
+    }
+  }
+}
+
+function processLavaQueue() {
+  if (lavaQueue.size === 0) return;
+  const batch = [...lavaQueue].slice(0, 200);
+  for (const key of batch) {
+    lavaQueue.delete(key);
+    const [x, y, z] = key.split(',').map(Number);
+    tickLavaCell(x, y, z);
+  }
+}
+
+// ============================================================
 // Текстурний атлас (малюється на canvas, без зовнішніх файлів)
 // ============================================================
 const TILE = 16, ATLAS_COLS = 4, ATLAS_ROWS = 6;
@@ -778,6 +894,22 @@ function makeAtlas() {
     });                                                                            // 19 гравій
   }
 
+  // Лава: розжарена помаранчева маса з темнішою застиглою кіркою та яскравими
+  // жовтими прожилками (детерміновано, нуль зовнішніх ассетів)
+  {
+    let s = 0xa53c9f11 >>> 0;
+    const r = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+    const crust = new Set(), hot = new Set();
+    for (let n = 0; n < 34; n++) crust.add(Math.floor(r() * TILE) * TILE + Math.floor(r() * TILE));
+    for (let n = 0; n < 22; n++) hot.add(Math.floor(r() * TILE) * TILE + Math.floor(r() * TILE));
+    paint(20, (x, y) => {
+      const k = x * TILE + y;
+      if (hot.has(k)) return vary(255, 236, 130, 8);   // яскрава пляма
+      if (crust.has(k)) return vary(120, 34, 12, 10);  // темна кірка
+      return vary(226, 88, 24, 14);                    // розжарена маса
+    });                                                                            // 20 лава
+  }
+
   const tex = new THREE.CanvasTexture(atlasCanvas);
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
@@ -806,6 +938,10 @@ const BLOCK_TILES = {
   [SNOW]:    { top: 16, bottom: 16, side: 16 },
   [CACTUS]:  { top: 18, bottom: 18, side: 17 },
   [GRAVEL]:  { top: 19, bottom: 19, side: 19 },
+  [LAVA]:    { top: 20, bottom: 20, side: 20 },
+  [LFLOW3]:  { top: 20, bottom: 20, side: 20 },
+  [LFLOW2]:  { top: 20, bottom: 20, side: 20 },
+  [LFLOW1]:  { top: 20, bottom: 20, side: 20 },
 };
 
 function tileUV(tile) {
@@ -835,6 +971,7 @@ function buildChunkMesh(cx, cz, scene, materials) {
 
   const solid = { pos: [], norm: [], uv: [], idx: [] };
   const water = { pos: [], norm: [], uv: [], idx: [] };
+  const lava = { pos: [], norm: [], uv: [], idx: [] };
 
   for (let ly = 0; ly < HEIGHT; ly++) {
     for (let lz = 0; lz < CHUNK; lz++) {
@@ -843,22 +980,25 @@ function buildChunkMesh(cx, cz, scene, materials) {
         if (id === AIR) continue;
         const wx = wx0 + lx, wz = wz0 + lz;
 
+        const idWater = isWaterId(id), idLava = isLavaId(id), idFluid = idWater || idLava;
         for (const { dir, face, verts } of FACES) {
           const nb = blockAt(wx + dir[0], ly + dir[1], wz + dir[2]);
-          const visible = isWaterId(id)
-            ? nb === AIR
-            : nb === AIR || isWaterId(nb);
+          // Флюїд показує грань до повітря або до флюїду іншого типу (межа
+          // вода/лава); тверді блоки — до повітря або будь-якого флюїду.
+          const visible = idFluid
+            ? nb === AIR || (isFluid(nb) && isWaterId(nb) !== idWater)
+            : nb === AIR || isFluid(nb);
           if (!visible) continue;
 
-          const buf = isWaterId(id) ? water : solid;
+          const buf = idLava ? lava : idWater ? water : solid;
           const { u0, u1, v0, v1 } = tileUV(BLOCK_TILES[id][face]);
           const uvCorners = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
           const base = buf.pos.length / 3;
 
           for (let i = 0; i < 4; i++) {
             const v = verts[i];
-            // Верх води трохи нижче, щоб було видно поверхню
-            const yOff = isWaterId(id) && v[1] === 1 ? -0.12 : 0;
+            // Верх флюїду трохи нижче, щоб було видно поверхню
+            const yOff = idFluid && v[1] === 1 ? -0.12 : 0;
             buf.pos.push(lx + v[0], ly + v[1] + yOff, lz + v[2]);
             buf.norm.push(dir[0], dir[1], dir[2]);
             buf.uv.push(uvCorners[i][0], uvCorners[i][1]);
@@ -885,11 +1025,12 @@ function buildChunkMesh(cx, cz, scene, materials) {
   return {
     solid: makeMesh(solid, materials.solid),
     water: makeMesh(water, materials.water),
+    lava: makeMesh(lava, materials.lava),
   };
 }
 
 function disposeChunkMesh(entry, scene) {
-  for (const mesh of [entry.solid, entry.water]) {
+  for (const mesh of [entry.solid, entry.water, entry.lava]) {
     if (!mesh) continue;
     scene.remove(mesh);
     mesh.geometry.dispose();
@@ -910,6 +1051,8 @@ const atlasTexture = makeAtlas();
 const materials = {
   solid: new THREE.MeshLambertMaterial({ map: atlasTexture }),
   water: new THREE.MeshLambertMaterial({ map: atlasTexture, transparent: true, opacity: 0.7 }),
+  // Лава світиться сама (не залежить від освітлення) — розжарений вигляд удень і вночі
+  lava: new THREE.MeshBasicMaterial({ map: atlasTexture }),
 };
 
 // Освітлення
@@ -1217,6 +1360,8 @@ const player = {
   dead: false,
   invuln: 0,        // короткі кадри невразливості після удару
   hurtFlash: 0,     // інтенсивність червоного спалаху (0..1)
+  fireTicks: 0,     // час, поки гравець горить (лава); догорає й поза лавою
+  fireDmgTick: 0,   // таймер шкоди від вогню
   sinceHurt: 999,   // секунд від останньої шкоди (для регенерації)
   regenTick: 0,
   drownTick: 0,
@@ -1290,11 +1435,14 @@ function moveEntityAxis(e, axis, amount) {
 }
 
 function updatePlayer(dt) {
-  const inWater = isWaterId(blockAt(
+  const feetId = blockAt(
     Math.floor(player.pos.x),
     Math.floor(player.pos.y + 0.4),
     Math.floor(player.pos.z)
-  ));
+  );
+  const inWater = isWaterId(feetId);
+  const inLava = isLavaId(feetId);       // у лаві рух в'язкий і повільний
+  const inLiquid = inWater || inLava;
 
   // Горизонтальний рух
   const speed = keys['ShiftLeft'] || keys['ShiftRight'] ? 8 : 5;
@@ -1307,13 +1455,17 @@ function updatePlayer(dt) {
   const len = Math.hypot(fx, fz);
   if (len > 1) { fx /= len; fz /= len; }
 
+  const moveMult = inLava ? 0.35 : inWater ? 0.6 : 1;
   const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
-  player.vel.x = (fx * cos + fz * sin) * speed * (inWater ? 0.6 : 1);
-  player.vel.z = (-fx * sin + fz * cos) * speed * (inWater ? 0.6 : 1);
+  player.vel.x = (fx * cos + fz * sin) * speed * moveMult;
+  player.vel.z = (-fx * sin + fz * cos) * speed * moveMult;
 
   // Вертикальний рух
-  if (inWater) {
-    player.vel.y = keys['Space'] ? 4 : Math.max(player.vel.y - 12 * dt, -2.5);
+  if (inLiquid) {
+    // У лаві занурюєшся й вибираєшся ще повільніше, ніж у воді
+    const up = inLava ? 2.6 : 4;
+    const sink = inLava ? -1.2 : -2.5;
+    player.vel.y = keys['Space'] ? up : Math.max(player.vel.y - 12 * dt, sink);
   } else {
     player.vel.y -= 24 * dt;
     player.vel.y = Math.max(player.vel.y, -50);
@@ -1323,7 +1475,7 @@ function updatePlayer(dt) {
     }
   }
 
-  // Звук сплеску при зануренні у воду
+  // Звук сплеску при зануренні у воду (у лаву — сичання нижче, у updateSurvival)
   if (inWater && !player.prevInWater) Sound.splash();
   player.prevInWater = inWater;
 
@@ -1343,7 +1495,7 @@ function updatePlayer(dt) {
   const groundId = blockAt(
     Math.floor(player.pos.x), Math.floor(player.pos.y - 0.1), Math.floor(player.pos.z)
   );
-  if (player.onGround && !inWater) {
+  if (player.onGround && !inLiquid) {
     player.stepDist += Math.hypot(player.vel.x, player.vel.z) * dt;
     if (player.stepDist > 2.4) {
       player.stepDist = 0;
@@ -1357,8 +1509,8 @@ function updatePlayer(dt) {
   if (player.onGround) {
     if (!player.prevOnGround) {
       const fall = player.fallPeakY - player.pos.y;
-      if (!inWater && fall > 0.4) Sound.land(); // звук приземлення
-      if (fall > FALL_SAFE && !inWater) {
+      if (!inLiquid && fall > 0.4) Sound.land(); // звук приземлення
+      if (fall > FALL_SAFE && !inLiquid) {
         damagePlayer(Math.floor(fall - FALL_SAFE), 'fall');
       }
     }
@@ -1415,6 +1567,8 @@ function respawn() {
   player.eatTimer = 0;
   player.invuln = 1.5;
   player.hurtFlash = 0;
+  player.fireTicks = 0;
+  player.fireDmgTick = 0;
   player.sinceHurt = 999;
   player.dead = false;
   // Відродження біля ліжка (сон закріпив точку), інакше — стандартний спавн
@@ -1435,6 +1589,28 @@ function updateSurvival(dt) {
   if (player.hurtFlash > 0) player.hurtFlash = Math.max(0, player.hurtFlash - dt * 2);
   if (player.invuln > 0) player.invuln -= dt;
   player.sinceHurt += dt;
+
+  // ===== Лава: горіння =====
+  // Дотик тілом до лави підпалює гравця; вогонь догорає ще кілька секунд
+  // навіть після виходу (як у Minecraft). Шкода йде періодично.
+  const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+  const inLavaBody = isLavaId(blockAt(px, Math.floor(player.pos.y + 0.4), pz)) ||
+                     isLavaId(blockAt(px, Math.floor(player.pos.y + EYE), pz));
+  if (inLavaBody) { player.fireTicks = Math.max(player.fireTicks, 3); unlockAch('lava'); }
+  if (player.fireTicks > 0) {
+    player.fireTicks = Math.max(0, player.fireTicks - dt);
+    player.fireDmgTick -= dt;
+    if (player.fireDmgTick <= 0) {
+      player.fireDmgTick = 0.4;
+      damagePlayer(inLavaBody ? 2 : 1, 'lava');
+    }
+    // Полум'я довкола гравця
+    if (Math.random() < dt * 26) {
+      spawnParticles(player.pos.x + (Math.random() - 0.5) * 0.6, player.pos.y + Math.random() * 1.4,
+        player.pos.z + (Math.random() - 0.5) * 0.6, LAVA_FIRE_COLOR, 1,
+        { radius: 0.1, speed: 0.6, upBias: 1.4, life: 0.5, size: 0.13, gravity: -6 });
+    }
+  }
 
   // Чи занурена голова під воду (рівень очей)
   const headWater = isWaterId(blockAt(
@@ -1655,6 +1831,15 @@ function removeAnimal(index) {
 }
 
 function updateAnimal(a, dt) {
+  // Лава палить тварин так само, як істот; смерть обробляється в updateAnimals
+  if (isLavaId(blockAt(Math.floor(a.pos.x), Math.floor(a.pos.y + 0.3), Math.floor(a.pos.z)))) {
+    a.health -= dt * 7;
+    if (Math.random() < dt * 24) {
+      spawnParticles(a.pos.x, a.pos.y + a.height * 0.6, a.pos.z, LAVA_FIRE_COLOR, 1,
+        { radius: 0.25, speed: 0.6, upBias: 1.3, life: 0.5, size: 0.12, gravity: -6 });
+    }
+  }
+
   // Паніка після удару: тікає геть від гравця прискорено
   const panicking = a.panic > 0;
   if (panicking) {
@@ -1734,6 +1919,13 @@ function updateAnimals(dt) {
       removeAnimal(i);
     } else {
       updateAnimal(a, dt);
+      // Загибель (наприклад, у лаві) — димок і зникнення, без м'яса
+      if (a.health <= 0) {
+        spawnParticles(a.pos.x, a.pos.y + a.height * 0.5, a.pos.z, SMOKE_COLOR, 10,
+          { radius: 0.35, speed: 1.6, upBias: 1.2, life: 0.7, size: 0.13, gravity: -3 });
+        Sound.mobDeath();
+        removeAnimal(i);
+      }
     }
   }
 }
@@ -1750,6 +1942,7 @@ const ZOMBIE_COLOR = new THREE.Color(0x4f7a44);
 const CREEPER_COLOR = new THREE.Color(0x5fa64d);
 const SKELETON_COLOR = new THREE.Color(0xd8d6cc);
 const SMOKE_COLOR = new THREE.Color(0x4a4a4a);
+const LAVA_FIRE_COLOR = new THREE.Color(0xff7a1a);
 const mobs = [];
 
 // Будує модель кріпера: чотириногий зелений силует із характерним «обличчям».
@@ -1912,6 +2105,16 @@ function mobCanSeePlayer(m) {
 function updateMob(m, dt) {
   const isCreeper = m.type === 'creeper';
   const isSkeleton = m.type === 'skeleton';
+
+  // Лава палить будь-яку істоту (навіть кріпера) — швидка шкода й полум'я
+  if (isLavaId(blockAt(Math.floor(m.pos.x), Math.floor(m.pos.y + 0.3), Math.floor(m.pos.z)))) {
+    m.health -= dt * 7;
+    if (Math.random() < dt * 24) {
+      spawnParticles(m.pos.x, m.pos.y + 0.8, m.pos.z, LAVA_FIRE_COLOR, 1,
+        { radius: 0.25, speed: 0.6, upBias: 1.3, life: 0.5, size: 0.13, gravity: -6 });
+    }
+    if (m.health <= 0) return;
+  }
 
   // Удень зомбі та скелети займаються вогнем і швидко гинуть; кріпери — ні
   if (!isCreeper && dayNightSun > 0.15) {
@@ -2775,6 +2978,75 @@ for (let i = 0; i < TORCH_LIGHT_POOL; i++) {
   torchLights.push(l);
 }
 
+// ===== Динамічне світло лави =====
+// Лава підсвічує довкілля теплим помаранчевим світлом. Пул точкових ламп, що
+// щокадру (з тротлінгом) призначаються найближчим до камери відкритим клітинкам
+// лави — так світять лише озера поблизу, без обходу всіх чанків.
+const LAVA_LIGHT_POOL = 5;
+const LAVA_SCAN_R = 7;              // радіус пошуку клітинок лави навколо камери
+const lavaLights = [];
+for (let i = 0; i < LAVA_LIGHT_POOL; i++) {
+  const l = new THREE.PointLight(0xff5a1a, 0, 11, 1.7);
+  scene.add(l);
+  lavaLights.push(l);
+}
+
+let lavaLightTimer = 0;
+let lavaFlick = 0;
+const _lavaCells = [];
+function updateLavaLights(dt) {
+  lavaFlick += dt;
+  // Мерехтіння яскравості вже призначених ламп — щокадру, дешево
+  const flick = 0.86 + 0.14 * Math.sin(lavaFlick * 6.5);
+  for (const l of lavaLights) if (l.userData.on) l.intensity = l.userData.base * flick;
+
+  lavaLightTimer -= dt;
+  if (lavaLightTimer > 0) return;
+  lavaLightTimer = 0.2;
+
+  const cx = Math.floor(camera.position.x);
+  const cy = Math.floor(camera.position.y);
+  const cz = Math.floor(camera.position.z);
+  _lavaCells.length = 0;
+  for (let y = cy - LAVA_SCAN_R; y <= cy + 3; y++) {
+    if (y < 1 || y >= HEIGHT) continue;
+    for (let x = cx - LAVA_SCAN_R; x <= cx + LAVA_SCAN_R; x++) {
+      for (let z = cz - LAVA_SCAN_R; z <= cz + LAVA_SCAN_R; z++) {
+        if (!isLavaId(blockAt(x, y, z))) continue;
+        // Тільки відкрита поверхня лави (щось не тверде зверху або збоку) світить
+        if (isSolid(blockAt(x, y + 1, z)) &&
+            isSolid(blockAt(x + 1, y, z)) && isSolid(blockAt(x - 1, y, z)) &&
+            isSolid(blockAt(x, y, z + 1)) && isSolid(blockAt(x, y, z - 1))) continue;
+        const dx = x + 0.5 - camera.position.x;
+        const dy = y + 0.5 - camera.position.y;
+        const dz = z + 0.5 - camera.position.z;
+        _lavaCells.push({ x, y, z, d2: dx * dx + dy * dy + dz * dz });
+      }
+    }
+  }
+  _lavaCells.sort((a, b) => a.d2 - b.d2);
+  for (let i = 0; i < LAVA_LIGHT_POOL; i++) {
+    const l = lavaLights[i];
+    if (i < _lavaCells.length) {
+      const c = _lavaCells[i];
+      l.position.set(c.x + 0.5, c.y + 0.7, c.z + 0.5);
+      l.userData.on = true;
+      l.userData.base = 2.0;
+    } else {
+      l.userData.on = false;
+      l.intensity = 0;
+    }
+  }
+
+  // Фонове гудіння найближчого озера лави
+  lavaAmbientTimer -= 0.2;
+  if (lavaAmbientTimer <= 0) {
+    lavaAmbientTimer = 1.6 + Math.random() * 2.4;
+    if (_lavaCells.length && _lavaCells[0].d2 < 90) Sound.lava(0.05);
+  }
+}
+let lavaAmbientTimer = 2;
+
 // Модель: брунатна паличка + розжарений кінчик + м'яке гало-білборд
 function makeTorchModel() {
   const g = new THREE.Group();
@@ -3378,7 +3650,7 @@ function placeBlock() {
 
   const [x, y, z] = hit.prev;
   const target = blockAt(x, y, z);
-  if (target !== AIR && !isWaterId(target)) return;
+  if (target !== AIR && !isFluid(target)) return;   // можна ставити в повітря, воду чи лаву
 
   // Не ставити блок усередину гравця
   const p = player.pos;
@@ -3860,6 +4132,7 @@ const hungerEl = document.getElementById('hunger');
 const foodBadgeEl = document.getElementById('food-badge');
 const foodCountEl = document.getElementById('food-count');
 const vignetteEl = document.getElementById('damage-vignette');
+const fireVignetteEl = document.getElementById('fire-vignette');
 const deathOverlay = document.getElementById('death-overlay');
 const deathCauseEl = document.getElementById('death-cause');
 
@@ -3997,6 +4270,10 @@ function updateSurvivalHud() {
     }
   }
   vignetteEl.style.opacity = player.hurtFlash * 0.55;
+  // Помаранчевий спалах горіння: пульсує, поки гравець у вогні
+  fireVignetteEl.style.opacity = player.fireTicks > 0
+    ? Math.min(1, player.fireTicks) * (0.7 + 0.3 * Math.sin(performance.now() / 90))
+    : 0;
 }
 
 const DEATH_CAUSES = {
@@ -4007,6 +4284,7 @@ const DEATH_CAUSES = {
   creeper: 'Підірваний кріпером',
   arrow: 'Застрелений скелетом',
   starve: 'Помер від голоду',
+  lava: 'Згорів у лаві',
 };
 
 function showDeathScreen(cause) {
@@ -4770,6 +5048,7 @@ const ACHIEVEMENTS = [
   { id: 'biome_desert',icon: '🌵', title: 'Спека',              desc: 'Побувати в пустелі' },
   { id: 'biome_snowy', icon: '❄', title: 'Мерзлота',           desc: 'Побувати в сніговій тундрі' },
   { id: 'cartographer',icon: '🗺', title: 'Картограф',          desc: 'Відвідати всі чотири біоми' },
+  { id: 'lava',        icon: '🌋', title: 'Пекуче знайомство',  desc: 'Обпектися лавою' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -5065,12 +5344,33 @@ window.MCDebug = {
     setBlock(x, fy, z, id);                                   // setBlock запланує падіння
     return { src: { x, y: fy, z }, expectLand: { x, y: gy, z }, name: BLOCK_NAMES[id] };
   },
+  // ===== Лава: інспекція та тестування з консолі =====
+  get fire() { return +player.fireTicks.toFixed(2); },        // час горіння гравця
+  get lavaQueue() { return lavaQueue.size; },                 // клітинок у черзі текучості
+  lavaAt: (x, y, z) => isLavaId(blockAt(x, y, z)),
+  setBlock: (x, y, z, id) => { setBlock(x, y, z, id); return blockAt(x, y, z); },
+  // Вилити джерело лави на `up` клітинок над поверхнею під гравцем — має потекти
+  pourLava: (up = 3) => {
+    const x = Math.floor(player.pos.x) + 2, z = Math.floor(player.pos.z);
+    let gy = Math.min(HEIGHT - 1, Math.floor(player.pos.y) + 2);
+    while (gy > 1 && !isSolid(blockAt(x, gy - 1, z))) gy--;
+    const fy = Math.min(HEIGHT - 1, gy + up);
+    setBlock(x, fy, z, LAVA);
+    return { src: { x, y: fy, z }, name: BLOCK_NAMES[LAVA] };
+  },
+  // Оточити гравця лавою на рівні ніг (для тесту горіння) — обережно!
+  igniteMe: () => {
+    const x = Math.floor(player.pos.x), y = Math.floor(player.pos.y), z = Math.floor(player.pos.z);
+    setBlock(x, y, z, LAVA);
+    return { at: { x, y, z }, fire: player.fireTicks };
+  },
 };
 
 const clock = new THREE.Clock();
 let chunkTimer = 0;
 let saveTimer = 5;
 let waterTimer = 0;
+let lavaTimer = 0;
 let fpsTime = 0, fpsFrames = 0, fps = 0;
 
 function animate() {
@@ -5084,6 +5384,7 @@ function animate() {
     updateMobs(dt);
     updateTnt(dt);
     updateTorches(dt);
+    updateLavaLights(dt);
     updateCrops(dt);
     if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
     updateArrows(dt);
@@ -5094,6 +5395,11 @@ function animate() {
     if (waterTimer <= 0) {
       processWaterQueue();
       waterTimer = 0.2;
+    }
+    lavaTimer -= dt;
+    if (lavaTimer <= 0) {
+      processLavaQueue();
+      lavaTimer = 0.45;   // лава тече повільніше за воду
     }
     saveTimer -= dt;
     if (saveTimer <= 0) {
