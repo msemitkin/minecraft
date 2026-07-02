@@ -262,6 +262,7 @@ function saveGame() {
         health: player.health,
         hunger: player.hunger,
         food: player.food,
+        flying: player.flying,
       },
       timeOfDay,
       weather: { state: weatherState, timer: weatherTimer, intensity: weatherIntensity },
@@ -1451,6 +1452,7 @@ const player = {
   prevInWater: false, // для звуку сплеску при зануренні
   stepDist: 0,      // накопичена відстань для звуку кроків
   lastCause: '',
+  flying: false,    // творчий політ (подвійний Space): без гравітації й шкоди від падіння
 };
 player.fallPeakY = player.pos.y;
 
@@ -1471,6 +1473,7 @@ if (savedGame && savedGame.player) {
   if (Number.isFinite(p.food)) {
     player.food = THREE.MathUtils.clamp(Math.floor(p.food), 0, FOOD_MAX);
   }
+  player.flying = !!p.flying;
 }
 player.fallPeakY = player.pos.y;
 
@@ -1515,6 +1518,16 @@ function moveEntityAxis(e, axis, amount) {
   return false;
 }
 
+// Творчий політ: перемикається подвійним Space (десктоп) або подвійним тапом
+// по кнопці стрибка (сенсор). У польоті немає гравітації й шкоди від падіння.
+function toggleFlight() {
+  if (player.dead || sleeping) return;
+  player.flying = !player.flying;
+  player.vel.y = 0;
+  player.fallPeakY = player.pos.y;   // скидаємо арку падіння на момент перемикання
+  if (player.flying) unlockAch('fly');
+}
+
 function updatePlayer(dt) {
   const feetId = blockAt(
     Math.floor(player.pos.x),
@@ -1525,8 +1538,11 @@ function updatePlayer(dt) {
   const inLava = isLavaId(feetId);       // у лаві рух в'язкий і повільний
   const inLiquid = inWater || inLava;
 
-  // Горизонтальний рух
-  const speed = keys['ShiftLeft'] || keys['ShiftRight'] ? 8 : 5;
+  const flying = player.flying;
+  const running = keys['ShiftLeft'] || keys['ShiftRight'];
+
+  // Горизонтальний рух (у польоті трохи швидше; Shift у польоті — знижуватися, тож не пришвидшує)
+  const speed = flying ? 7 : (running ? 8 : 5);
   let fx = 0, fz = 0;
   if (keys['KeyW']) fz -= 1;
   if (keys['KeyS']) fz += 1;
@@ -1536,13 +1552,18 @@ function updatePlayer(dt) {
   const len = Math.hypot(fx, fz);
   if (len > 1) { fx /= len; fz /= len; }
 
-  const moveMult = inLava ? 0.35 : inWater ? 0.6 : 1;
+  const moveMult = flying ? 1 : (inLava ? 0.35 : inWater ? 0.6 : 1);
   const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
   player.vel.x = (fx * cos + fz * sin) * speed * moveMult;
   player.vel.z = (-fx * sin + fz * cos) * speed * moveMult;
 
   // Вертикальний рух
-  if (inLiquid) {
+  if (flying) {
+    // Політ: Space — угору, Shift — униз, інакше зависаємо. Без гравітації.
+    const FLY_V = 7;
+    player.vel.y = (keys['Space'] ? FLY_V : 0) - (running ? FLY_V : 0);
+    player.fallPeakY = player.pos.y;   // без накопичення шкоди від падіння
+  } else if (inLiquid) {
     // У лаві занурюєшся й вибираєшся ще повільніше, ніж у воді
     const up = inLava ? 2.6 : 4;
     const sink = inLava ? -1.2 : -2.5;
@@ -1653,6 +1674,7 @@ function respawn() {
   player.fireDmgTick = 0;
   player.sinceHurt = 999;
   player.dead = false;
+  player.flying = false;
   // Відродження біля ліжка (сон закріпив точку), інакше — стандартний спавн
   const rx = spawnPoint ? spawnPoint.x : SPAWN.x;
   const rz = spawnPoint ? spawnPoint.z : SPAWN.z;
@@ -4907,7 +4929,13 @@ function bindTouchButton(id, onDown, onUp) {
   }
 }
 
-bindTouchButton('btn-jump', () => { keys['Space'] = true; }, () => { keys['Space'] = false; });
+let lastJumpTouch = -1e9;   // подвійний тап по кнопці стрибка → політ (сенсор)
+bindTouchButton('btn-jump', () => {
+  keys['Space'] = true;
+  const now = performance.now();
+  if (now - lastJumpTouch < 320) toggleFlight();
+  lastJumpTouch = now;
+}, () => { keys['Space'] = false; });
 
 bindTouchButton('btn-break',
   () => { startBreakOrAttack(); },
@@ -4945,9 +4973,17 @@ document.addEventListener('mouseup', (e) => {
 
 document.addEventListener('contextmenu', (e) => e.preventDefault());
 
+let lastSpaceDown = -1e9;   // час останнього натискання Space (для подвійного тапа → політ)
 document.addEventListener('keydown', (e) => {
   keys[e.code] = true;
-  if (e.code === 'Space') e.preventDefault();
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (!e.repeat && gameActive() && !blockMenuOpen && !achPanelOpen) {
+      const now = performance.now();
+      if (now - lastSpaceDown < 300) toggleFlight();
+      lastSpaceDown = now;
+    }
+  }
   if (e.code === 'Tab') {
     e.preventDefault();
     toggleBlockMenu();
@@ -5323,6 +5359,7 @@ const ACHIEVEMENTS = [
   { id: 'biome_snowy', icon: '❄', title: 'Мерзлота',           desc: 'Побувати в сніговій тундрі' },
   { id: 'cartographer',icon: '🗺', title: 'Картограф',          desc: 'Відвідати всі чотири біоми' },
   { id: 'lava',        icon: '🌋', title: 'Пекуче знайомство',  desc: 'Обпектися лавою' },
+  { id: 'fly',         icon: '🕊', title: 'Політ',              desc: 'Здійнятися в політ (подвійний Space)' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -5546,6 +5583,9 @@ window.MCDebug = {
     return achUnlocked.size;
   },
   toggleAchPanel: () => { toggleAchPanel(); return achPanelOpen; },
+  // Політ: перемикання й стан із консолі для тестів
+  toggleFly: () => { toggleFlight(); return player.flying; },
+  get flying() { return player.flying; },
   get spawnPoint() { return spawnPoint ? { ...spawnPoint } : null; },
   get time() { return timeOfDay; },
   get active() { return gameActive(); },
@@ -5726,6 +5766,7 @@ function animate() {
   debugEl.textContent =
     `FPS: ${fps}\n` +
     `XYZ: ${player.pos.x.toFixed(1)} ${player.pos.y.toFixed(1)} ${player.pos.z.toFixed(1)}` +
+    (player.flying ? '\n✈ Політ' : '') +
     (weatherState !== 'clear' ? `\n${weatherState === 'rain' ? '🌧' : '🌨'} ${weatherState}` : '');
 
   updateSurvivalHud();
