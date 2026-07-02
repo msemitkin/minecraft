@@ -41,6 +41,9 @@ const GRAVEL = 23;
 // зустрівшись із водою — застигає в камінь.
 const LAVA = 24, LFLOW3 = 25, LFLOW2 = 26, LFLOW1 = 27;
 
+// Вудка — окремий предмет (як лук): закидається у воду, ловить рибу в торбу їжі
+const ROD = 28;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -49,12 +52,13 @@ const BLOCK_NAMES = {
   [GOLD]: 'Золота руда', [DIAMOND]: 'Алмазна руда',
   [TORCH]: 'Смолоскип', [SEEDS]: 'Насіння', [BOW]: 'Лук', [BED]: 'Ліжко',
   [SNOW]: 'Сніг', [CACTUS]: 'Кактус', [GRAVEL]: 'Гравій', [LAVA]: 'Лава',
+  [ROD]: 'Вудка',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
 const ALL_BLOCKS = [
   GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, WATER, LAVA, TNT,
-  COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, BOW, BED,
+  COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, BOW, ROD, BED,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -474,6 +478,27 @@ const Sound = (() => {
     arrowHit() {
       noise({ dur: 0.1, gain: 0.16, type: 'bandpass', freq: 380, q: 1.4 });
       tone({ freq: 140, dur: 0.1, type: 'sine', gain: 0.08, slideTo: 80 });
+    },
+    // Закид вудки: короткий свист волосіні + плюскіт поплавка об воду
+    cast() {
+      tone({ freq: 900, dur: 0.16, type: 'triangle', gain: 0.05, slideTo: 380 });
+      setTimeout(() => {
+        if (!enabled) return;
+        noise({ dur: 0.18, gain: 0.12, type: 'highpass', freq: 1000, q: 0.5 });
+      }, 120);
+    },
+    // Клювання: тихий «бульк» під водою — сигнал підсікати
+    bite() {
+      tone({ freq: 260, dur: 0.14, type: 'sine', gain: 0.12, slideTo: 150 });
+      noise({ dur: 0.1, gain: 0.06, type: 'bandpass', freq: 600, q: 1.2 });
+    },
+    // Витягли рибу: короткий висхідний «дзинь» удачі
+    reelCatch() {
+      tone({ freq: 520, dur: 0.1, type: 'triangle', gain: 0.1, slideTo: 660 });
+      setTimeout(() => {
+        if (!enabled) return;
+        tone({ freq: 784, dur: 0.14, type: 'triangle', gain: 0.1, attack: 0.004 });
+      }, 90);
     },
     eat() {
       // Два приглушені «хрусти» поспіль — звук жування
@@ -1263,6 +1288,38 @@ bowView.group.visible = false;
 updateBowString(BOW_NOCK_Z);        // тятива у позі спокою (пряма)
 viewScene.add(bowView.group);
 
+// ===== Модель вудки від першої особи =====
+// Дерев'яне вудлище з невеликою котушкою; кінчик (tip) — точка, від якої
+// у світі малюється волосінь до поплавка. Нуль зовнішніх ассетів.
+function makeRodView() {
+  const g = new THREE.Group();
+  const rodMat = new THREE.MeshLambertMaterial({ color: 0x8a5a2b });
+  const reelMat = new THREE.MeshLambertMaterial({ color: 0x3a3a3a });
+  // Вудлище — тонкий довгий брусок, нахилений уперед-угору
+  const rod = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.045, 1.05), rodMat);
+  rod.position.set(0, 0, -0.5);
+  rod.rotation.x = -0.32;
+  g.add(rod);
+  // Котушка коло руків'я
+  const reel = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.05, 8), reelMat);
+  reel.rotation.z = Math.PI / 2;
+  reel.position.set(0.03, -0.05, -0.08);
+  g.add(reel);
+  // Кінчик вудлища — порожній об'єкт для прив'язки волосіні
+  const tip = new THREE.Object3D();
+  tip.position.set(0, 0.32, -0.98);
+  g.add(tip);
+  return { group: g, tip };
+}
+
+const rodView = makeRodView();
+const ROD_VIEW_POS = new THREE.Vector3(0.34, -0.34, -0.5);
+const ROD_VIEW_ROT = new THREE.Euler(0.0, -0.1, 0.15);
+rodView.group.position.copy(ROD_VIEW_POS);
+rodView.group.rotation.copy(ROD_VIEW_ROT);
+rodView.group.visible = false;
+viewScene.add(rodView.group);
+
 // Стан маху киркою
 const swing = { active: false, t: 0 };
 const SWING_DUR = 0.28;
@@ -1276,10 +1333,31 @@ function triggerSwing() {
 let bobPhase = 0;
 
 function updateViewModel(dt) {
-  // Перемикання між киркою та луком за активним предметом хотбара
+  // Перемикання між киркою, луком та вудкою за активним предметом хотбара
   const holdingBow = hotbar[selectedSlot] === BOW;
-  viewModel.visible = !holdingBow;
+  const holdingRod = hotbar[selectedSlot] === ROD;
+  viewModel.visible = !holdingBow && !holdingRod;
   bowView.group.visible = holdingBow;
+  rodView.group.visible = holdingRod;
+  if (holdingRod) {
+    // Легкий замах при закиданні; інакше — спокійна поза з тремтінням волосіні
+    if (swing.active) {
+      swing.t += dt / SWING_DUR;
+      if (swing.t >= 1) { swing.active = false; swing.t = 0; }
+    }
+    const s = swing.active ? Math.sin(swing.t * Math.PI) : 0;
+    rodView.group.position.set(
+      ROD_VIEW_POS.x,
+      ROD_VIEW_POS.y + s * 0.06,
+      ROD_VIEW_POS.z + s * 0.08
+    );
+    rodView.group.rotation.set(
+      ROD_VIEW_ROT.x - s * 0.5,
+      ROD_VIEW_ROT.y,
+      ROD_VIEW_ROT.z
+    );
+    return;
+  }
   if (holdingBow) {
     const c = bow.drawing ? bow.charge : 0;               // 0..1 натяг
     const drawZ = BOW_NOCK_Z + c * 0.2;                   // точка накладання відходить назад
@@ -1555,6 +1633,7 @@ function die() {
   player.vel.set(0, 0, 0);
   mining = false;
   cancelBowDraw();
+  reelIn();
   resetMining();
   if (isLocked()) document.exitPointerLock();
   unlockAch('death');
@@ -2380,6 +2459,7 @@ function damageEntity(entity, isAnimal, dmg, kx, kz, kup) {
 // інакше — почати видобуток блока.
 function startBreakOrAttack() {
   if (hotbar[selectedSlot] === BOW) { startBowDraw(); return; }
+  if (hotbar[selectedSlot] === ROD) { castOrReel(); return; }
   if (tryAttack()) return;
   // Зняти смолоскип або зібрати посів, якщо дивимось на нього (клітинка перед блоком)
   if (torches.size > 0 || crops.size > 0) {
@@ -2619,6 +2699,175 @@ function releaseBow() {
   Sound.bowShoot(power);
   triggerSwing();
   unlockAch('archer');
+}
+
+// ============================================================
+// Риболовля: вудка закидає поплавок у воду, ловить рибу в торбу їжі
+// ============================================================
+// Поплавок — легка сутність у світовій сцені (як TNT/стріли): не змінює
+// воксельну сітку. ЛКМ вудкою закидає поплавок уздовж погляду; над водою за
+// кілька секунд «клює» (поплавок сіпається під воду + плюскіт), і повторний
+// ЛКМ у вікні підсічки витягує рибу в ту саму торбу їжі, що й полювання.
+const FISH_FOOD = 5;             // скільки одиниць їжі дає впіймана риба
+const FISH_MIN_WAIT = 2.5;       // мін. очікування клювання, с
+const FISH_MAX_WAIT = 9;         // макс. очікування клювання, с
+const FISH_BITE_WINDOW = 1.3;    // скільки секунд можна підсікти після клювання
+const ROD_RANGE = 7;             // дальність закиду вздовж погляду, блоки
+
+const fishing = {
+  active: false,
+  inWater: false,
+  x: 0, y: 0, z: 0,        // базова позиція поплавка (поверхня води)
+  waitTimer: 0,
+  biting: false,
+  biteTimer: 0,
+  phase: 0,
+};
+
+// Поплавок (червоний низ + білий верх) і волосінь — створюємо раз, ховаємо/показуємо
+const bobberGroup = new THREE.Group();
+bobberGroup.add(new THREE.Mesh(
+  new THREE.SphereGeometry(0.09, 8, 6),
+  new THREE.MeshLambertMaterial({ color: 0xd63a2f })
+));
+const _bobberTop = new THREE.Mesh(
+  new THREE.SphereGeometry(0.075, 8, 6),
+  new THREE.MeshLambertMaterial({ color: 0xf2f2f2 })
+);
+_bobberTop.position.y = 0.085;
+bobberGroup.add(_bobberTop);
+bobberGroup.visible = false;
+scene.add(bobberGroup);
+
+const _fishLineGeo = new THREE.BufferGeometry();
+_fishLineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+const fishingLine = new THREE.Line(
+  _fishLineGeo,
+  new THREE.LineBasicMaterial({ color: 0xf5f5f5, transparent: true, opacity: 0.55 })
+);
+fishingLine.visible = false;
+fishingLine.frustumCulled = false;
+scene.add(fishingLine);
+
+const _rodRight = new THREE.Vector3();
+const _rodFwd = new THREE.Vector3();
+const _rodUp = new THREE.Vector3(0, 1, 0);
+// Приблизна світова позиція кінчика вудлища — точка, від якої йде волосінь
+function getRodTipWorld() {
+  camera.getWorldDirection(_rodFwd);
+  _rodRight.crossVectors(_rodFwd, _rodUp).normalize();
+  return camera.position.clone()
+    .addScaledVector(_rodFwd, 0.6)
+    .addScaledVector(_rodRight, 0.28)
+    .addScaledVector(_rodUp, -0.22);
+}
+
+// Знайти поверхню води вздовж променя погляду (або точку, де поплавок «падає»)
+function findBobberTarget() {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const start = camera.position.clone();
+  const step = 0.1;
+  let prev = start.clone();
+  for (let t = 0; t < ROD_RANGE; t += step) {
+    const p = start.clone().addScaledVector(dir, t);
+    const bx = Math.floor(p.x), by = Math.floor(p.y), bz = Math.floor(p.z);
+    const id = blockAt(bx, by, bz);
+    if (isWaterId(id)) {
+      let surf = by;                                  // піднятись до поверхні колони
+      while (isWaterId(blockAt(bx, surf + 1, bz))) surf++;
+      return { x: bx + 0.5, y: surf + 0.85, z: bz + 0.5, inWater: true };
+    }
+    if (isSolid(id)) return { x: prev.x, y: prev.y, z: prev.z, inWater: false };
+    prev = p;
+  }
+  return { x: prev.x, y: prev.y, z: prev.z, inWater: false };
+}
+
+function rollBiteWait() {
+  const wetBonus = weatherState === 'rain' ? 0.6 : 1;   // дощ — риба активніша
+  return (FISH_MIN_WAIT + Math.random() * (FISH_MAX_WAIT - FISH_MIN_WAIT)) * wetBonus;
+}
+
+function castRod() {
+  const target = findBobberTarget();
+  fishing.active = true;
+  fishing.inWater = target.inWater;
+  fishing.x = target.x; fishing.y = target.y; fishing.z = target.z;
+  fishing.biting = false;
+  fishing.phase = 0;
+  fishing.waitTimer = target.inWater ? rollBiteWait() : Infinity;  // не над водою — не клює
+  bobberGroup.position.set(target.x, target.y, target.z);
+  bobberGroup.visible = true;
+  fishingLine.visible = true;
+  triggerSwing();
+  Sound.cast();
+  if (target.inWater) {
+    spawnParticles(target.x, target.y, target.z, blockColor(WATER), 8,
+      { radius: 0.25, speed: 1.6, upBias: 0.8, life: 0.4, size: 0.06, gravity: 8 });
+  }
+}
+
+function reelIn() {
+  if (!fishing.active) return;
+  const wasBiting = fishing.biting;
+  const overWater = fishing.inWater;
+  fishing.active = false;
+  fishing.biting = false;
+  bobberGroup.visible = false;
+  fishingLine.visible = false;
+  triggerSwing();
+  if (wasBiting) {                                   // підсічка вдалась — риба в торбу їжі
+    player.food = Math.min(FOOD_MAX, player.food + FISH_FOOD);
+    updateFoodHud();
+    Sound.reelCatch();
+    unlockAch('fisher');
+    spawnParticles(fishing.x, fishing.y, fishing.z, blockColor(WATER), 10,
+      { radius: 0.3, speed: 2.2, upBias: 1, life: 0.5, size: 0.07, gravity: 9 });
+  } else if (overWater) {
+    Sound.splash();
+  }
+}
+
+// ЛКМ вудкою: перший клік закидає, наступний — змотує (з рибою, якщо клює)
+function castOrReel() {
+  if (fishing.active) reelIn();
+  else castRod();
+}
+
+function updateFishing(dt) {
+  if (!fishing.active) return;
+  if (hotbar[selectedSlot] !== ROD) { reelIn(); return; }   // змінили предмет — змотати
+
+  fishing.phase += dt;
+  let y = fishing.y;
+  if (fishing.inWater) {
+    if (fishing.biting) {
+      fishing.biteTimer -= dt;
+      y = fishing.y - 0.18 - Math.abs(Math.sin(fishing.phase * 14)) * 0.06;  // сіпається під воду
+      if (fishing.biteTimer <= 0) {                 // проґавили підсічку — знову чекаємо
+        fishing.biting = false;
+        fishing.waitTimer = rollBiteWait();
+      }
+    } else {
+      y = fishing.y + Math.sin(fishing.phase * 2.2) * 0.05;  // спокійне погойдування
+      fishing.waitTimer -= dt;
+      if (fishing.waitTimer <= 0) {
+        fishing.biting = true;
+        fishing.biteTimer = FISH_BITE_WINDOW;
+        Sound.bite();
+        spawnParticles(fishing.x, fishing.y, fishing.z, blockColor(WATER), 6,
+          { radius: 0.2, speed: 1.4, upBias: 0.7, life: 0.4, size: 0.05, gravity: 8 });
+      }
+    }
+  }
+  bobberGroup.position.set(fishing.x, y, fishing.z);
+
+  const tip = getRodTipWorld();                       // волосінь: кінчик вудлища → поплавок
+  const arr = fishingLine.geometry.attributes.position.array;
+  arr[0] = tip.x; arr[1] = tip.y; arr[2] = tip.z;
+  arr[3] = fishing.x; arr[4] = y; arr[5] = fishing.z;
+  fishingLine.geometry.attributes.position.needsUpdate = true;
 }
 
 // ============================================================
@@ -3631,6 +3880,7 @@ function placeBlock() {
   }
 
   if (hotbar[selectedSlot] === BOW) return;   // луком не ставлять блок
+  if (hotbar[selectedSlot] === ROD) return;   // вудкою теж не ставлять блок
   const id = hotbar[selectedSlot];
 
   // Смолоскип — особлива сутність: ставиться на опору, не змінює воксельну сітку
@@ -4368,6 +4618,26 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(13, 13, 2, 2);
     return;
   }
+  if (id === ROD) {
+    // Процедурна іконка вудки: діагональне вудлище, волосінь і поплавок
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.strokeStyle = '#8a5a2b';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(2, 14); ctx.lineTo(12, 2);             // вудлище
+    ctx.stroke();
+    ctx.strokeStyle = '#e8e0d0';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(12, 2); ctx.lineTo(13, 11);            // волосінь
+    ctx.stroke();
+    ctx.fillStyle = '#d63a2f';
+    ctx.fillRect(12, 11, 3, 3);                       // поплавок (червоний низ)
+    ctx.fillStyle = '#f2f2f2';
+    ctx.fillRect(12, 10, 3, 1);                       // білий верх
+    return;
+  }
   const tile = BLOCK_TILES[id].side;
   canvas.getContext('2d').drawImage(
     atlasCanvas,
@@ -5040,6 +5310,7 @@ const ACHIEVEMENTS = [
   { id: 'eat',         icon: '🍖', title: 'Перекус',            desc: "З'їсти їжу" },
   { id: 'hunt',        icon: '🐷', title: 'Мисливець',          desc: 'Уполювати тварину' },
   { id: 'archer',      icon: '🏹', title: 'Лучник',             desc: 'Випустити стрілу з лука' },
+  { id: 'fisher',      icon: '🎣', title: 'Рибалка',            desc: 'Упіймати рибу вудкою' },
   { id: 'ouch',        icon: '💢', title: 'Боляче',             desc: 'Дістати поранення' },
   { id: 'death',       icon: '💀', title: 'І знову початок',    desc: 'Загинути' },
   { id: 'zombie',      icon: '🧟', title: 'Нічний вартовий',    desc: 'Здолати зомбі' },
@@ -5224,6 +5495,7 @@ window.MCDebug = {
   },
   // Дати лук у поточний слот хотбара (зручно для тестів)
   giveBow: () => { assignBlockToSlot(BOW); return BLOCK_NAMES[BOW]; },
+  giveRod: () => { assignBlockToSlot(ROD); return BLOCK_NAMES[ROD]; },
   // Миттєво довести всі посіви до зрілості (для тестів)
   growCrops: () => {
     for (const c of crops.values()) { c.stage = CROP_STAGES - 1; c.growth = 0; applyCropStage(c); }
@@ -5367,6 +5639,18 @@ window.MCDebug = {
     setBlock(x, y, z, LAVA);
     return { at: { x, y, z }, fire: player.fireTicks };
   },
+  // Риболовля: керування з консолі для ручного та автоматичного тестування.
+  get fishing() {
+    return {
+      active: fishing.active, inWater: fishing.inWater, biting: fishing.biting,
+      wait: Number.isFinite(fishing.waitTimer) ? +fishing.waitTimer.toFixed(2) : null,
+    };
+  },
+  castRod: () => { castRod(); return { active: fishing.active, inWater: fishing.inWater }; },
+  // Примусово викликати клювання зараз (за потреби вважати поплавок над водою)
+  forceBite: () => { fishing.inWater = true; fishing.waitTimer = 0; return { active: fishing.active }; },
+  // Змотати вудку; повертає приріст їжі (риба = +5, якщо підсічка вдалась)
+  reelRod: () => { const f = player.food; reelIn(); return { foodBefore: f, foodAfter: player.food }; },
 };
 
 const clock = new THREE.Clock();
@@ -5392,6 +5676,7 @@ function animate() {
     if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
     updateArrows(dt);
     updateFallingBlocks(dt);
+    updateFishing(dt);
     updateParticles(dt);
     updateWeather(dt);
     waterTimer -= dt;
