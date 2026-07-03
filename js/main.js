@@ -43,6 +43,12 @@ const LAVA = 24, LFLOW3 = 25, LFLOW2 = 26, LFLOW1 = 27;
 
 // Вудка — окремий предмет (як лук): закидається у воду, ловить рибу в торбу їжі
 const ROD = 28;
+// Відро — окремий предмет-стан: порожнім набирає джерело води чи лави з світу,
+// а повним виливає це джерело деінде (запускаючи симуляцію потоку). Стан
+// (порожнє / з водою / з лавою) кодується окремим id, що займає слот хотбара —
+// так само, як інші предмети. У воксельну сітку відро ніколи не потрапляє.
+const BUCKET = 29, WATER_BUCKET = 30, LAVA_BUCKET = 31;
+const isBucket = (id) => id === BUCKET || id === WATER_BUCKET || id === LAVA_BUCKET;
 
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
@@ -53,12 +59,13 @@ const BLOCK_NAMES = {
   [TORCH]: 'Смолоскип', [SEEDS]: 'Насіння', [BOW]: 'Лук', [BED]: 'Ліжко',
   [SNOW]: 'Сніг', [CACTUS]: 'Кактус', [GRAVEL]: 'Гравій', [LAVA]: 'Лава',
   [ROD]: 'Вудка',
+  [BUCKET]: 'Відро', [WATER_BUCKET]: 'Відро з водою', [LAVA_BUCKET]: 'Відро з лавою',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
 const ALL_BLOCKS = [
   GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, WATER, LAVA, TNT,
-  COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, BOW, ROD, BED,
+  COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, BOW, ROD, BED, BUCKET,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -3890,6 +3897,73 @@ function updateMining(dt, hit) {
   crackMesh.visible = true;
 }
 
+// ============================================================
+// Відро: перенесення джерел води й лави
+// ============================================================
+// Порожнє відро набирає перше джерело (WATER/LAVA), у яке дивиться гравець,
+// і стає повним; повне виливає це джерело на націлену клітинку (як ставлять
+// блок), запускаючи звичайну симуляцію потоку через setBlock. У воксельну
+// сітку відро не потрапляє — змінюється лише id у слоті хотбара.
+const BUCKET_RANGE = 6;
+
+// Знайти першу клітинку-джерело флюїду вздовж погляду (потоки пропускаємо —
+// набрати можна лише вічне джерело, як у Minecraft).
+function findFluidSource() {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const start = camera.position.clone();
+  const step = 0.05;
+  for (let t = 0; t < BUCKET_RANGE; t += step) {
+    const p = start.clone().addScaledVector(dir, t);
+    const bx = Math.floor(p.x), by = Math.floor(p.y), bz = Math.floor(p.z);
+    const id = blockAt(bx, by, bz);
+    if (id === WATER || id === LAVA) return { x: bx, y: by, z: bz, id };
+    if (isSolid(id)) return null;   // тверда перешкода — далі джерела не дістати
+  }
+  return null;
+}
+
+function useBucket() {
+  const held = hotbar[selectedSlot];
+
+  if (held === BUCKET) {
+    // Порожнє відро — набрати найближче джерело води чи лави
+    const src = findFluidSource();
+    if (!src) return;
+    setBlock(src.x, src.y, src.z, AIR);   // прибрати джерело (сусідні потоки висохнуть)
+    const water = src.id === WATER;
+    assignBlockToSlot(water ? WATER_BUCKET : LAVA_BUCKET);
+    triggerSwing();
+    if (water) Sound.splash(); else Sound.lava();
+    spawnParticles(src.x + 0.5, src.y + 0.5, src.z + 0.5, blockColor(src.id), 8,
+      { radius: 0.3, speed: 1.5, upBias: 0.7, life: 0.4, size: 0.07, gravity: 8 });
+    unlockAch('bucket');
+    return;
+  }
+
+  // Повне відро — вилити джерело на націлену клітинку (порожнє повітря чи флюїд)
+  const hit = raycastBlock();
+  if (!hit || !hit.prev) return;
+  const [x, y, z] = hit.prev;
+  if (isSolid(blockAt(x, y, z))) return;   // лити можна лише в повітря або флюїд
+
+  // Не лити всередину гравця
+  const p = player.pos;
+  const overlapX = x + 1 > p.x - PLAYER_W && x < p.x + PLAYER_W;
+  const overlapY = y + 1 > p.y && y < p.y + PLAYER_H;
+  const overlapZ = z + 1 > p.z - PLAYER_W && z < p.z + PLAYER_W;
+  if (overlapX && overlapY && overlapZ) return;
+
+  const fluid = held === WATER_BUCKET ? WATER : LAVA;
+  setBlock(x, y, z, fluid);   // джерело — setBlock запускає симуляцію потоку
+  assignBlockToSlot(BUCKET);
+  triggerSwing();
+  if (fluid === WATER) Sound.splash(); else Sound.lava();
+  spawnParticles(x + 0.5, y + 0.5, z + 0.5, blockColor(fluid), 8,
+    { radius: 0.35, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 8 });
+  unlockAch('bucket');
+}
+
 function placeBlock() {
   triggerSwing();
   const hit = raycastBlock();
@@ -3903,6 +3977,10 @@ function placeBlock() {
 
   if (hotbar[selectedSlot] === BOW) return;   // луком не ставлять блок
   if (hotbar[selectedSlot] === ROD) return;   // вудкою теж не ставлять блок
+
+  // Відро — особливий предмет: порожнім набирає джерело флюїду, повним — виливає
+  if (isBucket(hotbar[selectedSlot])) { useBucket(); return; }
+
   const id = hotbar[selectedSlot];
 
   // Смолоскип — особлива сутність: ставиться на опору, не змінює воксельну сітку
@@ -4660,6 +4738,37 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(12, 10, 3, 1);                       // білий верх
     return;
   }
+  if (id === BUCKET || id === WATER_BUCKET || id === LAVA_BUCKET) {
+    // Процедурна іконка відра: сталеве цебро (трапеція) з дужкою; якщо повне —
+    // усередині плескіт води (синій) чи лави (помаранчевий).
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.strokeStyle = '#9aa3ad';                       // дужка
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(8, 6, 5, Math.PI, 0);
+    ctx.stroke();
+    ctx.fillStyle = '#b7c0c9';                         // корпус (трапеція)
+    ctx.beginPath();
+    ctx.moveTo(3, 6); ctx.lineTo(13, 6); ctx.lineTo(11, 15); ctx.lineTo(5, 15);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#6f7883';                       // контур і обід
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    if (id !== BUCKET) {
+      ctx.fillStyle = id === WATER_BUCKET ? '#2f7bd6' : '#e8631f';   // вміст
+      ctx.beginPath();
+      ctx.moveTo(4, 7); ctx.lineTo(12, 7); ctx.lineTo(11, 10); ctx.lineTo(5, 10);
+      ctx.closePath(); ctx.fill();
+      if (id === LAVA_BUCKET) {                         // яскраві прожилки лави
+        ctx.fillStyle = '#ffd24a';
+        ctx.fillRect(6, 8, 2, 1); ctx.fillRect(9, 8, 1, 1);
+      }
+    }
+    ctx.fillStyle = '#8b949e';                          // світлова смуга на металі
+    ctx.fillRect(5, 11, 1, 3);
+    return;
+  }
   const tile = BLOCK_TILES[id].side;
   canvas.getContext('2d').drawImage(
     atlasCanvas,
@@ -5360,6 +5469,7 @@ const ACHIEVEMENTS = [
   { id: 'cartographer',icon: '🗺', title: 'Картограф',          desc: 'Відвідати всі чотири біоми' },
   { id: 'lava',        icon: '🌋', title: 'Пекуче знайомство',  desc: 'Обпектися лавою' },
   { id: 'fly',         icon: '🕊', title: 'Політ',              desc: 'Здійнятися в політ (подвійний Space)' },
+  { id: 'bucket',      icon: '🪣', title: 'Водовоз',            desc: 'Набрати воду чи лаву у відро' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -5533,6 +5643,22 @@ window.MCDebug = {
   // Дати лук у поточний слот хотбара (зручно для тестів)
   giveBow: () => { assignBlockToSlot(BOW); return BLOCK_NAMES[BOW]; },
   giveRod: () => { assignBlockToSlot(ROD); return BLOCK_NAMES[ROD]; },
+  // Відро: видати порожнє/повне у слот і застосувати (набрати чи вилити) — для тестів
+  giveBucket: (kind = 'empty') => {
+    const id = kind === 'water' ? WATER_BUCKET : kind === 'lava' ? LAVA_BUCKET : BUCKET;
+    assignBlockToSlot(id);
+    return BLOCK_NAMES[id];
+  },
+  useBucket: () => { useBucket(); return BLOCK_NAMES[hotbar[selectedSlot]]; },
+  get held() { return BLOCK_NAMES[hotbar[selectedSlot]]; },
+  get heldId() { return hotbar[selectedSlot]; },
+  // Промінь погляду (позиція камери + напрямок) — для детермінованих тестів
+  viewRay: () => {
+    const d = new THREE.Vector3();
+    camera.getWorldDirection(d);
+    const o = camera.position;
+    return { ox: o.x, oy: o.y, oz: o.z, dx: d.x, dy: d.y, dz: d.z };
+  },
   // Миттєво довести всі посіви до зрілості (для тестів)
   growCrops: () => {
     for (const c of crops.values()) { c.stage = CROP_STAGES - 1; c.growth = 0; applyCropStage(c); }
