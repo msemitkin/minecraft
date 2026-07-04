@@ -50,6 +50,12 @@ const ROD = 28;
 const BUCKET = 29, WATER_BUCKET = 30, LAVA_BUCKET = 31;
 const isBucket = (id) => id === BUCKET || id === WATER_BUCKET || id === LAVA_BUCKET;
 
+// Човен — окремий предмет (як лук/вудка/відро): ставиться ПКМ на воду чи землю
+// й спливає окремою сутністю-моделлю. Гравець сідає в нього (ПКМ по човну) і
+// пливе поверхнею води швидше, ніж уплав; Space злазить. У воксельну сітку
+// човен ніколи не потрапляє.
+const BOAT = 32;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -60,12 +66,13 @@ const BLOCK_NAMES = {
   [SNOW]: 'Сніг', [CACTUS]: 'Кактус', [GRAVEL]: 'Гравій', [LAVA]: 'Лава',
   [ROD]: 'Вудка',
   [BUCKET]: 'Відро', [WATER_BUCKET]: 'Відро з водою', [LAVA_BUCKET]: 'Відро з лавою',
+  [BOAT]: 'Човен',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
 const ALL_BLOCKS = [
   GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, WATER, LAVA, TNT,
-  COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, BOW, ROD, BED, BUCKET,
+  COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, BOW, ROD, BED, BUCKET, BOAT,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -276,6 +283,7 @@ function saveGame() {
       torches: [...torches.values()].map((t) => [t.x, t.y, t.z, t.face, t.dx, t.dz]),
       crops: [...crops.values()].map((c) => [c.x, c.y, c.z, c.stage, +c.growth.toFixed(2)]),
       beds: [...beds.values()].map((b) => [b.x, b.y, b.z, b.yaw]),
+      boats: boats.map((b) => [+b.pos.x.toFixed(2), +b.pos.y.toFixed(2), +b.pos.z.toFixed(2), +b.yaw.toFixed(3)]),
       spawn: spawnPoint,
       selectedSlot,
       hotbar: [...hotbar],
@@ -1536,6 +1544,14 @@ function toggleFlight() {
 }
 
 function updatePlayer(dt) {
+  // Пливемо в човні: власна фізика гравця вимкнена, кермуємо човном
+  if (ridingBoat) {
+    driveBoat(dt);
+    camera.position.set(player.pos.x, player.pos.y + EYE, player.pos.z);
+    camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+    return;
+  }
+
   const feetId = blockAt(
     Math.floor(player.pos.x),
     Math.floor(player.pos.y + 0.4),
@@ -1659,6 +1675,7 @@ function die() {
   if (player.dead) return;
   player.dead = true;
   player.vel.set(0, 0, 0);
+  dismountBoat(false);   // випасти з човна, не переміщуючи тіло
   mining = false;
   cancelBowDraw();
   reelIn();
@@ -3898,6 +3915,229 @@ function updateMining(dt, hit) {
 }
 
 // ============================================================
+// Човни: плавзасіб для подорожі водою
+// ============================================================
+// Човен — окрема сутність (модель із коробок + власна фізика), а не воксельний
+// блок: він не змінює сітку чанка. Спливає на поверхні води (проста плавучість),
+// а на суходолі підкоряється гравітації. Гравець сідає в нього і кермує поглядом
+// (W — вперед, S — назад), пливучи помітно швидше, ніж уплав. Колізії з рельєфом
+// — через спільний moveEntityAxis. Стан зберігається зі світом (сумісно зі
+// старими сейвами — поле необов'язкове).
+const boats = [];
+const BOAT_MAX = 16;            // межа, щоб збереження не розросталося
+const BOAT_HALF = 0.42;         // піврозмір колізійної коробки (вужче за клітинку)
+const BOAT_H = 0.36;            // висота коробки
+const BOAT_SEAT = 0.34;         // підйом «сидіння» над центром човна (для камери)
+const BOAT_FLOAT = 0.9;         // де тримати центр човна відносно клітинки води (ватерлінія)
+const BOAT_MAXV = 6.4;          // макс. горизонтальна швидкість (швидше за уплав)
+const BOAT_ACCEL = 15;          // прискорення від весел
+const BOAT_DRAG = 2.6;          // опір води (згасання швидкості)
+let ridingBoat = null;          // човен, у якому зараз пливе гравець (або null)
+
+function makeBoatModel() {
+  const g = new THREE.Group();
+  const wood = 0x8a5a2b, dark = 0x6b4a2b, plank = 0xa9793f;
+  animalBox(g, 1.0, 0.14, 1.5, dark, 0, 0.06, 0);          // днище
+  animalBox(g, 0.12, 0.24, 1.5, wood, -0.5, 0.20, 0);      // лівий борт
+  animalBox(g, 0.12, 0.24, 1.5, wood, 0.5, 0.20, 0);       // правий борт
+  animalBox(g, 1.0, 0.24, 0.14, wood, 0, 0.20, -0.72);     // ніс (−Z, «вперед»)
+  animalBox(g, 1.0, 0.24, 0.14, wood, 0, 0.20, 0.72);      // корма
+  animalBox(g, 0.7, 0.1, 0.42, plank, 0, 0.24, 0.1);       // сидіння
+  return g;
+}
+
+function addBoat(x, y, z, yaw = 0) {
+  if (boats.length >= BOAT_MAX) return null;
+  const group = makeBoatModel();
+  group.position.set(x, y, z);
+  group.rotation.y = yaw;
+  scene.add(group);
+  const boat = {
+    pos: new THREE.Vector3(x, y, z),
+    vel: new THREE.Vector3(),
+    yaw, group, halfW: BOAT_HALF, height: BOAT_H, onGround: false, bob: 0,
+  };
+  boats.push(boat);
+  return boat;
+}
+
+function removeBoat(boat) {
+  const i = boats.indexOf(boat);
+  if (i < 0) return;
+  if (ridingBoat === boat) ridingBoat = null;
+  scene.remove(boat.group);
+  boat.group.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
+  boats.splice(i, 1);
+}
+
+// Знайти рівень поверхні води під/над центром човна (верхня клітинка води в
+// невеликому вікні). Повертає цільову висоту центру для плавучості або null,
+// якщо води поряд немає (тоді працює гравітація).
+function boatWaterSurface(boat) {
+  const fx = Math.floor(boat.pos.x), fz = Math.floor(boat.pos.z);
+  const top = Math.floor(boat.pos.y) + 2;
+  for (let y = top; y >= top - 5; y--) {
+    if (isWaterId(blockAt(fx, y, fz))) return y + BOAT_FLOAT;
+  }
+  return null;
+}
+
+// Вертикальна фізика човна: плавучість до ватерлінії у воді, інакше гравітація.
+function boatVertical(boat, dt) {
+  const surf = boatWaterSurface(boat);
+  if (surf !== null) {
+    boat.vel.y += (surf - boat.pos.y) * 9 * dt;   // пружина до поверхні
+    boat.vel.y *= Math.max(0, 1 - 6 * dt);        // сильне згасання (не розгойдувати)
+    boat.vel.y = THREE.MathUtils.clamp(boat.vel.y, -4, 4);
+  } else {
+    boat.vel.y = Math.max(boat.vel.y - 22 * dt, -30);
+  }
+  boat.onGround = false;
+  moveEntityAxis(boat, 'y', boat.vel.y * dt);
+}
+
+// Знайти точку встановлення човна вздовж погляду: перша клітинка води (спливе на
+// поверхні) або верх твердої поверхні. Повертає { x, y, z, water } або null.
+function boatPlacement() {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const start = camera.position.clone();
+  const step = 0.06;
+  let prev = null;
+  for (let t = 0; t < 6; t += step) {
+    const p = start.clone().addScaledVector(dir, t);
+    const bx = Math.floor(p.x), by = Math.floor(p.y), bz = Math.floor(p.z);
+    if (prev && bx === prev[0] && by === prev[1] && bz === prev[2]) continue;
+    const id = blockAt(bx, by, bz);
+    if (isWaterId(id)) return { x: bx + 0.5, y: by + BOAT_FLOAT, z: bz + 0.5, water: true };
+    if (isSolid(id)) {
+      if (!prev) return null;
+      return { x: prev[0] + 0.5, y: prev[1] + BOAT_H, z: prev[2] + 0.5, water: false };
+    }
+    prev = [bx, by, bz];
+  }
+  return null;
+}
+
+function placeBoat() {
+  if (boats.length >= BOAT_MAX) return false;
+  const spot = boatPlacement();
+  if (!spot) return false;
+  const boat = addBoat(spot.x, spot.y, spot.z, player.yaw);
+  if (!boat) return false;
+  Sound.splash();
+  spawnParticles(spot.x, spot.y, spot.z, blockColor(WATER), 8,
+    { radius: 0.4, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 8 });
+  return true;
+}
+
+// Найближчий човен у радіусі r від гравця (для посадки).
+function nearestBoat(r = 2.8) {
+  let best = null, bestD = r * r;
+  for (const b of boats) {
+    const d = b.pos.distanceToSquared(player.pos);
+    if (d < bestD) { bestD = d; best = b; }
+  }
+  return best;
+}
+
+function mountBoat(boat) {
+  if (!boat || ridingBoat) return false;
+  ridingBoat = boat;
+  boat.vel.set(0, 0, 0);
+  mining = false;
+  cancelBowDraw();
+  player.vel.set(0, 0, 0);
+  player.flying = false;
+  unlockAch('sailor');
+  Sound.splash();
+  return true;
+}
+
+// Спроба сісти в човен, на який дивимось/поряд якого стоїмо. Повертає true, якщо сів.
+function tryMountBoat() {
+  if (ridingBoat) return false;
+  const boat = nearestBoat();
+  return boat ? mountBoat(boat) : false;
+}
+
+function dismountBoat(reposition = true) {
+  if (!ridingBoat) return;
+  const b = ridingBoat;
+  ridingBoat = null;
+  b.vel.x = 0; b.vel.z = 0;
+  if (reposition) {
+    player.pos.set(b.pos.x, b.pos.y + 0.7, b.pos.z);  // виринути над човном
+    player.vel.set(0, 0, 0);
+    player.fallPeakY = player.pos.y;
+    player.prevOnGround = false;
+  }
+}
+
+// Кермування човном, у якому пливе гравець (викликається з updatePlayer).
+function driveBoat(dt) {
+  const boat = ridingBoat;
+  boat.yaw = player.yaw;                         // ніс повертається за поглядом
+
+  let thrust = 0;
+  if (keys['KeyW']) thrust += 1;
+  if (keys['KeyS']) thrust -= 0.6;
+  if (joy.active) thrust += -joy.y;              // сенсор: вперед по джойстику
+  thrust = THREE.MathUtils.clamp(thrust, -0.6, 1);
+
+  const fwdx = -Math.sin(player.yaw), fwdz = -Math.cos(player.yaw);
+  boat.vel.x += fwdx * thrust * BOAT_ACCEL * dt;
+  boat.vel.z += fwdz * thrust * BOAT_ACCEL * dt;
+  const drag = Math.max(0, 1 - BOAT_DRAG * dt);
+  boat.vel.x *= drag;
+  boat.vel.z *= drag;
+  const sp = Math.hypot(boat.vel.x, boat.vel.z);
+  if (sp > BOAT_MAXV) { boat.vel.x *= BOAT_MAXV / sp; boat.vel.z *= BOAT_MAXV / sp; }
+
+  boatVertical(boat, dt);
+  moveEntityAxis(boat, 'x', boat.vel.x * dt);
+  moveEntityAxis(boat, 'z', boat.vel.z * dt);
+  boat.group.position.set(boat.pos.x, boat.pos.y, boat.pos.z);
+
+  // Гравець «прив'язаний» до сидіння — без власної фізики й шкоди від падіння
+  player.pos.set(boat.pos.x, boat.pos.y + BOAT_SEAT, boat.pos.z);
+  player.vel.set(0, 0, 0);
+  player.onGround = true;
+  player.fallPeakY = player.pos.y;
+
+  // Провалилися під світ (баг рельєфу) — злізти, щоб не застрягти
+  if (boat.pos.y < -8) dismountBoat(false);
+}
+
+// Оновлення вільних (некерованих) човнів: плавучість, згасання дрейфу, гойдання.
+function updateBoats(dt) {
+  for (let i = boats.length - 1; i >= 0; i--) {
+    const boat = boats[i];
+    if (boat === ridingBoat) { boat.group.rotation.y = boat.yaw; continue; }
+    if (boat.pos.y < -10) { removeBoat(boat); continue; }
+    boatVertical(boat, dt);
+    const drag = Math.max(0, 1 - 3 * dt);
+    boat.vel.x *= drag; boat.vel.z *= drag;
+    if (Math.abs(boat.vel.x) > 0.001) moveEntityAxis(boat, 'x', boat.vel.x * dt);
+    if (Math.abs(boat.vel.z) > 0.001) moveEntityAxis(boat, 'z', boat.vel.z * dt);
+    boat.bob += dt;
+    const onWater = boatWaterSurface(boat) !== null;
+    boat.group.position.set(boat.pos.x, boat.pos.y + (onWater ? Math.sin(boat.bob * 1.6) * 0.03 : 0), boat.pos.z);
+    boat.group.rotation.y = boat.yaw;
+    boat.group.rotation.z = onWater ? Math.sin(boat.bob * 1.2) * 0.03 : 0;
+  }
+}
+
+// Відновити збережені човни (сумісно зі старими сейвами — поле необов'язкове)
+if (savedGame && Array.isArray(savedGame.boats)) {
+  for (const e of savedGame.boats) {
+    if (Array.isArray(e) && e.length >= 3 && e.slice(0, 3).every(Number.isFinite)) {
+      addBoat(e[0], e[1], e[2], Number.isFinite(e[3]) ? e[3] : 0);
+    }
+  }
+}
+
+// ============================================================
 // Відро: перенесення джерел води й лави
 // ============================================================
 // Порожнє відро набирає перше джерело (WATER/LAVA), у яке дивиться гравець,
@@ -3966,6 +4206,13 @@ function useBucket() {
 
 function placeBlock() {
   triggerSwing();
+
+  // Човен поряд (ПКМ) → сісти в нього, з будь-яким предметом у руці. Робимо це
+  // до raycast, бо над відкритою водою промінь може не знайти твердого блока.
+  if (boats.length > 0 && tryMountBoat()) return;
+  // Човен у руці — спустити його на воду чи землю перед прицілом
+  if (hotbar[selectedSlot] === BOAT) { placeBoat(); return; }
+
   const hit = raycastBlock();
   if (!hit || !hit.prev) return;
 
@@ -4769,6 +5016,25 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(5, 11, 1, 3);
     return;
   }
+  if (id === BOAT) {
+    // Процедурна іконка човна: дерев'яний корпус (трапеція) з бортами й хвилею
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#8a5a2b';                          // корпус
+    ctx.beginPath();
+    ctx.moveTo(2, 7); ctx.lineTo(14, 7); ctx.lineTo(12, 12); ctx.lineTo(4, 12);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#a9793f';                          // внутрішня дошка (сидіння)
+    ctx.fillRect(5, 8, 6, 2);
+    ctx.strokeStyle = '#6b4a2b';                        // борти/контур
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.strokeStyle = '#2f7bd6';                        // хвиля під човном
+    ctx.beginPath();
+    ctx.moveTo(1, 14); ctx.quadraticCurveTo(4, 12, 8, 14);
+    ctx.quadraticCurveTo(12, 16, 15, 14); ctx.stroke();
+    return;
+  }
   const tile = BLOCK_TILES[id].side;
   canvas.getContext('2d').drawImage(
     atlasCanvas,
@@ -5041,6 +5307,7 @@ function bindTouchButton(id, onDown, onUp) {
 let lastJumpTouch = -1e9;   // подвійний тап по кнопці стрибка → політ (сенсор)
 bindTouchButton('btn-jump', () => {
   keys['Space'] = true;
+  if (ridingBoat) { dismountBoat(); return; }   // у човні кнопка стрибка — злізти
   const now = performance.now();
   if (now - lastJumpTouch < 320) toggleFlight();
   lastJumpTouch = now;
@@ -5088,6 +5355,8 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
     if (!e.repeat && gameActive() && !blockMenuOpen && !achPanelOpen) {
+      // У човні Space — злізти (пріоритет над подвійним тапом польоту)
+      if (ridingBoat) { dismountBoat(); return; }
       const now = performance.now();
       if (now - lastSpaceDown < 300) toggleFlight();
       lastSpaceDown = now;
@@ -5470,6 +5739,7 @@ const ACHIEVEMENTS = [
   { id: 'lava',        icon: '🌋', title: 'Пекуче знайомство',  desc: 'Обпектися лавою' },
   { id: 'fly',         icon: '🕊', title: 'Політ',              desc: 'Здійнятися в політ (подвійний Space)' },
   { id: 'bucket',      icon: '🪣', title: 'Водовоз',            desc: 'Набрати воду чи лаву у відро' },
+  { id: 'sailor',      icon: '🚣', title: 'Мореплавець',        desc: 'Відплисти на човні' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -5817,6 +6087,40 @@ window.MCDebug = {
   forceBite: () => { fishing.inWater = true; fishing.waitTimer = 0; return { active: fishing.active }; },
   // Змотати вудку; повертає приріст їжі (риба = +5, якщо підсічка вдалась)
   reelRod: () => { const f = player.food; reelIn(); return { foodBefore: f, foodAfter: player.food }; },
+  // ===== Човни: інспекція та тестування з консолі =====
+  get boats() { return boats.length; },
+  get riding() { return !!ridingBoat; },
+  // Стан керованого (або найближчого) човна: позиція, курс, чи на воді
+  get boat() {
+    const b = ridingBoat || nearestBoat(1e9);
+    if (!b) return null;
+    return {
+      x: +b.pos.x.toFixed(2), y: +b.pos.y.toFixed(2), z: +b.pos.z.toFixed(2),
+      yaw: +b.yaw.toFixed(2), onWater: boatWaterSurface(b) !== null,
+      speed: +Math.hypot(b.vel.x, b.vel.z).toFixed(2),
+    };
+  },
+  giveBoat: () => { assignBlockToSlot(BOAT); return BLOCK_NAMES[BOAT]; },
+  // Спустити човен просто перед гравцем (на воду чи землю) — для тестів
+  placeBoatNear: () => {
+    const yaw = player.yaw;
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+    const bx = Math.floor(player.pos.x + fx * 2), bz = Math.floor(player.pos.z + fz * 2);
+    let sy = null;
+    for (let y = Math.ceil(player.pos.y) + 2; y > Math.floor(player.pos.y) - 4; y--) {
+      const id = blockAt(bx, y, bz);
+      if (isWaterId(id)) { sy = y + BOAT_FLOAT; break; }
+      if (isSolid(id)) { sy = y + 1 + BOAT_H; break; }
+    }
+    if (sy === null) sy = player.pos.y;
+    const b = addBoat(bx + 0.5, sy, bz + 0.5, yaw);
+    return b ? { boats: boats.length, at: MCDebug.boat } : null;
+  },
+  mountBoat: () => { const b = nearestBoat(1e9); return b ? mountBoat(b) : false; },
+  dismount: () => { dismountBoat(); return !!ridingBoat; },
+  // Дозволяє тестам натискати/відпускати клавіші руху (напр. 'KeyW')
+  press: (code) => { keys[code] = true; return code; },
+  release: (code) => { keys[code] = false; return code; },
 };
 
 const clock = new THREE.Clock();
@@ -5842,6 +6146,7 @@ function animate() {
     if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
     updateArrows(dt);
     updateFallingBlocks(dt);
+    updateBoats(dt);
     updateFishing(dt);
     updateParticles(dt);
     updateWeather(dt);
