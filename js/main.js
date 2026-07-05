@@ -56,6 +56,11 @@ const isBucket = (id) => id === BUCKET || id === WATER_BUCKET || id === LAVA_BUC
 // човен ніколи не потрапляє.
 const BOAT = 32;
 
+// Драбина — окремий предмет-сутність (як смолоскип): чіпляється ПКМ на бічну
+// грань твердого блока й дає лазити вертикально (W/Space — угору, Shift — униз,
+// без клавіш — повільне сповзання). У воксельну сітку не потрапляє.
+const LADDER = 33;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -66,13 +71,14 @@ const BLOCK_NAMES = {
   [SNOW]: 'Сніг', [CACTUS]: 'Кактус', [GRAVEL]: 'Гравій', [LAVA]: 'Лава',
   [ROD]: 'Вудка',
   [BUCKET]: 'Відро', [WATER_BUCKET]: 'Відро з водою', [LAVA_BUCKET]: 'Відро з лавою',
-  [BOAT]: 'Човен',
+  [BOAT]: 'Човен', [LADDER]: 'Драбина',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
 const ALL_BLOCKS = [
   GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, WATER, LAVA, TNT,
   COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, BOW, ROD, BED, BUCKET, BOAT,
+  LADDER,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -283,6 +289,7 @@ function saveGame() {
       torches: [...torches.values()].map((t) => [t.x, t.y, t.z, t.face, t.dx, t.dz]),
       crops: [...crops.values()].map((c) => [c.x, c.y, c.z, c.stage, +c.growth.toFixed(2)]),
       beds: [...beds.values()].map((b) => [b.x, b.y, b.z, b.yaw]),
+      ladders: [...ladders.values()].map((l) => [l.x, l.y, l.z, l.dx, l.dz]),
       boats: boats.map((b) => [+b.pos.x.toFixed(2), +b.pos.y.toFixed(2), +b.pos.z.toFixed(2), +b.yaw.toFixed(3)]),
       spawn: spawnPoint,
       selectedSlot,
@@ -1468,6 +1475,7 @@ const player = {
   stepDist: 0,      // накопичена відстань для звуку кроків
   lastCause: '',
   flying: false,    // творчий політ (подвійний Space): без гравітації й шкоди від падіння
+  climbed: 0,       // накопичений підйом драбиною (для досягнення)
 };
 player.fallPeakY = player.pos.y;
 
@@ -1563,6 +1571,7 @@ function updatePlayer(dt) {
 
   const flying = player.flying;
   const running = keys['ShiftLeft'] || keys['ShiftRight'];
+  const onLadder = !flying && playerOnLadder();
 
   // Горизонтальний рух (у польоті трохи швидше; Shift у польоті — знижуватися, тож не пришвидшує)
   const speed = flying ? 7 : (running ? 8 : 5);
@@ -1586,6 +1595,16 @@ function updatePlayer(dt) {
     const FLY_V = 7;
     player.vel.y = (keys['Space'] ? FLY_V : 0) - (running ? FLY_V : 0);
     player.fallPeakY = player.pos.y;   // без накопичення шкоди від падіння
+  } else if (onLadder) {
+    // Лазіння: W/Space (сенсор — джойстик уперед) — угору, Shift — униз,
+    // без клавіш — повільне сповзання. Гравітація не діє.
+    if (keys['KeyW'] || keys['Space'] || (joy.active && joy.y < -0.3)) {
+      player.vel.y = LADDER_CLIMB_V;
+    } else if (running) {
+      player.vel.y = -LADDER_CLIMB_V;
+    } else {
+      player.vel.y = Math.max(player.vel.y - 18 * dt, LADDER_SLIDE_V);
+    }
   } else if (inLiquid) {
     // У лаві занурюєшся й вибираєшся ще повільніше, ніж у воді
     const up = inLava ? 2.6 : 4;
@@ -1604,10 +1623,26 @@ function updatePlayer(dt) {
   if (inWater && !player.prevInWater) Sound.splash();
   player.prevInWater = inWater;
 
+  const yBefore = player.pos.y;
   player.onGround = false;
   moveEntityAxis(player, 'y', player.vel.y * dt);
   moveEntityAxis(player, 'x', player.vel.x * dt);
   moveEntityAxis(player, 'z', player.vel.z * dt);
+
+  // Лазіння драбиною: рип щаблів, здобуток за підйом, нуль шкоди від падіння
+  if (onLadder) {
+    const dy = player.pos.y - yBefore;
+    if (dy > 0) {
+      player.climbed += dy;
+      if (player.climbed >= 2.5) unlockAch('climb');
+    }
+    player.stepDist += Math.abs(dy);
+    if (player.stepDist > 1.6) {
+      player.stepDist = 0;
+      Sound.step(LOG);
+    }
+    player.fallPeakY = player.pos.y;   // драбина гасить арку падіння
+  }
 
   // Якщо провалилися під світ — повернути на поверхню (без шкоди від падіння)
   if (player.pos.y < -10) {
@@ -1626,7 +1661,7 @@ function updatePlayer(dt) {
       player.stepDist = 0;
       if (isSolid(groundId)) Sound.step(groundId);
     }
-  } else {
+  } else if (!onLadder) {
     player.stepDist = 0;
   }
 
@@ -2507,8 +2542,9 @@ function startBreakOrAttack() {
   if (hotbar[selectedSlot] === BOW) { startBowDraw(); return; }
   if (hotbar[selectedSlot] === ROD) { castOrReel(); return; }
   if (tryAttack()) return;
-  // Зняти смолоскип або зібрати посів, якщо дивимось на нього (клітинка перед блоком)
-  if (torches.size > 0 || crops.size > 0) {
+  // Зняти смолоскип/драбину або зібрати посів, якщо дивимось на них
+  // (клітинка перед блоком)
+  if (torches.size > 0 || crops.size > 0 || ladders.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -2517,6 +2553,14 @@ function startBreakOrAttack() {
           { radius: 0.2, speed: 1.4, upBias: 0.8, life: 0.5, size: 0.07, gravity: 6 });
         Sound.torch(0.1);
         removeTorch(key);
+        triggerSwing();
+        return;
+      }
+      if (ladders.has(key)) {
+        spawnParticles(hit.prev[0] + 0.5, hit.prev[1] + 0.5, hit.prev[2] + 0.5, LADDER_COLOR, 6,
+          { radius: 0.25, speed: 1.4, upBias: 0.4, life: 0.45, size: 0.09, gravity: 10 });
+        Sound.place(PLANK);
+        removeLadder(key);
         triggerSwing();
         return;
       }
@@ -2971,6 +3015,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateTorches();  // вибух міг знести опору або клітинки смолоскипів
   validateCrops();    // ... і опору/клітинки посівів
   validateBeds();     // ... і опору/клітинки ліжок
+  validateLadders();  // ... і опору/клітинки драбин
   Sound.explosion();
   knockback(player, cx, cy, cz);
   for (const a of animals) knockback(a, cx, cy, cz);
@@ -3104,6 +3149,7 @@ function updateFallingBlocks(dt) {
       validateTorches();  // блок міг зайняти клітинку смолоскипа/посіву/ліжка
       validateCrops();
       validateBeds();
+      validateLadders();
     }
   }
 }
@@ -3434,7 +3480,8 @@ function torchNear(x, y, z, r) {
 // Поставити смолоскип у клітинку перед прицілом (hit.prev), визначивши опору
 function placeTorch(hit) {
   const [x, y, z] = hit.prev;
-  if (blockAt(x, y, z) !== AIR || torches.has(torchKey(x, y, z))) return false;
+  if (blockAt(x, y, z) !== AIR || torches.has(torchKey(x, y, z)) ||
+      ladders.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -3512,6 +3559,121 @@ function updateTorches(dt) {
 if (savedGame && Array.isArray(savedGame.torches)) {
   for (const e of savedGame.torches) {
     if (Array.isArray(e) && e.length >= 4) addTorch(e[0], e[1], e[2], e[3], e[4] || 0, e[5] || 0);
+  }
+}
+
+// ============================================================
+// Драбини: вертикальне лазіння (окрема сутність, як смолоскипи)
+// ============================================================
+// Драбина чіпляється на бічну грань твердого блока (dx/dz вказують на опору)
+// й не змінює воксельну сітку. Поки AABB гравця перетинає клітинку драбини,
+// вмикається режим лазіння: W/Space — угору, Shift — униз, без клавіш —
+// повільне сповзання; шкоди від падіння немає.
+const ladders = new Map();             // "x,y,z" -> { x, y, z, dx, dz, group }
+const LADDER_MAX = 512;                // межа, щоб збереження не розросталося
+const LADDER_CLIMB_V = 3.2;            // швидкість лазіння, бл/с
+const LADDER_SLIDE_V = -1.5;           // повільне сповзання без клавіш, бл/с
+const LADDER_COLOR = new THREE.Color(0x9a6a33);
+
+// Спільні ресурси моделі (геометрії/матеріал не дублюються на кожну драбину)
+const LADDER_RAIL_GEO = new THREE.BoxGeometry(0.09, 1.0, 0.07);
+const LADDER_RUNG_GEO = new THREE.BoxGeometry(0.56, 0.08, 0.05);
+const LADDER_MAT = new THREE.MeshLambertMaterial({ color: 0x9a6a33 });
+
+const ladderKey = (x, y, z) => x + ',' + y + ',' + z;
+
+// Модель: дві вертикальні стійки + 4 щаблі у площині XY (нормаль +Z)
+function makeLadderModel() {
+  const g = new THREE.Group();
+  for (const sx of [-0.32, 0.32]) {
+    const rail = new THREE.Mesh(LADDER_RAIL_GEO, LADDER_MAT);
+    rail.position.set(sx, 0.5, 0);
+    g.add(rail);
+  }
+  for (const ry of [0.14, 0.38, 0.62, 0.86]) {
+    const rung = new THREE.Mesh(LADDER_RUNG_GEO, LADDER_MAT);
+    rung.position.set(0, ry, 0.01);
+    g.add(rung);
+  }
+  return g;
+}
+
+// Створити драбину в клітинці (x,y,z); dx/dz вказують на блок-опору (стіну)
+function addLadder(x, y, z, dx, dz) {
+  const key = ladderKey(x, y, z);
+  if (ladders.has(key) || ladders.size >= LADDER_MAX) return false;
+  if (Math.abs(dx) + Math.abs(dz) !== 1) return false;
+  const group = makeLadderModel();
+  group.position.set(x + 0.5 + dx * 0.42, y, z + 0.5 + dz * 0.42);
+  group.rotation.y = Math.atan2(-dx, -dz);   // нормаль площини — від стіни
+  scene.add(group);
+  ladders.set(key, { x, y, z, dx, dz, group });
+  return true;
+}
+
+function removeLadder(key) {
+  const l = ladders.get(key);
+  if (!l) return;
+  scene.remove(l.group);
+  ladders.delete(key);   // геометрія/матеріал спільні — не dispose
+}
+
+// Зняти драбини, що втратили опору або клітинку яких зайняв блок
+function validateLadders() {
+  if (ladders.size === 0) return;
+  for (const [key, l] of ladders) {
+    const occupied = isSolid(blockAt(l.x, l.y, l.z));
+    const supported = isSolid(blockAt(l.x + l.dx, l.y, l.z + l.dz));
+    if (occupied || !supported) {
+      spawnParticles(l.x + 0.5, l.y + 0.5, l.z + 0.5, LADDER_COLOR, 6,
+        { radius: 0.25, speed: 1.4, upBias: 0.4, life: 0.45, size: 0.09, gravity: 10 });
+      removeLadder(key);
+    }
+  }
+}
+
+// Почепити драбину в клітинку перед прицілом (hit.prev) на бічну грань блока
+function placeLadder(hit) {
+  const [x, y, z] = hit.prev;
+  if (blockAt(x, y, z) !== AIR) return false;
+  if (ladders.has(ladderKey(x, y, z)) || torches.has(x + ',' + y + ',' + z) ||
+      crops.has(x + ',' + y + ',' + z) || beds.has(x + ',' + y + ',' + z)) return false;
+  // Напрямок від клітинки драбини до блока, по якому клікнули
+  const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
+  let ok = false;
+  if (sy === 0 && Math.abs(sx) + Math.abs(sz) === 1) {
+    ok = addLadder(x, y, z, sx, sz);
+  } else {
+    // Запасний варіант (клік по підлозі/стелі): будь-яка тверда сусідня стіна
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      if (isSolid(blockAt(x + dx, y, z + dz))) { ok = addLadder(x, y, z, dx, dz); break; }
+    }
+  }
+  if (ok) {
+    Sound.place(PLANK);
+    spawnParticles(x + 0.5, y + 0.5, z + 0.5, LADDER_COLOR, 6,
+      { radius: 0.3, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.09, gravity: 10 });
+  }
+  return ok;
+}
+
+// Чи перетинає AABB гравця клітинку з драбиною (перевіряємо стовпчик клітинок
+// центру: ноги, тулуб, голова)
+function playerOnLadder() {
+  if (ladders.size === 0) return false;
+  const cx = Math.floor(player.pos.x), cz = Math.floor(player.pos.z);
+  const y0 = Math.floor(player.pos.y);
+  const y1 = Math.floor(player.pos.y + player.height * 0.55);
+  const y2 = Math.floor(player.pos.y + player.height);
+  return ladders.has(ladderKey(cx, y0, cz)) ||
+         ladders.has(ladderKey(cx, y1, cz)) ||
+         (y2 !== y1 && ladders.has(ladderKey(cx, y2, cz)));
+}
+
+// Відновити збережені драбини (формат: [x, y, z, dx, dz])
+if (savedGame && Array.isArray(savedGame.ladders)) {
+  for (const e of savedGame.ladders) {
+    if (Array.isArray(e) && e.length >= 5) addLadder(e[0], e[1], e[2], e[3], e[4]);
   }
 }
 
@@ -3623,7 +3785,8 @@ function validateCrops() {
 function plantCrop(hit) {
   const [x, y, z] = hit.prev;
   if (blockAt(x, y, z) !== AIR) return false;
-  if (crops.has(cropKey(x, y, z)) || torches.has(torchKey(x, y, z))) return false;
+  if (crops.has(cropKey(x, y, z)) || torches.has(torchKey(x, y, z)) ||
+      ladders.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -3742,7 +3905,8 @@ function validateBeds() {
 function placeBed(hit) {
   const [x, y, z] = hit.prev;
   if (blockAt(x, y, z) !== AIR) return false;
-  if (beds.has(bedKey(x, y, z)) || torches.has(torchKey(x, y, z)) || crops.has(cropKey(x, y, z))) return false;
+  if (beds.has(bedKey(x, y, z)) || torches.has(torchKey(x, y, z)) ||
+      crops.has(cropKey(x, y, z)) || ladders.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -3897,6 +4061,7 @@ function updateMining(dt, hit) {
     validateTorches();  // міг зникнути блок-опора смолоскипа
     validateCrops();    // ... або грунт під посівом
     validateBeds();     // ... або опора під ліжком
+    validateLadders();  // ... або стіна-опора драбини
     unlockAch('first_block');
     if (id === LOG) unlockAch('chop_wood');
     else if (id === COAL) unlockAch('coal');
@@ -4236,6 +4401,12 @@ function placeBlock() {
     return;
   }
 
+  // Драбина — сутність на бічній грані блока, не змінює воксельну сітку
+  if (id === LADDER) {
+    placeLadder(hit);
+    return;
+  }
+
   // Насіння — сутність-посів: садиться на траву/землю, не змінює воксельну сітку
   if (id === SEEDS) {
     plantCrop(hit);
@@ -4268,6 +4439,7 @@ function placeBlock() {
   validateTorches();  // блок міг зайняти клітинку смолоскипа
   validateCrops();    // ... або клітинку посіву
   validateBeds();     // ... або клітинку ліжка
+  validateLadders();  // ... або клітинку драбини
 }
 
 // ===== Менеджмент чанків =====
@@ -4948,6 +5120,19 @@ function drawBlockIcon(canvas, id) {
     ctx.fillStyle = '#9099a3';
     ctx.beginPath();                                   // вістря
     ctx.moveTo(14, 6); ctx.lineTo(16, 8); ctx.lineTo(14, 10); ctx.fill();
+    return;
+  }
+  if (id === LADDER) {
+    // Процедурна іконка драбини: дві стійки та щаблі
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#9a6a33';
+    ctx.fillRect(3, 1, 2, 14);          // стійки
+    ctx.fillRect(11, 1, 2, 14);
+    ctx.fillStyle = '#b5803f';
+    ctx.fillRect(4, 3, 8, 2);           // щаблі
+    ctx.fillRect(4, 7, 8, 2);
+    ctx.fillRect(4, 11, 8, 2);
     return;
   }
   if (id === BED) {
@@ -5740,6 +5925,7 @@ const ACHIEVEMENTS = [
   { id: 'fly',         icon: '🕊', title: 'Політ',              desc: 'Здійнятися в політ (подвійний Space)' },
   { id: 'bucket',      icon: '🪣', title: 'Водовоз',            desc: 'Набрати воду чи лаву у відро' },
   { id: 'sailor',      icon: '🚣', title: 'Мореплавець',        desc: 'Відплисти на човні' },
+  { id: 'climb',       icon: '🪜', title: 'Верхолаз',           desc: 'Піднятися драбиною' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -5913,6 +6099,27 @@ window.MCDebug = {
   // Дати лук у поточний слот хотбара (зручно для тестів)
   giveBow: () => { assignBlockToSlot(BOW); return BLOCK_NAMES[BOW]; },
   giveRod: () => { assignBlockToSlot(ROD); return BLOCK_NAMES[ROD]; },
+  giveLadder: () => { assignBlockToSlot(LADDER); return BLOCK_NAMES[LADDER]; },
+  blockAt: (x, y, z) => blockAt(x, y, z),
+  get ladders() { return ladders.size; },
+  get climbed() { return player.climbed; },
+  get onLadder() { return playerOnLadder(); },
+  // Побудувати кам'яний стовп із драбиною за 2 блоки на схід від гравця
+  // (для тестів лазіння): стовп у (x+2, z), драбини на його західній грані
+  ladderColumnNear: (h = 4) => {
+    const x = Math.floor(player.pos.x) + 2, z = Math.floor(player.pos.z);
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0) return 0;
+    let placed = 0;
+    for (let i = 1; i <= h; i++) {
+      setBlock(x, gy + i, z, STONE);
+      if (blockAt(x - 1, gy + i, z) === AIR && addLadder(x - 1, gy + i, z, 1, 0)) placed++;
+    }
+    return placed;
+  },
   // Відро: видати порожнє/повне у слот і застосувати (набрати чи вилити) — для тестів
   giveBucket: (kind = 'empty') => {
     const id = kind === 'water' ? WATER_BUCKET : kind === 'lava' ? LAVA_BUCKET : BUCKET;
