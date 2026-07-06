@@ -61,6 +61,11 @@ const BOAT = 32;
 // без клавіш — повільне сповзання). У воксельну сітку не потрапляє.
 const LADDER = 33;
 
+// Скло — прозорий будівельний блок: звичайний воксель (тверда фізика, як
+// камінь), але рендериться окремим напівпрозорим мешем, тож крізь нього видно
+// світ. Грані між сусідніми стеклами не малюються — суцільні вітражі без швів.
+const GLASS = 34;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -71,14 +76,14 @@ const BLOCK_NAMES = {
   [SNOW]: 'Сніг', [CACTUS]: 'Кактус', [GRAVEL]: 'Гравій', [LAVA]: 'Лава',
   [ROD]: 'Вудка',
   [BUCKET]: 'Відро', [WATER_BUCKET]: 'Відро з водою', [LAVA_BUCKET]: 'Відро з лавою',
-  [BOAT]: 'Човен', [LADDER]: 'Драбина',
+  [BOAT]: 'Човен', [LADDER]: 'Драбина', [GLASS]: 'Скло',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
 const ALL_BLOCKS = [
-  GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, WATER, LAVA, TNT,
-  COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, BOW, ROD, BED, BUCKET, BOAT,
-  LADDER,
+  GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, GLASS, WATER, LAVA,
+  TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, BOW, ROD, BED, BUCKET,
+  BOAT, LADDER,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -111,7 +116,7 @@ const BLOCK_HARDNESS = {
   [GRASS]: 0.5, [DIRT]: 0.5, [SAND]: 0.55,
   [LEAVES]: 0.3, [LOG]: 1.0, [PLANK]: 0.9, [STONE]: 1.6,
   [COAL]: 2.2, [IRON]: 2.8, [GOLD]: 2.8, [DIAMOND]: 3.6,
-  [SNOW]: 0.4, [CACTUS]: 0.5, [GRAVEL]: 0.7,
+  [SNOW]: 0.4, [CACTUS]: 0.5, [GRAVEL]: 0.7, [GLASS]: 0.35,
 };
 const DEFAULT_HARDNESS = 0.6;
 
@@ -389,6 +394,7 @@ const Sound = (() => {
     if (id === SAND) return { freq: 360, q: 0.8, type: 'lowpass' };
     if (id === LOG || id === PLANK) return { freq: 520, q: 2.4, type: 'bandpass' };
     if (id === LEAVES) return { freq: 1700, q: 0.7, type: 'highpass' };
+    if (id === GLASS) return { freq: 2600, q: 1.4, type: 'highpass' };   // дзвінкий кришталь
     if (id === GRASS || id === DIRT) return { freq: 620, q: 0.9, type: 'bandpass' };
     // камінь, руди, динаміт — твердий «цок»
     return { freq: 1100, q: 1.6, type: 'bandpass' };
@@ -961,6 +967,17 @@ function makeAtlas() {
     });                                                                            // 20 лава
   }
 
+  // Скло: майже прозоре нутро (альфа в текстурі), світла рамка по периметру
+  // й пара діагональних відблисків. Прозорість дає альфа-канал canvas —
+  // меш скла рендериться окремим матеріалом із transparent: true.
+  paint(21, (x, y) => {
+    const edge = x === 0 || y === 0 || x === TILE - 1 || y === TILE - 1;
+    if (edge) return 'rgba(214,236,244,0.9)';                 // рамка
+    if (x - y === 9 || x - y === 10) return 'rgba(255,255,255,0.45)'; // відблиск
+    if (x - y === -6) return 'rgba(255,255,255,0.3)';
+    return 'rgba(190,224,238,0.16)';                          // прозоре нутро
+  });                                                                            // 21 скло
+
   const tex = new THREE.CanvasTexture(atlasCanvas);
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
@@ -993,6 +1010,7 @@ const BLOCK_TILES = {
   [LFLOW3]:  { top: 20, bottom: 20, side: 20 },
   [LFLOW2]:  { top: 20, bottom: 20, side: 20 },
   [LFLOW1]:  { top: 20, bottom: 20, side: 20 },
+  [GLASS]:   { top: 21, bottom: 21, side: 21 },
 };
 
 function tileUV(tile) {
@@ -1023,6 +1041,7 @@ function buildChunkMesh(cx, cz, scene, materials) {
   const solid = { pos: [], norm: [], uv: [], idx: [] };
   const water = { pos: [], norm: [], uv: [], idx: [] };
   const lava = { pos: [], norm: [], uv: [], idx: [] };
+  const glass = { pos: [], norm: [], uv: [], idx: [] };
 
   for (let ly = 0; ly < HEIGHT; ly++) {
     for (let lz = 0; lz < CHUNK; lz++) {
@@ -1032,16 +1051,21 @@ function buildChunkMesh(cx, cz, scene, materials) {
         const wx = wx0 + lx, wz = wz0 + lz;
 
         const idWater = isWaterId(id), idLava = isLavaId(id), idFluid = idWater || idLava;
+        const idGlass = id === GLASS;
         for (const { dir, face, verts } of FACES) {
           const nb = blockAt(wx + dir[0], ly + dir[1], wz + dir[2]);
-          // Флюїд показує грань до повітря або до флюїду іншого типу (межа
-          // вода/лава); тверді блоки — до повітря або будь-якого флюїду.
+          // Флюїд показує грань до повітря, скла або флюїду іншого типу (межа
+          // вода/лава); скло — лише до повітря чи флюїду (грані скло-скло та
+          // скло-непрозоре ховаються — вітраж без швів); непрозорі тверді —
+          // до повітря, флюїду чи скла (їх видно крізь скло).
           const visible = idFluid
-            ? nb === AIR || (isFluid(nb) && isWaterId(nb) !== idWater)
-            : nb === AIR || isFluid(nb);
+            ? nb === AIR || nb === GLASS || (isFluid(nb) && isWaterId(nb) !== idWater)
+            : idGlass
+              ? nb === AIR || isFluid(nb)
+              : nb === AIR || isFluid(nb) || nb === GLASS;
           if (!visible) continue;
 
-          const buf = idLava ? lava : idWater ? water : solid;
+          const buf = idLava ? lava : idWater ? water : idGlass ? glass : solid;
           const { u0, u1, v0, v1 } = tileUV(BLOCK_TILES[id][face]);
           const uvCorners = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
           const base = buf.pos.length / 3;
@@ -1077,11 +1101,12 @@ function buildChunkMesh(cx, cz, scene, materials) {
     solid: makeMesh(solid, materials.solid),
     water: makeMesh(water, materials.water),
     lava: makeMesh(lava, materials.lava),
+    glass: makeMesh(glass, materials.glass),
   };
 }
 
 function disposeChunkMesh(entry, scene) {
-  for (const mesh of [entry.solid, entry.water, entry.lava]) {
+  for (const mesh of [entry.solid, entry.water, entry.lava, entry.glass]) {
     if (!mesh) continue;
     scene.remove(mesh);
     mesh.geometry.dispose();
@@ -1104,6 +1129,9 @@ const materials = {
   water: new THREE.MeshLambertMaterial({ map: atlasTexture, transparent: true, opacity: 0.7 }),
   // Лава світиться сама (не залежить від освітлення) — розжарений вигляд удень і вночі
   lava: new THREE.MeshBasicMaterial({ map: atlasTexture }),
+  // Скло: прозорість задає альфа-канал тайла в атласі; depthWrite вимкнено,
+  // щоб ближче скло не «затирало» дальші шибки в межах одного меша чанка
+  glass: new THREE.MeshLambertMaterial({ map: atlasTexture, transparent: true, depthWrite: false }),
 };
 
 // Освітлення
@@ -4433,6 +4461,7 @@ function placeBlock() {
   setBlock(x, y, z, id);
   Sound.place(id);
   unlockAch('place_block');
+  if (id === GLASS) unlockAch('glazier');
   // Невеликий пил при встановленні блока
   spawnParticles(x + 0.5, y + 0.5, z + 0.5, blockColor(id), 6,
     { radius: 0.5, speed: 1.4, upBias: 0.3, life: 0.4, size: 0.1, gravity: 10 });
@@ -5690,7 +5719,7 @@ const MM_BLOCK_COLORS = {
   [PLANK]: [170, 132, 80], [TNT]: [184, 64, 48], [TORCH]: [240, 196, 90],
   [COAL]: [60, 60, 64], [IRON]: [176, 150, 128], [GOLD]: [222, 188, 70],
   [DIAMOND]: [110, 208, 214], [SNOW]: [232, 238, 244], [CACTUS]: [78, 132, 66],
-  [BED]: [196, 60, 60],
+  [BED]: [196, 60, 60], [GLASS]: [205, 230, 242],
 };
 
 // Найвищий ненульовий блок гравцевих змін у кожній колоні (id видно зверху).
@@ -5926,6 +5955,7 @@ const ACHIEVEMENTS = [
   { id: 'bucket',      icon: '🪣', title: 'Водовоз',            desc: 'Набрати воду чи лаву у відро' },
   { id: 'sailor',      icon: '🚣', title: 'Мореплавець',        desc: 'Відплисти на човні' },
   { id: 'climb',       icon: '🪜', title: 'Верхолаз',           desc: 'Піднятися драбиною' },
+  { id: 'glazier',     icon: '🪟', title: 'Вікно у світ',       desc: 'Поставити скляний блок' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -6100,6 +6130,23 @@ window.MCDebug = {
   giveBow: () => { assignBlockToSlot(BOW); return BLOCK_NAMES[BOW]; },
   giveRod: () => { assignBlockToSlot(ROD); return BLOCK_NAMES[ROD]; },
   giveLadder: () => { assignBlockToSlot(LADDER); return BLOCK_NAMES[LADDER]; },
+  giveGlass: () => { assignBlockToSlot(GLASS); return BLOCK_NAMES[GLASS]; },
+  // Скляна стінка 3×3 поряд із гравцем (для тестів рендера прозорості)
+  glassWallNear: () => {
+    const x = Math.floor(player.pos.x) + 2, z = Math.floor(player.pos.z);
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0) return 0;
+    let placed = 0;
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dy = 1; dy <= 3; dy++) {
+        if (blockAt(x, gy + dy, z + dz) === AIR) { setBlock(x, gy + dy, z + dz, GLASS); placed++; }
+      }
+    }
+    return placed;
+  },
   blockAt: (x, y, z) => blockAt(x, y, z),
   get ladders() { return ladders.size; },
   get climbed() { return player.climbed; },
@@ -6129,6 +6176,8 @@ window.MCDebug = {
   useBucket: () => { useBucket(); return BLOCK_NAMES[hotbar[selectedSlot]]; },
   get held() { return BLOCK_NAMES[hotbar[selectedSlot]]; },
   get heldId() { return hotbar[selectedSlot]; },
+  // Повернути погляд гравця (для детермінованих тестів; кути в радіанах)
+  look: (yaw = 0, pitch = 0) => { player.yaw = yaw; player.pitch = pitch; },
   // Промінь погляду (позиція камери + напрямок) — для детермінованих тестів
   viewRay: () => {
     const d = new THREE.Vector3();
