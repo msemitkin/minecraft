@@ -66,6 +66,10 @@ const LADDER = 33;
 // світ. Грані між сусідніми стеклами не малюються — суцільні вітражі без швів.
 const GLASS = 34;
 
+// Двері — окремий предмет: сутність на дві клітинки заввишки (як драбина, не
+// воксель). Зачинені — тверда перешкода для гравця й нечисті, ПКМ відчиняє
+const DOOR = 35;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -76,14 +80,14 @@ const BLOCK_NAMES = {
   [SNOW]: 'Сніг', [CACTUS]: 'Кактус', [GRAVEL]: 'Гравій', [LAVA]: 'Лава',
   [ROD]: 'Вудка',
   [BUCKET]: 'Відро', [WATER_BUCKET]: 'Відро з водою', [LAVA_BUCKET]: 'Відро з лавою',
-  [BOAT]: 'Човен', [LADDER]: 'Драбина', [GLASS]: 'Скло',
+  [BOAT]: 'Човен', [LADDER]: 'Драбина', [GLASS]: 'Скло', [DOOR]: 'Двері',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
 const ALL_BLOCKS = [
   GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, GLASS, WATER, LAVA,
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, BOW, ROD, BED, BUCKET,
-  BOAT, LADDER,
+  BOAT, LADDER, DOOR,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -295,6 +299,7 @@ function saveGame() {
       crops: [...crops.values()].map((c) => [c.x, c.y, c.z, c.stage, +c.growth.toFixed(2)]),
       beds: [...beds.values()].map((b) => [b.x, b.y, b.z, b.yaw]),
       ladders: [...ladders.values()].map((l) => [l.x, l.y, l.z, l.dx, l.dz]),
+      doors: [...doors.values()].map((d) => [d.x, d.y, d.z, d.dx, d.dz, d.open ? 1 : 0]),
       boats: boats.map((b) => [+b.pos.x.toFixed(2), +b.pos.y.toFixed(2), +b.pos.z.toFixed(2), +b.yaw.toFixed(3)]),
       spawn: spawnPoint,
       selectedSlot,
@@ -444,6 +449,17 @@ const Sound = (() => {
       const m = material(id);
       noise({ dur: 0.09, gain: 0.18, type: m.type, freq: m.freq * 0.9, q: m.q });
       tone({ freq: 220, dur: 0.1, type: 'sine', gain: 0.1, slideTo: 130 });
+    },
+    door(open) {
+      // Рип завіс: скрип смуги шуму + тон, що ковзає вгору (відчинити) чи
+      // вниз із дерев'яним стуком (зачинити)
+      noise({ dur: 0.14, gain: 0.09, type: 'bandpass', freq: 480, q: 3 });
+      if (open) {
+        tone({ freq: 150, dur: 0.22, type: 'square', gain: 0.045, slideTo: 250 });
+      } else {
+        tone({ freq: 230, dur: 0.18, type: 'square', gain: 0.045, slideTo: 120 });
+        noise({ dur: 0.1, gain: 0.15, type: 'lowpass', freq: 420, q: 0.8 });
+      }
     },
     jump() { tone({ freq: 260, dur: 0.16, type: 'sine', gain: 0.1, slideTo: 440 }); },
     land() { noise({ dur: 0.14, gain: 0.18, type: 'lowpass', freq: 300, q: 0.7 }); },
@@ -1548,7 +1564,7 @@ function moveEntityAxis(e, axis, amount) {
   for (let x = x0; x <= x1; x++) {
     for (let y = y0; y <= y1; y++) {
       for (let z = z0; z <= z1; z++) {
-        if (!isSolid(blockAt(x, y, z))) continue;
+        if (!isSolid(blockAt(x, y, z)) && !doorBlocksCell(x, y, z)) continue;
         if (axis === 'x') {
           e.pos.x = amount > 0 ? x - e.halfW - EPS : x + 1 + e.halfW + EPS;
         } else if (axis === 'z') {
@@ -2570,6 +2586,11 @@ function startBreakOrAttack() {
   if (hotbar[selectedSlot] === BOW) { startBowDraw(); return; }
   if (hotbar[selectedSlot] === ROD) { castOrReel(); return; }
   if (tryAttack()) return;
+  // Двері в прицілі (промінь по клітинках дверей) → зняти їх
+  if (doors.size > 0) {
+    const d = doorInSight();
+    if (d) { breakDoor(d); triggerSwing(); return; }
+  }
   // Зняти смолоскип/драбину або зібрати посів, якщо дивимось на них
   // (клітинка перед блоком)
   if (torches.size > 0 || crops.size > 0 || ladders.size > 0) {
@@ -2770,11 +2791,13 @@ function updateArrows(dt) {
       a.pos.z += a.vel.z * dt / steps;
       const hit = a.fromMob ? arrowHitPlayer(a) : arrowHitEntity(a);
       if (hit) { outcome = 'entity'; break; }
-      const bid = blockAt(Math.floor(a.pos.x), Math.floor(a.pos.y), Math.floor(a.pos.z));
-      if (isSolid(bid)) {
+      const acx = Math.floor(a.pos.x), acy = Math.floor(a.pos.y), acz = Math.floor(a.pos.z);
+      const bid = blockAt(acx, acy, acz);
+      const inDoor = !isSolid(bid) && doorBlocksCell(acx, acy, acz);
+      if (isSolid(bid) || inDoor) {
         outcome = 'block';
         Sound.arrowHit();
-        spawnParticles(a.pos.x, a.pos.y, a.pos.z, blockColor(bid), 4,
+        spawnParticles(a.pos.x, a.pos.y, a.pos.z, blockColor(inDoor ? PLANK : bid), 4,
           { radius: 0.18, speed: 1.6, upBias: 0.6, life: 0.4, size: 0.07, gravity: 10 });
         break;
       }
@@ -3044,6 +3067,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateCrops();    // ... і опору/клітинки посівів
   validateBeds();     // ... і опору/клітинки ліжок
   validateLadders();  // ... і опору/клітинки драбин
+  validateDoors();    // ... і опору/клітинки дверей
   Sound.explosion();
   knockback(player, cx, cy, cz);
   for (const a of animals) knockback(a, cx, cy, cz);
@@ -3178,6 +3202,7 @@ function updateFallingBlocks(dt) {
       validateCrops();
       validateBeds();
       validateLadders();
+      validateDoors();
     }
   }
 }
@@ -3509,7 +3534,7 @@ function torchNear(x, y, z, r) {
 function placeTorch(hit) {
   const [x, y, z] = hit.prev;
   if (blockAt(x, y, z) !== AIR || torches.has(torchKey(x, y, z)) ||
-      ladders.has(torchKey(x, y, z))) return false;
+      ladders.has(torchKey(x, y, z)) || doorAtCell(x, y, z)) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -3665,7 +3690,8 @@ function placeLadder(hit) {
   const [x, y, z] = hit.prev;
   if (blockAt(x, y, z) !== AIR) return false;
   if (ladders.has(ladderKey(x, y, z)) || torches.has(x + ',' + y + ',' + z) ||
-      crops.has(x + ',' + y + ',' + z) || beds.has(x + ',' + y + ',' + z)) return false;
+      crops.has(x + ',' + y + ',' + z) || beds.has(x + ',' + y + ',' + z) ||
+      doorAtCell(x, y, z)) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -3702,6 +3728,200 @@ function playerOnLadder() {
 if (savedGame && Array.isArray(savedGame.ladders)) {
   for (const e of savedGame.ladders) {
     if (Array.isArray(e) && e.length >= 5) addLadder(e[0], e[1], e[2], e[3], e[4]);
+  }
+}
+
+// ============================================================
+// Двері: прохід, що відчиняється (окрема сутність, як драбини)
+// ============================================================
+// Двері займають колону з двох клітинок (ключ у мапі — нижня) й не належать
+// воксельній сітці. Зачинена стулка — тверда перешкода для гравця, тварин і
+// нечисті (через спільний moveEntityAxis), тож будинок із дверима захищає від
+// зомбі вночі. ПКМ відчиняє/зачиняє (стулка плавно обертається на завісах),
+// ЛКМ — знімає; стріли встромляються в зачинені двері.
+const doors = new Map();               // "x,y,z" (нижня клітинка) -> { x, y, z, dx, dz, open, angle, group, pivot }
+const DOOR_MAX = 128;                  // межа, щоб збереження не розросталося
+const DOOR_SWING_V = 7;                // швидкість оберту стулки, рад/с
+const DOOR_OPEN_ANGLE = Math.PI / 2;
+const DOOR_COLOR = new THREE.Color(0x8a5a2b);
+
+// Спільні ресурси моделі (геометрії/матеріали не дублюються на кожні двері)
+const DOOR_PANEL_GEO = new THREE.BoxGeometry(0.92, 1.94, 0.11);
+const DOOR_TRIM_GEO = new THREE.BoxGeometry(0.6, 0.5, 0.13);
+const DOOR_WINDOW_GEO = new THREE.BoxGeometry(0.44, 0.34, 0.14);
+const DOOR_KNOB_GEO = new THREE.BoxGeometry(0.07, 0.07, 0.16);
+const DOOR_PANEL_MAT = new THREE.MeshLambertMaterial({ color: 0x8a5a2b });
+const DOOR_TRIM_MAT = new THREE.MeshLambertMaterial({ color: 0x6b4a2b });
+const DOOR_WINDOW_MAT = new THREE.MeshLambertMaterial({
+  color: 0xbfe3ef, transparent: true, opacity: 0.55,
+});
+const DOOR_KNOB_MAT = new THREE.MeshLambertMaterial({ color: 0x3a2a16 });
+
+const doorKey = (x, y, z) => x + ',' + y + ',' + z;
+
+// Двері, чия колона накриває клітинку (нижня або верхня половина)
+function doorAtCell(x, y, z) {
+  if (doors.size === 0) return null;
+  return doors.get(doorKey(x, y, z)) || doors.get(doorKey(x, y - 1, z)) || null;
+}
+
+// Чи блокують двері клітинку (зачинена стулка — тверда перешкода для колізій)
+function doorBlocksCell(x, y, z) {
+  if (doors.size === 0) return false;
+  const d = doorAtCell(x, y, z);
+  return !!d && !d.open;
+}
+
+// Модель: стулка (панель, фільонка, віконце й ручка) на півоті-«завісах».
+// Стулка тягнеться від завіс у +X, тож оберт півота по Y відчиняє двері.
+function makeDoorModel() {
+  const pivot = new THREE.Group();
+  const leaf = new THREE.Group();
+  const panel = new THREE.Mesh(DOOR_PANEL_GEO, DOOR_PANEL_MAT);
+  panel.position.set(0, 0.97, 0);
+  leaf.add(panel);
+  const trim = new THREE.Mesh(DOOR_TRIM_GEO, DOOR_TRIM_MAT);
+  trim.position.set(0, 0.55, 0);
+  leaf.add(trim);
+  const glassPane = new THREE.Mesh(DOOR_WINDOW_GEO, DOOR_WINDOW_MAT);
+  glassPane.position.set(0, 1.45, 0);
+  leaf.add(glassPane);
+  const knob = new THREE.Mesh(DOOR_KNOB_GEO, DOOR_KNOB_MAT);
+  knob.position.set(0.36, 0.95, 0);
+  leaf.add(knob);
+  leaf.position.x = 0.46;   // центр панелі: стулка займає 0..0.92 від завіс
+  pivot.add(leaf);
+  return pivot;
+}
+
+// Створити двері з нижньою клітинкою (x,y,z); dx/dz — куди «дивиться» стулка
+function addDoor(x, y, z, dx, dz, open = false) {
+  const key = doorKey(x, y, z);
+  if (doors.has(key) || doors.size >= DOOR_MAX) return null;
+  if (Math.abs(dx) + Math.abs(dz) !== 1) return null;
+  const group = new THREE.Group();
+  const pivot = makeDoorModel();
+  pivot.position.set(-0.46, 0.03, 0.38);   // завіси біля лівого краю, стулка при передній грані
+  group.add(pivot);
+  group.position.set(x + 0.5, y, z + 0.5);
+  group.rotation.y = Math.atan2(dx, dz);   // локальний +Z — у напрямку dx/dz
+  scene.add(group);
+  const d = { x, y, z, dx, dz, open, angle: open ? DOOR_OPEN_ANGLE : 0, group, pivot };
+  pivot.rotation.y = d.angle;
+  doors.set(key, d);
+  return d;
+}
+
+function removeDoor(key) {
+  const d = doors.get(key);
+  if (!d) return;
+  scene.remove(d.group);
+  doors.delete(key);   // геометрії/матеріали спільні — не dispose
+}
+
+// Зняти двері (ЛКМ або втрата опори): тріски + дерев'яний звук
+function breakDoor(d) {
+  spawnParticles(d.x + 0.5, d.y + 1, d.z + 0.5, DOOR_COLOR, 8,
+    { radius: 0.3, speed: 1.6, upBias: 0.5, life: 0.5, size: 0.1, gravity: 10 });
+  Sound.breakBlock(PLANK);
+  removeDoor(doorKey(d.x, d.y, d.z));
+}
+
+// Прибрати двері, що втратили опору або чию колону зайняв блок
+function validateDoors() {
+  if (doors.size === 0) return;
+  for (const d of doors.values()) {
+    const occupied = isSolid(blockAt(d.x, d.y, d.z)) || isSolid(blockAt(d.x, d.y + 1, d.z));
+    const supported = isSolid(blockAt(d.x, d.y - 1, d.z));
+    if (occupied || !supported) breakDoor(d);
+  }
+}
+
+// Чи перетинає AABB гравця/тварини/нечисті колону дверей — щоб не зачинити
+// стулку на істоті (вона застрягла б у «твердій» клітинці)
+function doorColumnBlockedByEntity(d) {
+  const check = (e) => {
+    const hw = e.halfW, hh = e.height;
+    return e.pos.x + hw > d.x && e.pos.x - hw < d.x + 1 &&
+           e.pos.y + hh > d.y && e.pos.y < d.y + 2 &&
+           e.pos.z + hw > d.z && e.pos.z - hw < d.z + 1;
+  };
+  if (check(player)) return true;
+  for (const m of mobs) if (check(m)) return true;
+  for (const a of animals) if (check(a)) return true;
+  return false;
+}
+
+// Відчинити/зачинити двері (ПКМ). Зачинити на комусь не вийде.
+function toggleDoor(d) {
+  if (d.open && doorColumnBlockedByEntity(d)) return false;
+  d.open = !d.open;
+  Sound.door(d.open);
+  return true;
+}
+
+// Плавний оберт стулки до цільового кута
+function updateDoors(dt) {
+  if (doors.size === 0) return;
+  for (const d of doors.values()) {
+    const target = d.open ? DOOR_OPEN_ANGLE : 0;
+    if (d.angle === target) continue;
+    const step = DOOR_SWING_V * dt;
+    d.angle = d.angle < target
+      ? Math.min(target, d.angle + step)
+      : Math.max(target, d.angle - step);
+    d.pivot.rotation.y = d.angle;
+  }
+}
+
+// Двері в прицілі: марш променем погляду по клітинках, поки не стріне двері
+// чи твердий блок (двері не в воксельній сітці, тож raycastBlock їх не бачить)
+const _doorDir = new THREE.Vector3();
+function doorInSight(maxDist = 5) {
+  if (doors.size === 0) return null;
+  camera.getWorldDirection(_doorDir);
+  for (let t = 0.1; t <= maxDist; t += 0.1) {
+    const x = Math.floor(camera.position.x + _doorDir.x * t);
+    const y = Math.floor(camera.position.y + _doorDir.y * t);
+    const z = Math.floor(camera.position.z + _doorDir.z * t);
+    const d = doorAtCell(x, y, z);
+    if (d) return d;
+    if (isSolid(blockAt(x, y, z))) return null;
+  }
+  return null;
+}
+
+// Поставити двері в клітинку перед прицілом (hit.prev) на тверду підлогу
+function placeDoor(hit) {
+  const [x, y, z] = hit.prev;
+  if (blockAt(x, y, z) !== AIR || blockAt(x, y + 1, z) !== AIR) return false;
+  for (const cy of [y, y + 1]) {
+    const k = doorKey(x, cy, z);
+    if (doorAtCell(x, cy, z) || torches.has(k) || crops.has(k) ||
+        beds.has(k) || ladders.has(k)) return false;
+  }
+  if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
+  // Не ставити двері всередину гравця (колона з двох клітинок)
+  const p = player.pos;
+  if (x + 1 > p.x - PLAYER_W && x < p.x + PLAYER_W &&
+      y + 2 > p.y && y < p.y + PLAYER_H &&
+      z + 1 > p.z - PLAYER_W && z < p.z + PLAYER_W) return false;
+  // Стулка «дивиться» на гравця: домінантна вісь напрямку двері → гравець
+  const vx = p.x - (x + 0.5), vz = p.z - (z + 0.5);
+  const dx = Math.abs(vx) >= Math.abs(vz) ? (Math.sign(vx) || 1) : 0;
+  const dz = dx === 0 ? (Math.sign(vz) || 1) : 0;
+  if (!addDoor(x, y, z, dx, dz)) return false;
+  Sound.place(LOG);
+  spawnParticles(x + 0.5, y + 1, z + 0.5, DOOR_COLOR, 8,
+    { radius: 0.35, speed: 1.5, upBias: 0.4, life: 0.45, size: 0.1, gravity: 10 });
+  unlockAch('homeowner');
+  return true;
+}
+
+// Відновити збережені двері (формат: [x, y, z, dx, dz, open])
+if (savedGame && Array.isArray(savedGame.doors)) {
+  for (const e of savedGame.doors) {
+    if (Array.isArray(e) && e.length >= 5) addDoor(e[0], e[1], e[2], e[3], e[4], e[5] === 1);
   }
 }
 
@@ -3814,7 +4034,7 @@ function plantCrop(hit) {
   const [x, y, z] = hit.prev;
   if (blockAt(x, y, z) !== AIR) return false;
   if (crops.has(cropKey(x, y, z)) || torches.has(torchKey(x, y, z)) ||
-      ladders.has(cropKey(x, y, z))) return false;
+      ladders.has(cropKey(x, y, z)) || doorAtCell(x, y, z)) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -3934,7 +4154,8 @@ function placeBed(hit) {
   const [x, y, z] = hit.prev;
   if (blockAt(x, y, z) !== AIR) return false;
   if (beds.has(bedKey(x, y, z)) || torches.has(torchKey(x, y, z)) ||
-      crops.has(cropKey(x, y, z)) || ladders.has(bedKey(x, y, z))) return false;
+      crops.has(cropKey(x, y, z)) || ladders.has(bedKey(x, y, z)) ||
+      doorAtCell(x, y, z)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -4090,6 +4311,7 @@ function updateMining(dt, hit) {
     validateCrops();    // ... або грунт під посівом
     validateBeds();     // ... або опора під ліжком
     validateLadders();  // ... або стіна-опора драбини
+    validateDoors();    // ... або опора під дверима
     unlockAch('first_block');
     if (id === LOG) unlockAch('chop_wood');
     else if (id === COAL) unlockAch('coal');
@@ -4406,6 +4628,13 @@ function placeBlock() {
   // Човен у руці — спустити його на воду чи землю перед прицілом
   if (hotbar[selectedSlot] === BOAT) { placeBoat(); return; }
 
+  // Двері в прицілі (ПКМ) → відчинити/зачинити, з будь-яким предметом у руці.
+  // До raycast, бо двері не в воксельній сітці й промінь їх не бачить.
+  if (doors.size > 0) {
+    const d = doorInSight();
+    if (d) { toggleDoor(d); return; }
+  }
+
   const hit = raycastBlock();
   if (!hit || !hit.prev) return;
 
@@ -4432,6 +4661,12 @@ function placeBlock() {
   // Драбина — сутність на бічній грані блока, не змінює воксельну сітку
   if (id === LADDER) {
     placeLadder(hit);
+    return;
+  }
+
+  // Двері — сутність на дві клітинки заввишки, не змінює воксельну сітку
+  if (id === DOOR) {
+    placeDoor(hit);
     return;
   }
 
@@ -4469,6 +4704,7 @@ function placeBlock() {
   validateCrops();    // ... або клітинку посіву
   validateBeds();     // ... або клітинку ліжка
   validateLadders();  // ... або клітинку драбини
+  validateDoors();    // ... або клітинку дверей
 }
 
 // ===== Менеджмент чанків =====
@@ -5230,6 +5466,23 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(5, 11, 1, 3);
     return;
   }
+  if (id === DOOR) {
+    // Процедурна іконка дверей: полотно, фільонка, віконце та ручка
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#8a5a2b';
+    ctx.fillRect(3, 1, 10, 14);         // полотно
+    ctx.strokeStyle = '#6b4a2b';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(3.5, 1.5, 9, 13);    // рама
+    ctx.fillStyle = '#bfe3ef';
+    ctx.fillRect(5, 3, 6, 4);           // віконце
+    ctx.fillStyle = '#6b4a2b';
+    ctx.fillRect(5, 9, 6, 4);           // фільонка
+    ctx.fillStyle = '#3a2a16';
+    ctx.fillRect(11, 7, 2, 2);          // ручка
+    return;
+  }
   if (id === BOAT) {
     // Процедурна іконка човна: дерев'яний корпус (трапеція) з бортами й хвилею
     const ctx = canvas.getContext('2d');
@@ -5956,6 +6209,7 @@ const ACHIEVEMENTS = [
   { id: 'sailor',      icon: '🚣', title: 'Мореплавець',        desc: 'Відплисти на човні' },
   { id: 'climb',       icon: '🪜', title: 'Верхолаз',           desc: 'Піднятися драбиною' },
   { id: 'glazier',     icon: '🪟', title: 'Вікно у світ',       desc: 'Поставити скляний блок' },
+  { id: 'homeowner',   icon: '🚪', title: 'Домовласник',        desc: 'Поставити двері' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -6130,6 +6384,41 @@ window.MCDebug = {
   giveBow: () => { assignBlockToSlot(BOW); return BLOCK_NAMES[BOW]; },
   giveRod: () => { assignBlockToSlot(ROD); return BLOCK_NAMES[ROD]; },
   giveLadder: () => { assignBlockToSlot(LADDER); return BLOCK_NAMES[LADDER]; },
+  giveDoor: () => { assignBlockToSlot(DOOR); return BLOCK_NAMES[DOOR]; },
+  // Поставити двері на поверхню за 2 блоки на схід від гравця (для тестів)
+  doorNear: (dx = -1, dz = 0) => {
+    const x = Math.floor(player.pos.x) + 2, z = Math.floor(player.pos.z);
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0) return null;
+    if (blockAt(x, gy + 1, z) !== AIR || blockAt(x, gy + 2, z) !== AIR) return null;
+    return addDoor(x, gy + 1, z, dx, dz) ? { x, y: gy + 1, z } : null;
+  },
+  // Перемкнути найближчі до гравця двері (для тестів)
+  toggleNearDoor: () => {
+    let best = null, bestDist = Infinity;
+    for (const d of doors.values()) {
+      const dist = Math.hypot(d.x + 0.5 - player.pos.x, d.z + 0.5 - player.pos.z);
+      if (dist < bestDist) { bestDist = dist; best = d; }
+    }
+    if (!best) return null;
+    const toggled = toggleDoor(best);
+    return { toggled, open: best.open, x: best.x, y: best.y, z: best.z };
+  },
+  // Стан найближчих до гравця дверей (для тестів)
+  doorState: () => {
+    let best = null, bestDist = Infinity;
+    for (const d of doors.values()) {
+      const dist = Math.hypot(d.x + 0.5 - player.pos.x, d.z + 0.5 - player.pos.z);
+      if (dist < bestDist) { bestDist = dist; best = d; }
+    }
+    return best ? { open: best.open, x: best.x, y: best.y, z: best.z, dx: best.dx, dz: best.dz } : null;
+  },
+  get doors() { return doors.size; },
+  doorBlocked: (x, y, z) => doorBlocksCell(x, y, z),
+  setBlock: (x, y, z, id) => setBlock(x, y, z, id),
   giveGlass: () => { assignBlockToSlot(GLASS); return BLOCK_NAMES[GLASS]; },
   // Скляна стінка 3×3 поряд із гравцем (для тестів рендера прозорості)
   glassWallNear: () => {
@@ -6399,6 +6688,7 @@ function animate() {
     updateTorches(dt);
     updateLavaLights(dt);
     updateCrops(dt);
+    updateDoors(dt);
     if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
     updateArrows(dt);
     updateFallingBlocks(dt);
