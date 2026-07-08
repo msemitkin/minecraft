@@ -70,6 +70,10 @@ const GLASS = 34;
 // воксель). Зачинені — тверда перешкода для гравця й нечисті, ПКМ відчиняє
 const DOOR = 35;
 
+// Вовна — м'який будівельний блок (звичайний воксель): настрижена з овець,
+// доступна в меню (Tab). Кучерява процедурна текстура, приглушений звук кроків
+const WOOL = 36;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -81,11 +85,13 @@ const BLOCK_NAMES = {
   [ROD]: 'Вудка',
   [BUCKET]: 'Відро', [WATER_BUCKET]: 'Відро з водою', [LAVA_BUCKET]: 'Відро з лавою',
   [BOAT]: 'Човен', [LADDER]: 'Драбина', [GLASS]: 'Скло', [DOOR]: 'Двері',
+  [WOOL]: 'Вовна',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
 const ALL_BLOCKS = [
-  GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, GLASS, WATER, LAVA,
+  GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, GLASS, WOOL,
+  WATER, LAVA,
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, BOW, ROD, BED, BUCKET,
   BOAT, LADDER, DOOR,
 ];
@@ -120,7 +126,7 @@ const BLOCK_HARDNESS = {
   [GRASS]: 0.5, [DIRT]: 0.5, [SAND]: 0.55,
   [LEAVES]: 0.3, [LOG]: 1.0, [PLANK]: 0.9, [STONE]: 1.6,
   [COAL]: 2.2, [IRON]: 2.8, [GOLD]: 2.8, [DIAMOND]: 3.6,
-  [SNOW]: 0.4, [CACTUS]: 0.5, [GRAVEL]: 0.7, [GLASS]: 0.35,
+  [SNOW]: 0.4, [CACTUS]: 0.5, [GRAVEL]: 0.7, [GLASS]: 0.35, [WOOL]: 0.45,
 };
 const DEFAULT_HARDNESS = 0.6;
 
@@ -400,6 +406,7 @@ const Sound = (() => {
     if (id === LOG || id === PLANK) return { freq: 520, q: 2.4, type: 'bandpass' };
     if (id === LEAVES) return { freq: 1700, q: 0.7, type: 'highpass' };
     if (id === GLASS) return { freq: 2600, q: 1.4, type: 'highpass' };   // дзвінкий кришталь
+    if (id === WOOL) return { freq: 280, q: 0.6, type: 'lowpass' };      // м'який приглушений
     if (id === GRASS || id === DIRT) return { freq: 620, q: 0.9, type: 'bandpass' };
     // камінь, руди, динаміт — твердий «цок»
     return { freq: 1100, q: 1.6, type: 'bandpass' };
@@ -491,6 +498,16 @@ const Sound = (() => {
     lavaHiss() {
       noise({ dur: 0.4, gain: 0.18, type: 'highpass', freq: 2400, q: 0.5, attack: 0.004 });
       noise({ dur: 0.24, gain: 0.1, type: 'bandpass', freq: 780, q: 0.7 });
+    },
+    // Стрижка вівці: два швидкі «вжик»-клацання ножиць
+    shear() {
+      noise({ dur: 0.09, gain: 0.16, type: 'highpass', freq: 3200, q: 0.7 });
+      tone({ freq: 1150, dur: 0.07, type: 'square', gain: 0.05, slideTo: 700 });
+      setTimeout(() => {
+        if (!enabled) return;
+        noise({ dur: 0.09, gain: 0.14, type: 'highpass', freq: 3400, q: 0.7 });
+        tone({ freq: 1050, dur: 0.07, type: 'square', gain: 0.05, slideTo: 650 });
+      }, 110);
     },
     mobHit() {
       noise({ dur: 0.14, gain: 0.2, type: 'bandpass', freq: 450, q: 1.2 });
@@ -994,6 +1011,22 @@ function makeAtlas() {
     return 'rgba(190,224,238,0.16)';                          // прозоре нутро
   });                                                                            // 21 скло
 
+  // Вовна: тепла кремова основа з детермінованими «кучерями» — темнішими
+  // завитками й світлими пухнастими плямами
+  {
+    let s = 0x5eedb217 >>> 0;
+    const r = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+    const curls = new Set(), fluff = new Set();
+    for (let n = 0; n < 26; n++) curls.add(Math.floor(r() * TILE) * TILE + Math.floor(r() * TILE));
+    for (let n = 0; n < 20; n++) fluff.add(Math.floor(r() * TILE) * TILE + Math.floor(r() * TILE));
+    paint(22, (x, y) => {
+      const k = x * TILE + y;
+      if (curls.has(k)) return vary(206, 200, 188, 6);   // тінь завитка
+      if (fluff.has(k)) return vary(246, 244, 238, 4);   // світлий пух
+      return vary(232, 228, 219, 6);                     // кремова основа
+    });                                                                          // 22 вовна
+  }
+
   const tex = new THREE.CanvasTexture(atlasCanvas);
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
@@ -1027,6 +1060,7 @@ const BLOCK_TILES = {
   [LFLOW2]:  { top: 20, bottom: 20, side: 20 },
   [LFLOW1]:  { top: 20, bottom: 20, side: 20 },
   [GLASS]:   { top: 21, bottom: 21, side: 21 },
+  [WOOL]:    { top: 22, bottom: 22, side: 22 },
 };
 
 function tileUV(tile) {
@@ -1981,7 +2015,32 @@ const ANIMAL_TYPES = {
       ];
     },
   },
+  sheep: {
+    speed: 1.15, halfW: 0.36, height: 1.2, hp: 8, food: 3,
+    build(g) {
+      const wool = 0xe9e6df, skin = 0xd9c6ac, dark = 0x6b5a48;
+      // Тіло-«шкіра» під вовною — видно після стрижки
+      animalBox(g, 0.52, 0.42, 0.92, skin, 0, 0.82, 0.05);
+      // Голова з темною мордою
+      animalBox(g, 0.36, 0.36, 0.34, skin, 0, 1.06, -0.6);
+      animalBox(g, 0.22, 0.14, 0.06, dark, 0, 0.98, -0.79);   // морда
+      // Вовна — окремі меші, ховаються після стрижки й відростають із часом
+      g.userData.woolMeshes = [
+        animalBox(g, 0.74, 0.62, 1.08, wool, 0, 0.86, 0.05),  // руно на тулубі
+        animalBox(g, 0.3, 0.2, 0.3, wool, 0, 1.3, -0.6),      // чубчик на голові
+      ];
+      return [
+        animalLeg(g, 0.16, 0.5, dark, -0.19, 0.6, -0.28),
+        animalLeg(g, 0.16, 0.5, dark, 0.19, 0.6, -0.28),
+        animalLeg(g, 0.16, 0.5, dark, -0.19, 0.6, 0.34),
+        animalLeg(g, 0.16, 0.5, dark, 0.19, 0.6, 0.34),
+      ];
+    },
+  },
 };
+
+// Час відростання вовни після стрижки, с
+const WOOL_REGROW_TIME = 60;
 
 function spawnAnimal(type, x, y, z) {
   const def = ANIMAL_TYPES[type];
@@ -2008,6 +2067,10 @@ function spawnAnimal(type, x, y, z) {
     foodValue: def.food,
     hurt: 0,       // спалах при ударі (0..1)
     panic: 0,      // тікає від гравця після удару
+    // Вовна (лише вівці): меші руна, стан «нестрижена», таймер відростання
+    woolMeshes: group.userData.woolMeshes || null,
+    wool: !!group.userData.woolMeshes,
+    woolTimer: 0,
   });
 }
 
@@ -2106,6 +2169,15 @@ function updateAnimal(a, dt) {
   if (a.hurt > 0) {
     a.hurt = Math.max(0, a.hurt - dt * 3);
     for (const mat of a.mats) mat.emissive.setRGB(a.hurt * 0.6, 0, 0);
+  }
+
+  // Вовна відростає з часом (вівця «наїдає» руно, пасучись)
+  if (a.woolMeshes && !a.wool) {
+    a.woolTimer -= dt;
+    if (a.woolTimer <= 0) {
+      a.wool = true;
+      for (const m of a.woolMeshes) m.visible = true;
+    }
   }
 
   a.group.position.copy(a.pos);
@@ -2520,6 +2592,7 @@ function updateMobs(dt) {
 // тоді цей клік не починає видобуток блока.
 const MELEE_REACH = 3.4;
 const MEAT_COLOR = new THREE.Color(0xc0392b);
+const WOOL_COLOR = new THREE.Color(0xe9e6df);
 const _atkDir = new THREE.Vector3();
 
 // Удар гравця по найближчій істоті в прицілі (зомбі або тварині).
@@ -2554,6 +2627,19 @@ function tryAttack() {
 // Зомбі/кріпери гинуть у updateMobs (там ефекти смерті); тварини — тут, лишаючи
 // сире м'ясо. (kx,kz) — горизонтальний напрям відкидання, kup — вертикальний поштовх.
 function damageEntity(entity, isAnimal, dmg, kx, kz, kup) {
+  // Нестрижена вівця: перший удар зістригає руно замість шкоди — хмарка вовни,
+  // «вжик» ножиць, вівця лякається й тікає; руно відростає з часом
+  if (isAnimal && entity.wool) {
+    entity.wool = false;
+    entity.woolTimer = WOOL_REGROW_TIME;
+    for (const m of entity.woolMeshes) m.visible = false;
+    entity.panic = 3;
+    spawnParticles(entity.pos.x, entity.pos.y + entity.height * 0.6, entity.pos.z,
+      WOOL_COLOR, 12, { radius: 0.4, speed: 2.2, upBias: 1.2, life: 0.8, size: 0.13 });
+    Sound.shear();
+    unlockAch('shear');
+    return;
+  }
   entity.health -= dmg;
   entity.hurt = 1;
   const d = Math.hypot(kx, kz) || 1;
@@ -5972,7 +6058,7 @@ const MM_BLOCK_COLORS = {
   [PLANK]: [170, 132, 80], [TNT]: [184, 64, 48], [TORCH]: [240, 196, 90],
   [COAL]: [60, 60, 64], [IRON]: [176, 150, 128], [GOLD]: [222, 188, 70],
   [DIAMOND]: [110, 208, 214], [SNOW]: [232, 238, 244], [CACTUS]: [78, 132, 66],
-  [BED]: [196, 60, 60], [GLASS]: [205, 230, 242],
+  [BED]: [196, 60, 60], [GLASS]: [205, 230, 242], [WOOL]: [233, 230, 223],
 };
 
 // Найвищий ненульовий блок гравцевих змін у кожній колоні (id видно зверху).
@@ -6068,7 +6154,7 @@ function mmDot(ctx, dx, dz, R, color, size) {
   ctx.stroke();
 }
 
-const MM_ANIMAL_COLORS = { pig: '#eba6a0', cow: '#9c7b56', chicken: '#f2f0ea' };
+const MM_ANIMAL_COLORS = { pig: '#eba6a0', cow: '#9c7b56', chicken: '#f2f0ea', sheep: '#e9e6df' };
 
 // Композиція кадру мінімапи: кешоване поле + живі маркери щокадру (дешево).
 function drawMinimap() {
@@ -6210,6 +6296,7 @@ const ACHIEVEMENTS = [
   { id: 'climb',       icon: '🪜', title: 'Верхолаз',           desc: 'Піднятися драбиною' },
   { id: 'glazier',     icon: '🪟', title: 'Вікно у світ',       desc: 'Поставити скляний блок' },
   { id: 'homeowner',   icon: '🚪', title: 'Домовласник',        desc: 'Поставити двері' },
+  { id: 'shear',       icon: '🐑', title: 'Стрижій',            desc: 'Обстригти вівцю' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -6420,6 +6507,41 @@ window.MCDebug = {
   doorBlocked: (x, y, z) => doorBlocksCell(x, y, z),
   setBlock: (x, y, z, id) => setBlock(x, y, z, id),
   giveGlass: () => { assignBlockToSlot(GLASS); return BLOCK_NAMES[GLASS]; },
+  giveWool: () => { assignBlockToSlot(WOOL); return BLOCK_NAMES[WOOL]; },
+  // Вівця просто перед гравцем (для тестів стрижки)
+  spawnSheep: () => {
+    const x = Math.floor(player.pos.x) + 2, z = Math.floor(player.pos.z);
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0) return null;
+    spawnAnimal('sheep', x + 0.5, gy + 1.01, z + 0.5);
+    return { x: x + 0.5, y: gy + 1.01, z: z + 0.5 };
+  },
+  // Стан найближчої вівці: вовна на місці чи острижена
+  sheepState: () => {
+    let best = null, bestDist = Infinity;
+    for (const a of animals) {
+      if (a.type !== 'sheep') continue;
+      const dist = a.pos.distanceTo(player.pos);
+      if (dist < bestDist) { bestDist = dist; best = a; }
+    }
+    return best ? { wool: best.wool, woolTimer: best.woolTimer, health: best.health } : null;
+  },
+  get sheepCount() { return animals.filter((a) => a.type === 'sheep').length; },
+  // Удар по найближчій вівці (як ЛКМ упритул) — для тестів стрижки
+  hitNearSheep: () => {
+    let best = null, bestDist = Infinity;
+    for (const a of animals) {
+      if (a.type !== 'sheep') continue;
+      const dist = a.pos.distanceTo(player.pos);
+      if (dist < bestDist) { bestDist = dist; best = a; }
+    }
+    if (!best) return null;
+    damageEntity(best, true, 5, best.pos.x - player.pos.x, best.pos.z - player.pos.z, 4);
+    return { wool: best.wool, health: best.health };
+  },
   // Скляна стінка 3×3 поряд із гравцем (для тестів рендера прозорості)
   glassWallNear: () => {
     const x = Math.floor(player.pos.x) + 2, z = Math.floor(player.pos.z);
