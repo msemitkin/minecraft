@@ -307,6 +307,9 @@ function saveGame() {
       ladders: [...ladders.values()].map((l) => [l.x, l.y, l.z, l.dx, l.dz]),
       doors: [...doors.values()].map((d) => [d.x, d.y, d.z, d.dx, d.dz, d.open ? 1 : 0]),
       boats: boats.map((b) => [+b.pos.x.toFixed(2), +b.pos.y.toFixed(2), +b.pos.z.toFixed(2), +b.yaw.toFixed(3)]),
+      wolves: animals.filter((a) => a.type === 'wolf' && a.tamed)
+        .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
+                     +a.health.toFixed(1), a.sitting ? 1 : 0]),
       spawn: spawnPoint,
       selectedSlot,
       hotbar: [...hotbar],
@@ -508,6 +511,19 @@ const Sound = (() => {
         noise({ dur: 0.09, gain: 0.14, type: 'highpass', freq: 3400, q: 0.7 });
         tone({ freq: 1050, dur: 0.07, type: 'square', gain: 0.05, slideTo: 650 });
       }, 110);
+    },
+    // Вовк: короткий дзвінкий «гав» (два стрибки тону вниз)
+    bark() {
+      tone({ freq: 360, dur: 0.09, type: 'square', gain: 0.11, slideTo: 190 });
+      noise({ dur: 0.07, gain: 0.06, type: 'bandpass', freq: 900, q: 1.2 });
+      setTimeout(() => {
+        if (!enabled) return;
+        tone({ freq: 320, dur: 0.11, type: 'square', gain: 0.11, slideTo: 160 });
+      }, 110);
+    },
+    // Вовче скавуління-подяка при годуванні: висхідний м'який тон
+    whine() {
+      tone({ freq: 480, dur: 0.3, type: 'triangle', gain: 0.08, slideTo: 780, attack: 0.05 });
     },
     mobHit() {
       noise({ dur: 0.14, gain: 0.2, type: 'bandpass', freq: 450, q: 1.2 });
@@ -2037,6 +2053,43 @@ const ANIMAL_TYPES = {
       ];
     },
   },
+  wolf: {
+    speed: 1.9, halfW: 0.3, height: 0.85, hp: 12, food: 0,
+    build(g) {
+      const fur = 0x9aa0a8, light = 0xc6cad1, dark = 0x5d6167, nose = 0x2b2b2b;
+      animalBox(g, 0.44, 0.4, 0.8, fur, 0, 0.58, 0.1);          // тулуб
+      animalBox(g, 0.36, 0.34, 0.32, light, 0, 0.72, -0.42);    // голова
+      animalBox(g, 0.16, 0.14, 0.22, light, 0, 0.64, -0.62);    // морда
+      animalBox(g, 0.1, 0.06, 0.06, nose, 0, 0.68, -0.74);      // ніс
+      animalBox(g, 0.08, 0.14, 0.06, dark, -0.11, 0.94, -0.4);  // вуха
+      animalBox(g, 0.08, 0.14, 0.06, dark, 0.11, 0.94, -0.4);
+      // Хвіст із пивотом при основі — метляє, коли вовк приручений
+      const tail = new THREE.Mesh(
+        new THREE.BoxGeometry(0.1, 0.1, 0.42),
+        new THREE.MeshLambertMaterial({ color: dark })
+      );
+      tail.geometry.translate(0, 0, 0.21);
+      tail.position.set(0, 0.72, 0.48);
+      tail.rotation.x = 0.55;
+      g.add(tail);
+      g.userData.tail = tail;
+      // Червоний нашийник — з'являється після приручення
+      const collar = new THREE.Mesh(
+        new THREE.BoxGeometry(0.4, 0.1, 0.36),
+        new THREE.MeshLambertMaterial({ color: 0xc63d33 })
+      );
+      collar.position.set(0, 0.7, -0.27);
+      collar.visible = false;
+      g.add(collar);
+      g.userData.collar = collar;
+      return [
+        animalLeg(g, 0.12, 0.4, fur, -0.14, 0.4, -0.22),
+        animalLeg(g, 0.12, 0.4, fur, 0.14, 0.4, -0.22),
+        animalLeg(g, 0.12, 0.4, fur, -0.14, 0.4, 0.36),
+        animalLeg(g, 0.12, 0.4, fur, 0.14, 0.4, 0.36),
+      ];
+    },
+  },
 };
 
 // Час відростання вовни після стрижки, с
@@ -2047,6 +2100,8 @@ function spawnAnimal(type, x, y, z) {
   const group = new THREE.Group();
   const legs = def.build(group);
   group.position.set(x, y, z);
+  // Спершу yaw, потім локальний нахил (для пози сидіння вовка)
+  group.rotation.order = 'YXZ';
   scene.add(group);
   const mats = [];
   group.traverse((o) => { if (o.isMesh) mats.push(o.material); });
@@ -2071,6 +2126,16 @@ function spawnAnimal(type, x, y, z) {
     woolMeshes: group.userData.woolMeshes || null,
     wool: !!group.userData.woolMeshes,
     woolTimer: 0,
+    // Вовк: приручення (нашийник + хвіст), сидіння, бій і швидкість бігу
+    maxHealth: def.hp,
+    tamed: false,
+    sitting: false,
+    fedCount: 0,
+    attackCD: 0,
+    runBoost: 1,
+    wagPhase: Math.random() * Math.PI * 2,
+    tail: group.userData.tail || null,
+    collar: group.userData.collar || null,
   });
 }
 
@@ -2082,10 +2147,22 @@ function trySpawnAnimal() {
   const z = Math.floor(player.pos.z + Math.sin(angle) * dist);
   const h = heightAt(x, z);
   if (h <= SEA + 1) return;                    // не у воді й не на пляжі
-  if (blockAt(x, h, z) !== GRASS) return;      // лише на траві
+  const surf = blockAt(x, h, z);
+  const biome = biomeAt(x, z);
+  // Свійські тварини пасуться на траві; вовки водяться в лісі й тундрі
+  // (у тундрі — єдина тварина, бо інші не з'являються на снігу)
+  if (surf !== GRASS && !(surf === SNOW && biome === BIOME.SNOWY)) return;
   if (isSolid(blockAt(x, h + 1, z))) return;   // місце вільне
-  const types = Object.keys(ANIMAL_TYPES);
-  spawnAnimal(types[Math.floor(Math.random() * types.length)], x + 0.5, h + 1.01, z + 0.5);
+  let type;
+  if (surf === SNOW) {
+    type = 'wolf';
+  } else if ((biome === BIOME.FOREST || biome === BIOME.SNOWY) && Math.random() < 0.3) {
+    type = 'wolf';
+  } else {
+    const types = Object.keys(ANIMAL_TYPES).filter((t) => t !== 'wolf');
+    type = types[Math.floor(Math.random() * types.length)];
+  }
+  spawnAnimal(type, x + 0.5, h + 1.01, z + 0.5);
 }
 
 function removeAnimal(index) {
@@ -2111,8 +2188,11 @@ function updateAnimal(a, dt) {
   }
 
   // Паніка після удару: тікає геть від гравця прискорено
-  const panicking = a.panic > 0;
-  if (panicking) {
+  // (приручений вовк не панікує — його веде updateTamedWolf)
+  const panicking = !a.tamed && a.panic > 0;
+  if (a.tamed) {
+    updateTamedWolf(a, dt);
+  } else if (panicking) {
     a.panic -= dt;
     // Дивиться геть від гравця: «до гравця» — atan2(a−p); напрям утечі — протилежний
     a.targetYaw = Math.atan2(player.pos.x - a.pos.x, player.pos.z - a.pos.z);
@@ -2131,13 +2211,13 @@ function updateAnimal(a, dt) {
     }
   }
 
-  // Плавний поворот до цільового напрямку (швидше в паніці)
+  // Плавний поворот до цільового напрямку (швидше в паніці й у вовка-компаньйона)
   let dyaw = a.targetYaw - a.yaw;
   dyaw = ((dyaw + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
-  a.yaw += dyaw * Math.min(1, dt * (panicking ? 8 : 3));
+  a.yaw += dyaw * Math.min(1, dt * (panicking || a.tamed ? 8 : 3));
 
   const moving = panicking || a.state === 'walk';
-  const sp = moving ? a.speed * (panicking ? 2.2 : 1) : 0;
+  const sp = moving ? a.speed * (panicking ? 2.2 : a.tamed ? a.runBoost : 1) : 0;
   a.vel.x = -Math.sin(a.yaw) * sp;
   a.vel.z = -Math.cos(a.yaw) * sp;
 
@@ -2156,14 +2236,24 @@ function updateAnimal(a, dt) {
   const bumpedZ = moveEntityAxis(a, 'z', a.vel.z * dt);
   if ((bumpedX || bumpedZ) && a.onGround && moving) a.vel.y = 7; // перестрибнути блок
 
-  // Анімація ніг
-  if (moving && (a.onGround || inWater)) {
-    a.legPhase += dt * 9;
+  // Анімація ніг (сидячий вовк підбирає задні лапи, передні тримає прямо)
+  if (a.tamed && a.sitting) {
+    a.legs.forEach((leg, i) => { leg.rotation.x = i < 2 ? -0.3 : 1.25; });
+  } else {
+    if (moving && (a.onGround || inWater)) {
+      a.legPhase += dt * 9;
+    }
+    const swing = Math.sin(a.legPhase) * 0.55 * (moving ? 1 : 0);
+    a.legs.forEach((leg, i) => {
+      leg.rotation.x = i % 2 === 0 ? swing : -swing;
+    });
   }
-  const swing = Math.sin(a.legPhase) * 0.55 * (moving ? 1 : 0);
-  a.legs.forEach((leg, i) => {
-    leg.rotation.x = i % 2 === 0 ? swing : -swing;
-  });
+
+  // Хвіст вовка: приручений радісно метляє (швидше поряд із гравцем), дикий — ледь
+  if (a.tail) {
+    a.wagPhase += dt * (a.tamed ? (a.state === 'idle' ? 7 : 11) : 2);
+    a.tail.rotation.y = Math.sin(a.wagPhase) * (a.tamed ? 0.55 : 0.12);
+  }
 
   // Червоний спалах при отриманні удару
   if (a.hurt > 0) {
@@ -2182,6 +2272,8 @@ function updateAnimal(a, dt) {
 
   a.group.position.copy(a.pos);
   a.group.rotation.y = a.yaw;
+  // Поза сидіння: легкий нахил корпуса назад (ніс догори, зад до землі)
+  a.group.rotation.x = a.tamed && a.sitting ? 0.26 : 0;
 }
 
 let animalSpawnTimer = 0;
@@ -2194,7 +2286,14 @@ function updateAnimals(dt) {
   }
   for (let i = animals.length - 1; i >= 0; i--) {
     const a = animals[i];
-    if (a.pos.distanceTo(player.pos) > ANIMAL_DESPAWN_DIST || a.pos.y < -10) {
+    // Приручений вовк ніколи не деспавниться; випавши за межі світу —
+    // повертається до гравця (замість зникнути)
+    if (a.tamed && a.pos.y < -10) {
+      wolfWarpToPlayer(a);
+      updateAnimal(a, dt);
+      continue;
+    }
+    if (!a.tamed && (a.pos.distanceTo(player.pos) > ANIMAL_DESPAWN_DIST || a.pos.y < -10)) {
       removeAnimal(i);
     } else {
       updateAnimal(a, dt);
@@ -2206,6 +2305,184 @@ function updateAnimals(dt) {
         removeAnimal(i);
       }
     }
+  }
+}
+
+// ============================================================
+// Вовк-компаньйон: приручення м'ясом, слідування за гравцем і охорона
+// ============================================================
+// Дикі вовки водяться в лісі й тундрі та блукають, як інші тварини.
+// ПКМ по вовку з м'ясом у торбі (🍖) годує його: кожна порція — шанс
+// приручити (третя — напевно). Приручений вовк (червоний нашийник) іде за
+// гравцем, телепортується, якщо загубився, і кидається на нічну нечисть
+// поряд. ПКМ по прирученому — сидіти/йти; годування лікує його.
+const WOLF_FOLLOW_MIN = 3.2;    // ближче — стоїть і метляє хвостом
+const WOLF_RUN_DIST = 8;        // далі — доганяє бігом
+const WOLF_WARP_DIST = 24;      // далі — телепортується до гравця
+const WOLF_GUARD_R = 10;        // радіус пошуку нечисті біля гравця/вовка
+const WOLF_ATTACK_REACH = 1.4;  // дистанція укусу
+const WOLF_ATTACK_CD = 0.9;     // перезарядка укусу, с
+const WOLF_DMG = 4;             // шкода від укусу
+const WOLF_TAME_CHANCE = 0.4;   // шанс приручення з однієї порції
+const WOLF_HEAL_PER_FEED = 5;   // скільки здоров'я лікує порція прирученому
+const HEART_COLOR = new THREE.Color(0xe8577a);
+
+// Телепорт вовка до гравця (загубився, застряг чи випав за межі світу):
+// шукаємо вільну клітинку з твердою опорою поряд із гравцем.
+function wolfWarpToPlayer(a) {
+  const px = Math.floor(player.pos.x), py = Math.floor(player.pos.y), pz = Math.floor(player.pos.z);
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [0, 0]]) {
+    const x = px + dx, z = pz + dz;
+    for (let y = Math.min(HEIGHT - 2, py + 2); y > Math.max(1, py - 6); y--) {
+      if (isSolid(blockAt(x, y - 1, z)) && !isSolid(blockAt(x, y, z)) && !isSolid(blockAt(x, y + 1, z))) {
+        a.pos.set(x + 0.5, y + 0.01, z + 0.5);
+        a.vel.set(0, 0, 0);
+        return true;
+      }
+    }
+  }
+  // Крайній випадок: просто до гравця (колізії відштовхнуть)
+  a.pos.set(player.pos.x, player.pos.y + 0.1, player.pos.z);
+  a.vel.set(0, 0, 0);
+  return true;
+}
+
+// ШІ прирученого вовка: задає стан/курс/швидкість перед спільною фізикою
+// в updateAnimal. Пріоритети: сидить → бій із нечистю → слідування.
+function updateTamedWolf(a, dt) {
+  a.attackCD = Math.max(0, a.attackCD - dt);
+  a.runBoost = 1;
+  if (a.sitting) {
+    a.state = 'idle';
+    return;
+  }
+
+  // Охорона: найближчий ворог поблизу гравця чи самого вовка
+  let target = null, bestDist = Infinity;
+  for (const m of mobs) {
+    const d = Math.min(m.pos.distanceTo(player.pos), m.pos.distanceTo(a.pos));
+    if (d < WOLF_GUARD_R && d < bestDist) { bestDist = d; target = m; }
+  }
+  if (target) {
+    const dx = target.pos.x - a.pos.x, dz = target.pos.z - a.pos.z;
+    const dist = Math.hypot(dx, dz);
+    a.targetYaw = Math.atan2(-dx, -dz);          // модель дивиться в -Z
+    if (dist > WOLF_ATTACK_REACH) {
+      a.state = 'walk';
+      a.runBoost = 1.9;                          // кидається на ворога бігом
+    } else {
+      a.state = 'idle';
+      if (a.attackCD <= 0) {
+        a.attackCD = WOLF_ATTACK_CD;
+        if (a.onGround) a.vel.y = 3.5;           // випад-стрибок при укусі
+        damageEntity(target, false, WOLF_DMG, dx, dz, 2.5);
+        Sound.bark();
+      }
+    }
+    return;
+  }
+
+  // Немає ворогів — слідувати за гравцем
+  const dx = player.pos.x - a.pos.x, dz = player.pos.z - a.pos.z;
+  const dist = Math.hypot(dx, dz);
+  if (dist > WOLF_WARP_DIST) {
+    wolfWarpToPlayer(a);
+    return;
+  }
+  a.targetYaw = Math.atan2(-dx, -dz);            // дивиться на гравця
+  if (dist > WOLF_FOLLOW_MIN) {
+    a.state = 'walk';
+    a.runBoost = dist > WOLF_RUN_DIST ? 1.8 : 1;
+  } else {
+    a.state = 'idle';
+  }
+}
+
+function nearestWolf(maxDist = Infinity) {
+  let best = null, bestDist = maxDist;
+  for (const a of animals) {
+    if (a.type !== 'wolf') continue;
+    const d = a.pos.distanceTo(player.pos);
+    if (d < bestDist) { bestDist = d; best = a; }
+  }
+  return best;
+}
+
+// Погодувати вовка порцією м'яса з торби їжі (🍖). Дикому — шанс приручення
+// (сердечка; третя порція приручує напевно), прирученому — лікування.
+// Повертає true, якщо порцію витрачено.
+function feedWolfEntity(w) {
+  if (player.food <= 0) return false;
+  if (w.tamed && w.health >= w.maxHealth) return false;   // ситий і здоровий
+  player.food--;
+  updateFoodHud();
+  w.panic = 0;
+  spawnParticles(w.pos.x, w.pos.y + w.height * 0.9, w.pos.z, HEART_COLOR, 7,
+    { radius: 0.35, speed: 1.2, upBias: 1.6, life: 0.8, size: 0.12, gravity: -2 });
+  if (w.tamed) {
+    w.health = Math.min(w.maxHealth, w.health + WOLF_HEAL_PER_FEED);
+    Sound.whine();
+    return true;
+  }
+  w.fedCount++;
+  if (w.fedCount >= 3 || Math.random() < WOLF_TAME_CHANCE) {
+    w.tamed = true;
+    w.sitting = false;
+    if (w.collar) w.collar.visible = true;
+    Sound.bark();
+    sleepToast('🐺 Вовк приручений — тепер він твій друг!');
+    unlockAch('tame');
+    saveGame();
+  } else {
+    Sound.whine();
+  }
+  return true;
+}
+
+// Вовк у прицілі поблизу (для ПКМ-взаємодії) — той самий конус, що й удар.
+const _wolfDir = new THREE.Vector3();
+function wolfInSight(reach = 3.2) {
+  camera.getWorldDirection(_wolfDir);
+  const ox = camera.position.x, oy = camera.position.y, oz = camera.position.z;
+  let best = null, bestDist = Infinity;
+  for (const a of animals) {
+    if (a.type !== 'wolf') continue;
+    const tx = a.pos.x - ox;
+    const ty = a.pos.y + a.height * 0.5 - oy;
+    const tz = a.pos.z - oz;
+    const dist = Math.hypot(tx, ty, tz);
+    if (dist > reach) continue;
+    const dot = (tx * _wolfDir.x + ty * _wolfDir.y + tz * _wolfDir.z) / (dist || 1);
+    if (dot < 0.55) continue;
+    if (dist < bestDist) { bestDist = dist; best = a; }
+  }
+  return best;
+}
+
+// ПКМ по вовку: дикого чи пораненого годуємо (якщо є м'ясо), здоровому
+// прирученому — команда «сидіти/йти». Повертає true, якщо клік оброблено.
+function tryInteractWolf() {
+  const w = wolfInSight();
+  if (!w) return false;
+  if (feedWolfEntity(w)) return true;
+  if (w.tamed) {
+    w.sitting = !w.sitting;
+    Sound.whine();
+    return true;
+  }
+  return false;
+}
+
+// Відновлення приручених вовків зі збереження (формат [x, y, z, health, sitting])
+if (savedGame && Array.isArray(savedGame.wolves)) {
+  for (const e of savedGame.wolves) {
+    if (!Array.isArray(e) || e.length < 3) continue;
+    spawnAnimal('wolf', e[0], e[1], e[2]);
+    const w = animals[animals.length - 1];
+    w.tamed = true;
+    if (w.collar) w.collar.visible = true;
+    if (Number.isFinite(e[3])) w.health = Math.max(1, Math.min(w.maxHealth, e[3]));
+    w.sitting = e[4] === 1;
   }
 }
 
@@ -2603,6 +2880,7 @@ function tryAttack() {
   const ox = camera.position.x, oy = camera.position.y, oz = camera.position.z;
   let best = null, bestDist = Infinity, bestIsAnimal = false;
   const consider = (e, isAnimal) => {
+    if (e.tamed) return;                          // свого вовка не б'ємо
     const tx = e.pos.x - ox;
     const ty = e.pos.y + e.height * 0.5 - oy;
     const tz = e.pos.z - oz;
@@ -2839,6 +3117,7 @@ function arrowHitEntity(a) {
     if (check(m)) { damageEntity(m, false, a.dmg, a.vel.x, a.vel.z, 3); return true; }
   }
   for (const an of animals) {
+    if (an.tamed) continue;                       // стріли не ранять свого вовка
     if (check(an)) { damageEntity(an, true, a.dmg, a.vel.x, a.vel.z, 3); return true; }
   }
   return false;
@@ -4714,6 +4993,9 @@ function placeBlock() {
   // Човен у руці — спустити його на воду чи землю перед прицілом
   if (hotbar[selectedSlot] === BOAT) { placeBoat(); return; }
 
+  // Вовк у прицілі (ПКМ) → погодувати/приручити м'ясом або посадити прирученого
+  if (animals.length > 0 && tryInteractWolf()) return;
+
   // Двері в прицілі (ПКМ) → відчинити/зачинити, з будь-яким предметом у руці.
   // До raycast, бо двері не в воксельній сітці й промінь їх не бачить.
   if (doors.size > 0) {
@@ -6154,7 +6436,7 @@ function mmDot(ctx, dx, dz, R, color, size) {
   ctx.stroke();
 }
 
-const MM_ANIMAL_COLORS = { pig: '#eba6a0', cow: '#9c7b56', chicken: '#f2f0ea', sheep: '#e9e6df' };
+const MM_ANIMAL_COLORS = { pig: '#eba6a0', cow: '#9c7b56', chicken: '#f2f0ea', sheep: '#e9e6df', wolf: '#a7adb8' };
 
 // Композиція кадру мінімапи: кешоване поле + живі маркери щокадру (дешево).
 function drawMinimap() {
@@ -6179,9 +6461,10 @@ function drawMinimap() {
   for (const bed of beds.values()) {
     mmDot(mmCtx, bed.x + 0.5 - px, bed.z + 0.5 - pz, R, '#d65b6e', 3);
   }
-  // Тварини.
+  // Тварини (приручений вовк — золотавий, щоб не загубити друга).
   for (const a of animals) {
-    mmDot(mmCtx, a.pos.x - px, a.pos.z - pz, R, MM_ANIMAL_COLORS[a.type] || '#cfcfcf', 2.5);
+    const color = a.tamed ? '#f2c14e' : MM_ANIMAL_COLORS[a.type] || '#cfcfcf';
+    mmDot(mmCtx, a.pos.x - px, a.pos.z - pz, R, color, 2.5);
   }
   // Нечисть.
   for (const m of mobs) {
@@ -6297,6 +6580,7 @@ const ACHIEVEMENTS = [
   { id: 'glazier',     icon: '🪟', title: 'Вікно у світ',       desc: 'Поставити скляний блок' },
   { id: 'homeowner',   icon: '🚪', title: 'Домовласник',        desc: 'Поставити двері' },
   { id: 'shear',       icon: '🐑', title: 'Стрижій',            desc: 'Обстригти вівцю' },
+  { id: 'tame',        icon: '🐺', title: 'Вірний друг',        desc: 'Приручити вовка' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -6530,6 +6814,63 @@ window.MCDebug = {
     return best ? { wool: best.wool, woolTimer: best.woolTimer, health: best.health } : null;
   },
   get sheepCount() { return animals.filter((a) => a.type === 'sheep').length; },
+  // ===== Вовки: інспекція та тестування з консолі =====
+  get wolves() {
+    return animals.filter((a) => a.type === 'wolf').map((a) => ({
+      tamed: a.tamed, sitting: a.sitting, fed: a.fedCount,
+      health: +a.health.toFixed(1),
+      dist: +a.pos.distanceTo(player.pos).toFixed(1),
+    }));
+  },
+  // Вовк просто перед гравцем (для тестів приручення)
+  spawnWolf: () => {
+    const x = Math.floor(player.pos.x) + 2, z = Math.floor(player.pos.z);
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0) return null;
+    spawnAnimal('wolf', x + 0.5, gy + 1.01, z + 0.5);
+    return { x: x + 0.5, y: gy + 1.01, z: z + 0.5 };
+  },
+  // Поповнити торбу їжі (для тестів годування)
+  giveMeat: (n = 10) => {
+    player.food = Math.min(FOOD_MAX, player.food + n);
+    updateFoodHud();
+    return player.food;
+  },
+  // Погодувати найближчого вовка тим самим шляхом, що й ПКМ (для тестів)
+  feedWolf: () => {
+    const w = nearestWolf();
+    if (!w) return null;
+    const fed = feedWolfEntity(w);
+    return { fed, tamed: w.tamed, fedCount: w.fedCount, health: +w.health.toFixed(1), food: player.food };
+  },
+  // Стан найближчого вовка (для тестів слідування/охорони)
+  wolfState: () => {
+    const w = nearestWolf();
+    if (!w) return null;
+    return {
+      tamed: w.tamed, sitting: w.sitting, fedCount: w.fedCount,
+      health: +w.health.toFixed(1), state: w.state,
+      dist: +w.pos.distanceTo(player.pos).toFixed(2),
+      x: +w.pos.x.toFixed(1), y: +w.pos.y.toFixed(1), z: +w.pos.z.toFixed(1),
+    };
+  },
+  // Команда «сидіти/йти» найближчому прирученому вовку (для тестів)
+  toggleSitWolf: () => {
+    const w = nearestWolf();
+    if (!w || !w.tamed) return null;
+    w.sitting = !w.sitting;
+    return { sitting: w.sitting };
+  },
+  // Телепортувати гравця (для тестів телепорту вовка при відставанні)
+  tpPlayer: (dx = 30, dz = 0) => {
+    const x = Math.floor(player.pos.x + dx), z = Math.floor(player.pos.z + dz);
+    player.pos.set(x + 0.5, safeSpawnY(x, z), z + 0.5);
+    player.vel.set(0, 0, 0);
+    return { x: player.pos.x, y: player.pos.y, z: player.pos.z };
+  },
   // Удар по найближчій вівці (як ЛКМ упритул) — для тестів стрижки
   hitNearSheep: () => {
     let best = null, bestDist = Infinity;
