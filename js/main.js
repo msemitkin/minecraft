@@ -74,6 +74,11 @@ const DOOR = 35;
 // доступна в меню (Tab). Кучерява процедурна текстура, приглушений звук кроків
 const WOOL = 36;
 
+// Паркан і хвіртка — окремі предмети-сутності (як двері, не вокселі): огорожа
+// заввишки «півтора блока» для колізій (блокує і клітинку над собою), тож її
+// не перестрибнути — загони для тварин і безпечні двори. Хвіртка відчиняється ПКМ
+const FENCE = 37, GATE = 38;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -85,7 +90,7 @@ const BLOCK_NAMES = {
   [ROD]: 'Вудка',
   [BUCKET]: 'Відро', [WATER_BUCKET]: 'Відро з водою', [LAVA_BUCKET]: 'Відро з лавою',
   [BOAT]: 'Човен', [LADDER]: 'Драбина', [GLASS]: 'Скло', [DOOR]: 'Двері',
-  [WOOL]: 'Вовна',
+  [WOOL]: 'Вовна', [FENCE]: 'Паркан', [GATE]: 'Хвіртка',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
@@ -93,7 +98,7 @@ const ALL_BLOCKS = [
   GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, GLASS, WOOL,
   WATER, LAVA,
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, BOW, ROD, BED, BUCKET,
-  BOAT, LADDER, DOOR,
+  BOAT, LADDER, DOOR, FENCE, GATE,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -306,6 +311,8 @@ function saveGame() {
       beds: [...beds.values()].map((b) => [b.x, b.y, b.z, b.yaw]),
       ladders: [...ladders.values()].map((l) => [l.x, l.y, l.z, l.dx, l.dz]),
       doors: [...doors.values()].map((d) => [d.x, d.y, d.z, d.dx, d.dz, d.open ? 1 : 0]),
+      fences: [...fences.values()].map((f) => [f.x, f.y, f.z]),
+      gates: [...gates.values()].map((g) => [g.x, g.y, g.z, g.dx, g.dz, g.open ? 1 : 0]),
       boats: boats.map((b) => [+b.pos.x.toFixed(2), +b.pos.y.toFixed(2), +b.pos.z.toFixed(2), +b.yaw.toFixed(3)]),
       wolves: animals.filter((a) => a.type === 'wolf' && a.tamed)
         .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
@@ -1614,7 +1621,8 @@ function moveEntityAxis(e, axis, amount) {
   for (let x = x0; x <= x1; x++) {
     for (let y = y0; y <= y1; y++) {
       for (let z = z0; z <= z1; z++) {
-        if (!isSolid(blockAt(x, y, z)) && !doorBlocksCell(x, y, z)) continue;
+        if (!isSolid(blockAt(x, y, z)) && !doorBlocksCell(x, y, z) &&
+            !fenceBlocksCell(x, y, z)) continue;
         if (axis === 'x') {
           e.pos.x = amount > 0 ? x - e.halfW - EPS : x + 1 + e.halfW + EPS;
         } else if (axis === 'z') {
@@ -2955,6 +2963,15 @@ function startBreakOrAttack() {
     const d = doorInSight();
     if (d) { breakDoor(d); triggerSwing(); return; }
   }
+  // Паркан чи хвіртка в прицілі → зняти
+  if (fences.size > 0 || gates.size > 0) {
+    const fg = fenceOrGateInSight();
+    if (fg) {
+      if (fg.fence) breakFence(fg.fence); else breakGate(fg.gate);
+      triggerSwing();
+      return;
+    }
+  }
   // Зняти смолоскип/драбину або зібрати посів, якщо дивимось на них
   // (клітинка перед блоком)
   if (torches.size > 0 || crops.size > 0 || ladders.size > 0) {
@@ -3158,7 +3175,8 @@ function updateArrows(dt) {
       if (hit) { outcome = 'entity'; break; }
       const acx = Math.floor(a.pos.x), acy = Math.floor(a.pos.y), acz = Math.floor(a.pos.z);
       const bid = blockAt(acx, acy, acz);
-      const inDoor = !isSolid(bid) && doorBlocksCell(acx, acy, acz);
+      const inDoor = !isSolid(bid) &&
+        (doorBlocksCell(acx, acy, acz) || fenceSolidAtCell(acx, acy, acz));
       if (isSolid(bid) || inDoor) {
         outcome = 'block';
         Sound.arrowHit();
@@ -3433,6 +3451,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateBeds();     // ... і опору/клітинки ліжок
   validateLadders();  // ... і опору/клітинки драбин
   validateDoors();    // ... і опору/клітинки дверей
+  validateFences();   // ... і опору/клітинки парканів і хвірток
   Sound.explosion();
   knockback(player, cx, cy, cz);
   for (const a of animals) knockback(a, cx, cy, cz);
@@ -3568,6 +3587,7 @@ function updateFallingBlocks(dt) {
       validateBeds();
       validateLadders();
       validateDoors();
+      validateFences();
     }
   }
 }
@@ -3899,7 +3919,8 @@ function torchNear(x, y, z, r) {
 function placeTorch(hit) {
   const [x, y, z] = hit.prev;
   if (blockAt(x, y, z) !== AIR || torches.has(torchKey(x, y, z)) ||
-      ladders.has(torchKey(x, y, z)) || doorAtCell(x, y, z)) return false;
+      ladders.has(torchKey(x, y, z)) || doorAtCell(x, y, z) ||
+      fences.has(torchKey(x, y, z)) || gates.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -4056,7 +4077,8 @@ function placeLadder(hit) {
   if (blockAt(x, y, z) !== AIR) return false;
   if (ladders.has(ladderKey(x, y, z)) || torches.has(x + ',' + y + ',' + z) ||
       crops.has(x + ',' + y + ',' + z) || beds.has(x + ',' + y + ',' + z) ||
-      doorAtCell(x, y, z)) return false;
+      doorAtCell(x, y, z) || fences.has(ladderKey(x, y, z)) ||
+      gates.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -4263,7 +4285,7 @@ function placeDoor(hit) {
   for (const cy of [y, y + 1]) {
     const k = doorKey(x, cy, z);
     if (doorAtCell(x, cy, z) || torches.has(k) || crops.has(k) ||
-        beds.has(k) || ladders.has(k)) return false;
+        beds.has(k) || ladders.has(k) || fences.has(k) || gates.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -4287,6 +4309,299 @@ function placeDoor(hit) {
 if (savedGame && Array.isArray(savedGame.doors)) {
   for (const e of savedGame.doors) {
     if (Array.isArray(e) && e.length >= 5) addDoor(e[0], e[1], e[2], e[3], e[4], e[5] === 1);
+  }
+}
+
+// ============================================================
+// Паркан і хвіртка: огорожа, яку не перестрибнути (сутності, як двері)
+// ============================================================
+// Паркан займає одну клітинку, але для колізій «високий»: блокує і клітинку
+// над собою (огорожа «заввишки півтора блока»), тож гравець, тварини й нечисть
+// не перестрибнуть — можна будувати загони для овець і безпечні двори. Секції
+// з'єднуються перекладинами із сусідніми парканами, хвіртками та блоками.
+// Хвіртка — стулка на завісах (ПКМ відчиняє/зачиняє), зачинена — така сама
+// висока перешкода. Обоє не належать воксельній сітці; ЛКМ знімає.
+const fences = new Map();              // "x,y,z" -> { x, y, z, group, arms }
+const gates = new Map();               // "x,y,z" -> { x, y, z, dx, dz, open, angle, group, pivot }
+const FENCE_MAX = 512;                 // межі, щоб збереження не розросталося
+const GATE_MAX = 128;
+const GATE_SWING_V = 7;                // швидкість оберту стулки, рад/с
+const GATE_OPEN_ANGLE = Math.PI / 2;
+const FENCE_COLOR = new THREE.Color(0xa9793f);
+
+// Спільні ресурси моделей (геометрії/матеріали не дублюються на кожну секцію)
+const FENCE_POST_GEO = new THREE.BoxGeometry(0.18, 1.0, 0.18);
+const FENCE_RAIL_GEO = new THREE.BoxGeometry(0.1, 0.09, 0.5);   // плече до краю клітинки (+Z)
+const FENCE_MAT = new THREE.MeshLambertMaterial({ color: 0xa9793f });
+const FENCE_RAIL_MAT = new THREE.MeshLambertMaterial({ color: 0x8a5f2f });
+const GATE_BAR_GEO = new THREE.BoxGeometry(0.92, 0.09, 0.1);
+const GATE_END_GEO = new THREE.BoxGeometry(0.1, 0.72, 0.1);
+
+const fenceKey = (x, y, z) => x + ',' + y + ',' + z;
+
+// Чи стоїть у самій клітинці паркан або зачинена хвіртка (для стріл)
+function fenceSolidAtCell(x, y, z) {
+  if (fences.size > 0 && fences.has(fenceKey(x, y, z))) return true;
+  if (gates.size > 0) {
+    const g = gates.get(fenceKey(x, y, z));
+    if (g && !g.open) return true;
+  }
+  return false;
+}
+
+// Чи блокує огорожа клітинку для колізій: паркан/зачинена хвіртка «високі» —
+// накривають і клітинку над собою, тож перестрибнути не вийде
+function fenceBlocksCell(x, y, z) {
+  if (fences.size === 0 && gates.size === 0) return false;
+  return fenceSolidAtCell(x, y, z) || fenceSolidAtCell(x, y - 1, z);
+}
+
+// Модель паркана: центральний стовпчик + 4 «плеча» з двох перекладин;
+// видимість плеча вмикається, коли є з'єднання із сусідом
+function makeFenceModel() {
+  const group = new THREE.Group();
+  const post = new THREE.Mesh(FENCE_POST_GEO, FENCE_MAT);
+  post.position.y = 0.5;
+  group.add(post);
+  const arms = [];
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const arm = new THREE.Group();
+    for (const ry of [0.78, 0.4]) {
+      const rail = new THREE.Mesh(FENCE_RAIL_GEO, FENCE_RAIL_MAT);
+      rail.position.set(0, ry, 0.25);
+      arm.add(rail);
+    }
+    arm.rotation.y = Math.atan2(dx, dz);   // локальний +Z — у бік сусіда
+    arm.visible = false;
+    group.add(arm);
+    arms.push({ dx, dz, arm });
+  }
+  return { group, arms };
+}
+
+// Плече паркана з'єднується із сусіднім парканом, хвірткою чи твердим блоком
+function fenceLinksTo(x, y, z) {
+  return fences.has(fenceKey(x, y, z)) || gates.has(fenceKey(x, y, z)) ||
+         isSolid(blockAt(x, y, z));
+}
+
+function refreshFenceConnections() {
+  for (const f of fences.values()) {
+    for (const a of f.arms) a.arm.visible = fenceLinksTo(f.x + a.dx, f.y, f.z + a.dz);
+  }
+}
+
+function addFence(x, y, z) {
+  const key = fenceKey(x, y, z);
+  if (fences.has(key) || fences.size >= FENCE_MAX) return false;
+  const { group, arms } = makeFenceModel();
+  group.position.set(x + 0.5, y, z + 0.5);
+  scene.add(group);
+  fences.set(key, { x, y, z, group, arms });
+  refreshFenceConnections();
+  return true;
+}
+
+function removeFence(key) {
+  const f = fences.get(key);
+  if (!f) return;
+  scene.remove(f.group);
+  fences.delete(key);   // геометрії/матеріали спільні — не dispose
+  refreshFenceConnections();
+}
+
+// Зняти паркан (ЛКМ або втрата опори): тріски + дерев'яний звук
+function breakFence(f) {
+  spawnParticles(f.x + 0.5, f.y + 0.5, f.z + 0.5, FENCE_COLOR, 6,
+    { radius: 0.25, speed: 1.5, upBias: 0.4, life: 0.45, size: 0.09, gravity: 10 });
+  Sound.breakBlock(PLANK);
+  removeFence(fenceKey(f.x, f.y, f.z));
+}
+
+// Модель хвіртки: стулка з двох перекладин і трьох брусів на півоті-«завісах»
+// (як у дверей: стулка тягнеться від завіс у +X, оберт півота по Y відчиняє)
+function makeGateModel() {
+  const pivot = new THREE.Group();
+  const leaf = new THREE.Group();
+  for (const ry of [0.78, 0.4]) {
+    const bar = new THREE.Mesh(GATE_BAR_GEO, FENCE_RAIL_MAT);
+    bar.position.set(0, ry, 0);
+    leaf.add(bar);
+  }
+  for (const bx of [-0.41, 0, 0.41]) {
+    const end = new THREE.Mesh(GATE_END_GEO, FENCE_MAT);
+    end.position.set(bx, 0.59, 0);
+    leaf.add(end);
+  }
+  leaf.position.x = 0.46;   // центр стулки: вона займає 0..0.92 від завіс
+  pivot.add(leaf);
+  return pivot;
+}
+
+// Створити хвіртку в клітинці (x,y,z); dx/dz — куди «дивиться» стулка
+function addGate(x, y, z, dx, dz, open = false) {
+  const key = fenceKey(x, y, z);
+  if (gates.has(key) || gates.size >= GATE_MAX) return null;
+  if (Math.abs(dx) + Math.abs(dz) !== 1) return null;
+  const group = new THREE.Group();
+  for (const px of [-0.46, 0.46]) {      // нерухомі бічні стовпчики
+    const post = new THREE.Mesh(FENCE_POST_GEO, FENCE_MAT);
+    post.position.set(px, 0.5, 0);
+    group.add(post);
+  }
+  const pivot = makeGateModel();
+  pivot.position.set(-0.46, 0, 0);       // завіси біля лівого стовпчика
+  group.add(pivot);
+  group.position.set(x + 0.5, y, z + 0.5);
+  group.rotation.y = Math.atan2(dx, dz); // локальний +Z — у напрямку dx/dz
+  scene.add(group);
+  const g = { x, y, z, dx, dz, open, angle: open ? GATE_OPEN_ANGLE : 0, group, pivot };
+  pivot.rotation.y = g.angle;
+  gates.set(key, g);
+  refreshFenceConnections();
+  return g;
+}
+
+function removeGate(key) {
+  const g = gates.get(key);
+  if (!g) return;
+  scene.remove(g.group);
+  gates.delete(key);   // геометрії/матеріали спільні — не dispose
+  refreshFenceConnections();
+}
+
+function breakGate(g) {
+  spawnParticles(g.x + 0.5, g.y + 0.5, g.z + 0.5, FENCE_COLOR, 6,
+    { radius: 0.25, speed: 1.5, upBias: 0.4, life: 0.45, size: 0.09, gravity: 10 });
+  Sound.breakBlock(PLANK);
+  removeGate(fenceKey(g.x, g.y, g.z));
+}
+
+// Прибрати паркани/хвіртки, що втратили опору або чию клітинку зайняв блок
+function validateFences() {
+  if (fences.size === 0 && gates.size === 0) return;
+  for (const f of fences.values()) {
+    if (isSolid(blockAt(f.x, f.y, f.z)) || !isSolid(blockAt(f.x, f.y - 1, f.z))) breakFence(f);
+  }
+  for (const g of gates.values()) {
+    if (isSolid(blockAt(g.x, g.y, g.z)) || !isSolid(blockAt(g.x, g.y - 1, g.z))) breakGate(g);
+  }
+  refreshFenceConnections();   // сусідні блоки могли з'явитися чи зникнути
+}
+
+// Чи перетинає AABB істоти «високу» колону хвіртки — щоб не зачинити на комусь
+function gateColumnBlockedByEntity(g) {
+  const check = (e) => {
+    const hw = e.halfW, hh = e.height;
+    return e.pos.x + hw > g.x && e.pos.x - hw < g.x + 1 &&
+           e.pos.y + hh > g.y && e.pos.y < g.y + 2 &&
+           e.pos.z + hw > g.z && e.pos.z - hw < g.z + 1;
+  };
+  if (check(player)) return true;
+  for (const m of mobs) if (check(m)) return true;
+  for (const a of animals) if (check(a)) return true;
+  return false;
+}
+
+// Відчинити/зачинити хвіртку (ПКМ). Зачинити на комусь не вийде.
+function toggleGate(g) {
+  if (g.open && gateColumnBlockedByEntity(g)) return false;
+  g.open = !g.open;
+  Sound.door(g.open);
+  return true;
+}
+
+// Плавний оберт стулки до цільового кута
+function updateGates(dt) {
+  if (gates.size === 0) return;
+  for (const g of gates.values()) {
+    const target = g.open ? GATE_OPEN_ANGLE : 0;
+    if (g.angle === target) continue;
+    const step = GATE_SWING_V * dt;
+    g.angle = g.angle < target
+      ? Math.min(target, g.angle + step)
+      : Math.max(target, g.angle - step);
+    g.pivot.rotation.y = g.angle;
+  }
+}
+
+// Паркан чи хвіртка в прицілі: марш променем погляду по клітинках (сутності
+// не в воксельній сітці, тож raycastBlock їх не бачить)
+const _fenceDir = new THREE.Vector3();
+function fenceOrGateInSight(maxDist = 5) {
+  if (fences.size === 0 && gates.size === 0) return null;
+  camera.getWorldDirection(_fenceDir);
+  for (let t = 0.1; t <= maxDist; t += 0.1) {
+    const x = Math.floor(camera.position.x + _fenceDir.x * t);
+    const y = Math.floor(camera.position.y + _fenceDir.y * t);
+    const z = Math.floor(camera.position.z + _fenceDir.z * t);
+    const f = fences.get(fenceKey(x, y, z));
+    if (f) return { fence: f };
+    const g = gates.get(fenceKey(x, y, z));
+    if (g) return { gate: g };
+    if (isSolid(blockAt(x, y, z))) return null;
+  }
+  return null;
+}
+
+// Клітинка вільна від інших сутностей-предметів (спільна перевірка встановлення)
+function fenceCellFree(x, y, z) {
+  const k = fenceKey(x, y, z);
+  return !fences.has(k) && !gates.has(k) && !doorAtCell(x, y, z) &&
+         !torches.has(k) && !crops.has(k) && !beds.has(k) && !ladders.has(k);
+}
+
+// Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
+function fenceOverlapsPlayer(x, y, z) {
+  const p = player.pos;
+  return x + 1 > p.x - PLAYER_W && x < p.x + PLAYER_W &&
+         y + 2 > p.y && y < p.y + PLAYER_H &&
+         z + 1 > p.z - PLAYER_W && z < p.z + PLAYER_W;
+}
+
+// Поставити паркан у клітинку перед прицілом (hit.prev) на тверду опору
+function placeFence(hit) {
+  const [x, y, z] = hit.prev;
+  if (blockAt(x, y, z) !== AIR) return false;
+  if (!fenceCellFree(x, y, z)) return false;
+  if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда опора
+  if (fenceOverlapsPlayer(x, y, z)) return false;
+  if (!addFence(x, y, z)) return false;
+  Sound.place(PLANK);
+  spawnParticles(x + 0.5, y + 0.5, z + 0.5, FENCE_COLOR, 6,
+    { radius: 0.3, speed: 1.4, upBias: 0.4, life: 0.4, size: 0.09, gravity: 10 });
+  unlockAch('fence');
+  return true;
+}
+
+// Поставити хвіртку: стулка «дивиться» на гравця (як двері)
+function placeGate(hit) {
+  const [x, y, z] = hit.prev;
+  if (blockAt(x, y, z) !== AIR) return false;
+  if (!fenceCellFree(x, y, z)) return false;
+  if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда опора
+  if (fenceOverlapsPlayer(x, y, z)) return false;
+  const p = player.pos;
+  const vx = p.x - (x + 0.5), vz = p.z - (z + 0.5);
+  const dx = Math.abs(vx) >= Math.abs(vz) ? (Math.sign(vx) || 1) : 0;
+  const dz = dx === 0 ? (Math.sign(vz) || 1) : 0;
+  if (!addGate(x, y, z, dx, dz)) return false;
+  Sound.place(PLANK);
+  spawnParticles(x + 0.5, y + 0.5, z + 0.5, FENCE_COLOR, 6,
+    { radius: 0.3, speed: 1.4, upBias: 0.4, life: 0.4, size: 0.09, gravity: 10 });
+  unlockAch('fence');
+  return true;
+}
+
+// Відновити збережені паркани (формат: [x, y, z]) і хвіртки ([x, y, z, dx, dz, open])
+if (savedGame && Array.isArray(savedGame.fences)) {
+  for (const e of savedGame.fences) {
+    if (Array.isArray(e) && e.length >= 3) addFence(e[0], e[1], e[2]);
+  }
+}
+if (savedGame && Array.isArray(savedGame.gates)) {
+  for (const e of savedGame.gates) {
+    if (Array.isArray(e) && e.length >= 5) addGate(e[0], e[1], e[2], e[3], e[4], e[5] === 1);
   }
 }
 
@@ -4399,7 +4714,8 @@ function plantCrop(hit) {
   const [x, y, z] = hit.prev;
   if (blockAt(x, y, z) !== AIR) return false;
   if (crops.has(cropKey(x, y, z)) || torches.has(torchKey(x, y, z)) ||
-      ladders.has(cropKey(x, y, z)) || doorAtCell(x, y, z)) return false;
+      ladders.has(cropKey(x, y, z)) || doorAtCell(x, y, z) ||
+      fences.has(cropKey(x, y, z)) || gates.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -4520,7 +4836,8 @@ function placeBed(hit) {
   if (blockAt(x, y, z) !== AIR) return false;
   if (beds.has(bedKey(x, y, z)) || torches.has(torchKey(x, y, z)) ||
       crops.has(cropKey(x, y, z)) || ladders.has(bedKey(x, y, z)) ||
-      doorAtCell(x, y, z)) return false;
+      doorAtCell(x, y, z) || fences.has(bedKey(x, y, z)) ||
+      gates.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -4677,6 +4994,7 @@ function updateMining(dt, hit) {
     validateBeds();     // ... або опора під ліжком
     validateLadders();  // ... або стіна-опора драбини
     validateDoors();    // ... або опора під дверима
+    validateFences();   // ... або опора під парканом/хвірткою
     unlockAch('first_block');
     if (id === LOG) unlockAch('chop_wood');
     else if (id === COAL) unlockAch('coal');
@@ -5003,6 +5321,12 @@ function placeBlock() {
     if (d) { toggleDoor(d); return; }
   }
 
+  // Хвіртка в прицілі (ПКМ) → відчинити/зачинити, з будь-яким предметом у руці
+  if (gates.size > 0) {
+    const fg = fenceOrGateInSight();
+    if (fg && fg.gate) { toggleGate(fg.gate); return; }
+  }
+
   const hit = raycastBlock();
   if (!hit || !hit.prev) return;
 
@@ -5035,6 +5359,16 @@ function placeBlock() {
   // Двері — сутність на дві клітинки заввишки, не змінює воксельну сітку
   if (id === DOOR) {
     placeDoor(hit);
+    return;
+  }
+
+  // Паркан і хвіртка — сутності-огорожа, не змінюють воксельну сітку
+  if (id === FENCE) {
+    placeFence(hit);
+    return;
+  }
+  if (id === GATE) {
+    placeGate(hit);
     return;
   }
 
@@ -5073,6 +5407,7 @@ function placeBlock() {
   validateBeds();     // ... або клітинку ліжка
   validateLadders();  // ... або клітинку драбини
   validateDoors();    // ... або клітинку дверей
+  validateFences();   // ... або клітинку паркана/хвіртки
 }
 
 // ===== Менеджмент чанків =====
@@ -5851,6 +6186,33 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(11, 7, 2, 2);          // ручка
     return;
   }
+  if (id === FENCE) {
+    // Процедурна іконка паркана: два стовпчики та дві перекладини
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#9a6a33';
+    ctx.fillRect(3, 2, 2, 13);          // стовпчики
+    ctx.fillRect(11, 2, 2, 13);
+    ctx.fillStyle = '#b5803f';
+    ctx.fillRect(1, 4, 14, 2);          // перекладини
+    ctx.fillRect(1, 9, 14, 2);
+    return;
+  }
+  if (id === GATE) {
+    // Процедурна іконка хвіртки: бічні стовпи, стулка з перекладин і завіса
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#9a6a33';
+    ctx.fillRect(1, 2, 2, 13);          // бічні стовпи
+    ctx.fillRect(13, 2, 2, 13);
+    ctx.fillStyle = '#b5803f';
+    ctx.fillRect(3, 4, 10, 2);          // перекладини стулки
+    ctx.fillRect(3, 9, 10, 2);
+    ctx.fillRect(7, 3, 2, 9);           // середній брус
+    ctx.fillStyle = '#3a2a16';
+    ctx.fillRect(2, 6, 2, 2);           // завіса
+    return;
+  }
   if (id === BOAT) {
     // Процедурна іконка човна: дерев'яний корпус (трапеція) з бортами й хвилею
     const ctx = canvas.getContext('2d');
@@ -6581,6 +6943,7 @@ const ACHIEVEMENTS = [
   { id: 'homeowner',   icon: '🚪', title: 'Домовласник',        desc: 'Поставити двері' },
   { id: 'shear',       icon: '🐑', title: 'Стрижій',            desc: 'Обстригти вівцю' },
   { id: 'tame',        icon: '🐺', title: 'Вірний друг',        desc: 'Приручити вовка' },
+  { id: 'fence',       icon: '🚧', title: 'Обгороджено',        desc: 'Поставити паркан чи хвіртку' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -6789,6 +7152,52 @@ window.MCDebug = {
   },
   get doors() { return doors.size; },
   doorBlocked: (x, y, z) => doorBlocksCell(x, y, z),
+  // Паркани та хвіртки (для тестів)
+  giveFence: () => { assignBlockToSlot(FENCE); return BLOCK_NAMES[FENCE]; },
+  giveGate: () => { assignBlockToSlot(GATE); return BLOCK_NAMES[GATE]; },
+  get fences() { return fences.size; },
+  get gates() { return gates.size; },
+  fenceBlocked: (x, y, z) => fenceBlocksCell(x, y, z),
+  // Поставити паркан на поверхню за (dx,dz) блоків від гравця
+  fenceNear: (dx = 2, dz = 0) => {
+    const x = Math.floor(player.pos.x) + dx, z = Math.floor(player.pos.z) + dz;
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0 || blockAt(x, gy + 1, z) !== AIR) return null;
+    return addFence(x, gy + 1, z) ? { x, y: gy + 1, z } : null;
+  },
+  // Поставити хвіртку на поверхню за (dx,dz) блоків від гравця
+  gateNear: (dx = 2, dz = 0, fdx = -1, fdz = 0) => {
+    const x = Math.floor(player.pos.x) + dx, z = Math.floor(player.pos.z) + dz;
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0 || blockAt(x, gy + 1, z) !== AIR) return null;
+    return addGate(x, gy + 1, z, fdx, fdz) ? { x, y: gy + 1, z } : null;
+  },
+  // Перемкнути найближчу до гравця хвіртку (для тестів)
+  toggleNearGate: () => {
+    let best = null, bestDist = Infinity;
+    for (const g of gates.values()) {
+      const dist = Math.hypot(g.x + 0.5 - player.pos.x, g.z + 0.5 - player.pos.z);
+      if (dist < bestDist) { bestDist = dist; best = g; }
+    }
+    if (!best) return null;
+    const toggled = toggleGate(best);
+    return { toggled, open: best.open, x: best.x, y: best.y, z: best.z };
+  },
+  // Стан найближчої до гравця хвіртки (для тестів)
+  gateState: () => {
+    let best = null, bestDist = Infinity;
+    for (const g of gates.values()) {
+      const dist = Math.hypot(g.x + 0.5 - player.pos.x, g.z + 0.5 - player.pos.z);
+      if (dist < bestDist) { bestDist = dist; best = g; }
+    }
+    return best ? { open: best.open, x: best.x, y: best.y, z: best.z, dx: best.dx, dz: best.dz } : null;
+  },
   setBlock: (x, y, z, id) => setBlock(x, y, z, id),
   giveGlass: () => { assignBlockToSlot(GLASS); return BLOCK_NAMES[GLASS]; },
   giveWool: () => { assignBlockToSlot(WOOL); return BLOCK_NAMES[WOOL]; },
@@ -7152,6 +7561,7 @@ function animate() {
     updateLavaLights(dt);
     updateCrops(dt);
     updateDoors(dt);
+    updateGates(dt);
     if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
     updateArrows(dt);
     updateFallingBlocks(dt);
