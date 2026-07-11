@@ -79,6 +79,11 @@ const WOOL = 36;
 // не перестрибнути — загони для тварин і безпечні двори. Хвіртка відчиняється ПКМ
 const FENCE = 37, GATE = 38;
 
+// Саджанець — окремий предмет-сутність (як насіння, не воксель): садиться ПКМ
+// на траву/землю, росте від світла і виростає у справжнє воксельне дерево
+// (стовбур з колод + крона з листя) — відновлюваний ліс.
+const SAPLING = 39;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -91,14 +96,15 @@ const BLOCK_NAMES = {
   [BUCKET]: 'Відро', [WATER_BUCKET]: 'Відро з водою', [LAVA_BUCKET]: 'Відро з лавою',
   [BOAT]: 'Човен', [LADDER]: 'Драбина', [GLASS]: 'Скло', [DOOR]: 'Двері',
   [WOOL]: 'Вовна', [FENCE]: 'Паркан', [GATE]: 'Хвіртка',
+  [SAPLING]: 'Саджанець',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
 const ALL_BLOCKS = [
   GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, GLASS, WOOL,
   WATER, LAVA,
-  TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, BOW, ROD, BED, BUCKET,
-  BOAT, LADDER, DOOR, FENCE, GATE,
+  TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
+  BUCKET, BOAT, LADDER, DOOR, FENCE, GATE,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -308,6 +314,7 @@ function saveGame() {
       weather: { state: weatherState, timer: weatherTimer, intensity: weatherIntensity },
       torches: [...torches.values()].map((t) => [t.x, t.y, t.z, t.face, t.dx, t.dz]),
       crops: [...crops.values()].map((c) => [c.x, c.y, c.z, c.stage, +c.growth.toFixed(2)]),
+      saplings: [...saplings.values()].map((s) => [s.x, s.y, s.z, +s.growth.toFixed(2)]),
       beds: [...beds.values()].map((b) => [b.x, b.y, b.z, b.yaw]),
       ladders: [...ladders.values()].map((l) => [l.x, l.y, l.z, l.dx, l.dz]),
       doors: [...doors.values()].map((d) => [d.x, d.y, d.z, d.dx, d.dz, d.open ? 1 : 0]),
@@ -2972,9 +2979,9 @@ function startBreakOrAttack() {
       return;
     }
   }
-  // Зняти смолоскип/драбину або зібрати посів, якщо дивимось на них
+  // Зняти смолоскип/драбину/саджанець або зібрати посів, якщо дивимось на них
   // (клітинка перед блоком)
-  if (torches.size > 0 || crops.size > 0 || ladders.size > 0) {
+  if (torches.size > 0 || crops.size > 0 || ladders.size > 0 || saplings.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -2997,6 +3004,15 @@ function startBreakOrAttack() {
       const crop = crops.get(key);
       if (crop) {
         harvestCrop(crop);
+        triggerSwing();
+        return;
+      }
+      if (saplings.has(key)) {
+        spawnParticles(hit.prev[0] + 0.5, hit.prev[1] + 0.3, hit.prev[2] + 0.5,
+          new THREE.Color(0x3e7d2c), 6,
+          { radius: 0.25, speed: 1.6, upBias: 0.8, life: 0.5, size: 0.08, gravity: 8 });
+        Sound.breakBlock(LEAVES);
+        removeSapling(key);
         triggerSwing();
         return;
       }
@@ -3452,6 +3468,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateLadders();  // ... і опору/клітинки драбин
   validateDoors();    // ... і опору/клітинки дверей
   validateFences();   // ... і опору/клітинки парканів і хвірток
+  validateSaplings(); // ... і опору/клітинки саджанців
   Sound.explosion();
   knockback(player, cx, cy, cz);
   for (const a of animals) knockback(a, cx, cy, cz);
@@ -3588,6 +3605,7 @@ function updateFallingBlocks(dt) {
       validateLadders();
       validateDoors();
       validateFences();
+      validateSaplings();
     }
   }
 }
@@ -3920,7 +3938,8 @@ function placeTorch(hit) {
   const [x, y, z] = hit.prev;
   if (blockAt(x, y, z) !== AIR || torches.has(torchKey(x, y, z)) ||
       ladders.has(torchKey(x, y, z)) || doorAtCell(x, y, z) ||
-      fences.has(torchKey(x, y, z)) || gates.has(torchKey(x, y, z))) return false;
+      fences.has(torchKey(x, y, z)) || gates.has(torchKey(x, y, z)) ||
+      saplings.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -4078,7 +4097,7 @@ function placeLadder(hit) {
   if (ladders.has(ladderKey(x, y, z)) || torches.has(x + ',' + y + ',' + z) ||
       crops.has(x + ',' + y + ',' + z) || beds.has(x + ',' + y + ',' + z) ||
       doorAtCell(x, y, z) || fences.has(ladderKey(x, y, z)) ||
-      gates.has(ladderKey(x, y, z))) return false;
+      gates.has(ladderKey(x, y, z)) || saplings.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -4285,7 +4304,8 @@ function placeDoor(hit) {
   for (const cy of [y, y + 1]) {
     const k = doorKey(x, cy, z);
     if (doorAtCell(x, cy, z) || torches.has(k) || crops.has(k) ||
-        beds.has(k) || ladders.has(k) || fences.has(k) || gates.has(k)) return false;
+        beds.has(k) || ladders.has(k) || fences.has(k) || gates.has(k) ||
+        saplings.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -4548,7 +4568,8 @@ function fenceOrGateInSight(maxDist = 5) {
 function fenceCellFree(x, y, z) {
   const k = fenceKey(x, y, z);
   return !fences.has(k) && !gates.has(k) && !doorAtCell(x, y, z) &&
-         !torches.has(k) && !crops.has(k) && !beds.has(k) && !ladders.has(k);
+         !torches.has(k) && !crops.has(k) && !beds.has(k) && !ladders.has(k) &&
+         !saplings.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -4715,7 +4736,8 @@ function plantCrop(hit) {
   if (blockAt(x, y, z) !== AIR) return false;
   if (crops.has(cropKey(x, y, z)) || torches.has(torchKey(x, y, z)) ||
       ladders.has(cropKey(x, y, z)) || doorAtCell(x, y, z) ||
-      fences.has(cropKey(x, y, z)) || gates.has(cropKey(x, y, z))) return false;
+      fences.has(cropKey(x, y, z)) || gates.has(cropKey(x, y, z)) ||
+      saplings.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -4769,6 +4791,180 @@ function updateCrops(dt) {
 if (savedGame && Array.isArray(savedGame.crops)) {
   for (const e of savedGame.crops) {
     if (Array.isArray(e) && e.length >= 3) addCrop(e[0], e[1], e[2], e[3] || 0, e[4] || 0);
+  }
+}
+
+// ============================================================
+// Саджанці: виростити справжнє воксельне дерево
+// ============================================================
+// Саджанець — окрема сутність (як посів): садиться ПКМ на траву/землю, росте
+// від світла (сонце; вночі трохи живить смолоскип) і, назбиравши зросту,
+// перетворюється на справжнє дерево у воксельній сітці — тієї самої форми, що
+// й згенеровані. Якщо стовбуру тісно (блоки чи гравець на заваді) — саджанець
+// терпляче чекає вільного місця й пробує знову.
+const saplings = new Map();            // "x,y,z" -> { x, y, z, growth, group, mat, phase }
+const SAPLING_MAX = 256;               // межа, щоб збереження не розросталося
+const SAPLING_GROW_TIME = 50;          // секунд росту за повного сонця
+const saplingKey = (x, y, z) => x + ',' + y + ',' + z;
+
+// Одна процедурна текстура: стовбурець і зелена крона (без атласу)
+const saplingTexture = (() => {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = TILE;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#7a5230';
+  ctx.fillRect(7, 8, 2, 8);            // стовбурець
+  ctx.fillStyle = '#3e7d2c';
+  ctx.fillRect(4, 3, 8, 6);            // крона
+  ctx.fillRect(6, 1, 4, 2);
+  ctx.fillStyle = '#569e3d';
+  ctx.fillRect(5, 4, 3, 2);            // світлі відблиски листя
+  ctx.fillRect(9, 6, 2, 2);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  return tex;
+})();
+
+function makeSaplingModel() {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshLambertMaterial({
+    map: saplingTexture, alphaTest: 0.45,
+    side: THREE.DoubleSide,
+  });
+  const p1 = new THREE.Mesh(CROP_PLANE, mat);
+  const p2 = new THREE.Mesh(CROP_PLANE, mat);
+  p2.rotation.y = Math.PI / 2;
+  g.add(p1, p2);
+  return { group: g, mat };
+}
+
+// Паросток помітно тягнеться вгору й ушир у міру росту
+function applySaplingGrowth(s) {
+  const t = Math.min(1, s.growth / SAPLING_GROW_TIME);
+  s.group.scale.y = 0.45 + t * 0.5;
+  s.group.scale.x = s.group.scale.z = 0.8 + t * 0.2;
+}
+
+function addSapling(x, y, z, growth = 0) {
+  const key = saplingKey(x, y, z);
+  if (saplings.has(key) || saplings.size >= SAPLING_MAX) return false;
+  const { group, mat } = makeSaplingModel();
+  group.position.set(x + 0.5, y, z + 0.5);
+  scene.add(group);
+  const s = { x, y, z, growth: Math.max(0, growth) || 0, group, mat, phase: Math.random() * 6.28 };
+  applySaplingGrowth(s);
+  saplings.set(key, s);
+  return true;
+}
+
+function removeSapling(key) {
+  const s = saplings.get(key);
+  if (!s) return;
+  scene.remove(s.group);
+  s.mat.dispose();           // геометрія CROP_PLANE спільна — не чіпаємо
+  saplings.delete(key);
+}
+
+// Зняти саджанці, що втратили опору (траву/землю) або клітинку яких зайняв блок
+function validateSaplings() {
+  if (saplings.size === 0) return;
+  for (const [key, s] of saplings) {
+    const occupied = isSolid(blockAt(s.x, s.y, s.z));
+    const supported = cropSupportable(blockAt(s.x, s.y - 1, s.z));
+    if (occupied || !supported) {
+      spawnParticles(s.x + 0.5, s.y + 0.3, s.z + 0.5, new THREE.Color(0x3e7d2c), 6,
+        { radius: 0.25, speed: 1.6, upBias: 0.8, life: 0.5, size: 0.08, gravity: 8 });
+      removeSapling(key);
+    }
+  }
+}
+
+// Посадити саджанець у клітинку перед прицілом (hit.prev) на траву/землю
+function plantSapling(hit) {
+  const [x, y, z] = hit.prev;
+  if (blockAt(x, y, z) !== AIR) return false;
+  if (saplings.has(saplingKey(x, y, z)) || crops.has(cropKey(x, y, z)) ||
+      torches.has(torchKey(x, y, z)) || ladders.has(saplingKey(x, y, z)) ||
+      beds.has(saplingKey(x, y, z)) || doorAtCell(x, y, z) ||
+      fences.has(saplingKey(x, y, z)) || gates.has(saplingKey(x, y, z))) return false;
+  if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
+  if (!addSapling(x, y, z)) return false;
+  Sound.dig(GRASS);                                          // м'який звук грунту
+  spawnParticles(x + 0.5, y + 0.06, z + 0.5, new THREE.Color(0x6b4a2b), 7,
+    { radius: 0.3, speed: 1.5, upBias: 0.5, life: 0.45, size: 0.09, gravity: 10 });
+  return true;
+}
+
+// Виростити справжнє дерево на місці саджанця: стовбур з колод + крона з листя
+// (та сама форма, що в genChunkData). Стовбуру потрібні вільні клітинки —
+// інакше ріст відкладається і саджанець спробує знову за кілька секунд.
+function growSaplingTree(s) {
+  const { x, y, z } = s;
+  const trunkH = 4 + Math.floor(Math.random() * 2);        // 4..5, як у генерації
+  if (y + trunkH + 1 >= HEIGHT) return false;
+  for (let dy = 0; dy < trunkH; dy++) {
+    if (blockAt(x, y + dy, z) !== AIR) return false;       // стовбуру тісно
+  }
+  // Не рости крізь гравця (стовбур — колона твердих блоків)
+  const p = player.pos;
+  if (x + 1 > p.x - PLAYER_W && x < p.x + PLAYER_W &&
+      y + trunkH > p.y && y < p.y + PLAYER_H &&
+      z + 1 > p.z - PLAYER_W && z < p.z + PLAYER_W) return false;
+  removeSapling(saplingKey(x, y, z));
+  // Крона — лише у вільні клітинки (як onlyAir у генерації)
+  for (let dy = trunkH - 2; dy <= trunkH + 1; dy++) {
+    const r = dy <= trunkH - 1 ? 2 : 1;
+    for (let ox = -r; ox <= r; ox++) {
+      for (let oz = -r; oz <= r; oz++) {
+        if (Math.abs(ox) === r && Math.abs(oz) === r && r === 2) continue;
+        if (blockAt(x + ox, y + dy, z + oz) === AIR) setBlock(x + ox, y + dy, z + oz, LEAVES);
+      }
+    }
+  }
+  // Стовбур
+  for (let dy = 0; dy < trunkH; dy++) setBlock(x, y + dy, z, LOG);
+  Sound.place(LOG);
+  spawnParticles(x + 0.5, y + trunkH * 0.6, z + 0.5, new THREE.Color(0x4d8f35), 16,
+    { radius: 1.2, speed: 2.2, upBias: 1.0, life: 0.7, size: 0.12, gravity: 4 });
+  // Нові блоки могли зайняти клітинки сутностей поряд (смолоскипи, інші саджанці...)
+  validateTorches();
+  validateCrops();
+  validateBeds();
+  validateLadders();
+  validateDoors();
+  validateFences();
+  validateSaplings();
+  unlockAch('grow_tree');
+  return true;
+}
+
+let saplingClock = 0;
+function updateSaplings(dt) {
+  if (saplings.size === 0) return;
+  saplingClock += dt;
+  for (const s of saplings.values()) {
+    // Легке погойдування під «вітром»
+    s.group.rotation.z = Math.sin(saplingClock * 1.5 + s.phase) * 0.04;
+    // Світло: денне сонце (приглушене негодою); вночі трохи живить смолоскип
+    let light = Math.max(0, dayNightSun) * (1 - weatherDark * 0.5);
+    if (light < 0.25 && torchNear(s.x + 0.5, s.y + 0.5, s.z + 0.5, 7)) {
+      light = Math.max(light, 0.5);
+    }
+    if (light <= 0.02) continue;
+    s.growth += dt * light;
+    applySaplingGrowth(s);
+    if (s.growth >= SAPLING_GROW_TIME && !growSaplingTree(s)) {
+      s.growth = SAPLING_GROW_TIME * 0.8;   // тісно — почекати й спробувати ще
+    }
+  }
+}
+
+// Відновити збережені саджанці (формат: [x, y, z, growth])
+if (savedGame && Array.isArray(savedGame.saplings)) {
+  for (const e of savedGame.saplings) {
+    if (Array.isArray(e) && e.length >= 3) addSapling(e[0], e[1], e[2], e[3] || 0);
   }
 }
 
@@ -4837,7 +5033,7 @@ function placeBed(hit) {
   if (beds.has(bedKey(x, y, z)) || torches.has(torchKey(x, y, z)) ||
       crops.has(cropKey(x, y, z)) || ladders.has(bedKey(x, y, z)) ||
       doorAtCell(x, y, z) || fences.has(bedKey(x, y, z)) ||
-      gates.has(bedKey(x, y, z))) return false;
+      gates.has(bedKey(x, y, z)) || saplings.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -4995,6 +5191,7 @@ function updateMining(dt, hit) {
     validateLadders();  // ... або стіна-опора драбини
     validateDoors();    // ... або опора під дверима
     validateFences();   // ... або опора під парканом/хвірткою
+    validateSaplings(); // ... або грунт під саджанцем
     unlockAch('first_block');
     if (id === LOG) unlockAch('chop_wood');
     else if (id === COAL) unlockAch('coal');
@@ -5378,6 +5575,12 @@ function placeBlock() {
     return;
   }
 
+  // Саджанець — сутність-паросток: садиться на траву/землю й виростає в дерево
+  if (id === SAPLING) {
+    plantSapling(hit);
+    return;
+  }
+
   // Ліжко — особлива сутність: ставиться на тверду опору, не змінює воксельну сітку
   if (id === BED) {
     placeBed(hit);
@@ -5408,6 +5611,7 @@ function placeBlock() {
   validateLadders();  // ... або клітинку драбини
   validateDoors();    // ... або клітинку дверей
   validateFences();   // ... або клітинку паркана/хвіртки
+  validateSaplings(); // ... або клітинку саджанця
 }
 
 // ===== Менеджмент чанків =====
@@ -6065,6 +6269,21 @@ function drawBlockIcon(canvas, id) {
     ctx.fillStyle = '#d9c178';
     ctx.fillRect(4, 12, 2, 2);         // зерна
     ctx.fillRect(9, 12, 2, 2);
+    return;
+  }
+  if (id === SAPLING) {
+    // Процедурна іконка саджанця: смужка грунту, стовбурець і зелена крона
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#6b4a2b';
+    ctx.fillRect(2, 13, 12, 2);        // грунт
+    ctx.fillStyle = '#7a5230';
+    ctx.fillRect(7, 8, 2, 5);          // стовбурець
+    ctx.fillStyle = '#3e7d2c';
+    ctx.fillRect(4, 3, 8, 6);          // крона
+    ctx.fillRect(6, 1, 4, 2);
+    ctx.fillStyle = '#569e3d';
+    ctx.fillRect(5, 4, 3, 2);          // світлі відблиски листя
     return;
   }
   if (id === BOW) {
@@ -6944,6 +7163,7 @@ const ACHIEVEMENTS = [
   { id: 'shear',       icon: '🐑', title: 'Стрижій',            desc: 'Обстригти вівцю' },
   { id: 'tame',        icon: '🐺', title: 'Вірний друг',        desc: 'Приручити вовка' },
   { id: 'fence',       icon: '🚧', title: 'Обгороджено',        desc: 'Поставити паркан чи хвіртку' },
+  { id: 'grow_tree',   icon: '🌳', title: 'Лісівник',           desc: 'Виростити дерево з саджанця' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -7155,6 +7375,26 @@ window.MCDebug = {
   // Паркани та хвіртки (для тестів)
   giveFence: () => { assignBlockToSlot(FENCE); return BLOCK_NAMES[FENCE]; },
   giveGate: () => { assignBlockToSlot(GATE); return BLOCK_NAMES[GATE]; },
+  giveSapling: () => { assignBlockToSlot(SAPLING); return BLOCK_NAMES[SAPLING]; },
+  // Посадити саджанець на поверхню за (dx,dz) блоків від гравця
+  saplingNear: (dx = 2, dz = 0) => {
+    const x = Math.floor(player.pos.x) + dx, z = Math.floor(player.pos.z) + dz;
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0 || !cropSupportable(blockAt(x, gy, z)) || blockAt(x, gy + 1, z) !== AIR) return null;
+    return addSapling(x, gy + 1, z) ? { x, y: gy + 1, z } : null;
+  },
+  // Миттєво доростити всі саджанці (виростити дерева)
+  growSaplings: () => {
+    let grown = 0;
+    for (const s of [...saplings.values()]) if (growSaplingTree(s)) grown++;
+    return { grown, waiting: saplings.size };
+  },
+  saplingState: () => [...saplings.values()].map((s) =>
+    ({ x: s.x, y: s.y, z: s.z, growth: +s.growth.toFixed(1) })),
+  get saplingCount() { return saplings.size; },
   get fences() { return fences.size; },
   get gates() { return gates.size; },
   fenceBlocked: (x, y, z) => fenceBlocksCell(x, y, z),
@@ -7560,6 +7800,7 @@ function animate() {
     updateTorches(dt);
     updateLavaLights(dt);
     updateCrops(dt);
+    updateSaplings(dt);
     updateDoors(dt);
     updateGates(dt);
     if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
