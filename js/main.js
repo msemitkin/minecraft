@@ -324,6 +324,9 @@ function saveGame() {
       wolves: animals.filter((a) => a.type === 'wolf' && a.tamed)
         .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
                      +a.health.toFixed(1), a.sitting ? 1 : 0]),
+      horses: animals.filter((a) => a.type === 'horse' && a.tamed)
+        .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
+                     +a.health.toFixed(1)]),
       spawn: spawnPoint,
       selectedSlot,
       hotbar: [...hotbar],
@@ -534,6 +537,14 @@ const Sound = (() => {
         if (!enabled) return;
         tone({ freq: 320, dur: 0.11, type: 'square', gain: 0.11, slideTo: 160 });
       }, 110);
+    },
+    // Кінь: коротке іржання — два низхідні тремтливі тони
+    neigh() {
+      tone({ freq: 920, dur: 0.14, type: 'sawtooth', gain: 0.07, slideTo: 640 });
+      setTimeout(() => {
+        if (!enabled) return;
+        tone({ freq: 700, dur: 0.26, type: 'sawtooth', gain: 0.06, slideTo: 320, attack: 0.03 });
+      }, 120);
     },
     // Вовче скавуління-подяка при годуванні: висхідний м'який тон
     whine() {
@@ -1669,6 +1680,14 @@ function updatePlayer(dt) {
     return;
   }
 
+  // Їдемо верхи: власна фізика гравця вимкнена, кермуємо конем
+  if (ridingHorse) {
+    driveHorse(dt);
+    camera.position.set(player.pos.x, player.pos.y + EYE, player.pos.z);
+    camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+    return;
+  }
+
   const feetId = blockAt(
     Math.floor(player.pos.x),
     Math.floor(player.pos.y + 0.4),
@@ -1820,6 +1839,7 @@ function die() {
   player.dead = true;
   player.vel.set(0, 0, 0);
   dismountBoat(false);   // випасти з човна, не переміщуючи тіло
+  dismountHorse(false);  // випасти з сідла
   mining = false;
   cancelBowDraw();
   reelIn();
@@ -2105,6 +2125,43 @@ const ANIMAL_TYPES = {
       ];
     },
   },
+  horse: {
+    speed: 1.6, halfW: 0.42, height: 1.55, hp: 24, food: 0,
+    build(g) {
+      const coat = 0x8a5a33, dark = 0x4a3220, light = 0xb98a5a, leather = 0x7a3b2e;
+      animalBox(g, 0.58, 0.6, 1.35, coat, 0, 1.05, 0.05);        // тулуб
+      animalBox(g, 0.28, 0.6, 0.3, coat, 0, 1.5, -0.6);          // шия (нахилена вперед)
+      animalBox(g, 0.26, 0.28, 0.6, coat, 0, 1.78, -0.82);       // голова
+      animalBox(g, 0.2, 0.16, 0.14, light, 0, 1.72, -1.14);      // морда
+      animalBox(g, 0.07, 0.16, 0.07, dark, -0.09, 1.98, -0.68);  // вуха
+      animalBox(g, 0.07, 0.16, 0.07, dark, 0.09, 1.98, -0.68);
+      animalBox(g, 0.12, 0.62, 0.16, dark, 0, 1.62, -0.44);      // грива вздовж шиї
+      // Хвіст із пивотом при основі
+      const tail = new THREE.Mesh(
+        new THREE.BoxGeometry(0.12, 0.6, 0.12),
+        new THREE.MeshLambertMaterial({ color: dark })
+      );
+      tail.geometry.translate(0, -0.3, 0);
+      tail.position.set(0, 1.3, 0.74);
+      tail.rotation.x = -0.35;
+      g.add(tail);
+      g.userData.tail = tail;
+      // Сідло з попоною — з'являється після приручення
+      const saddle = new THREE.Group();
+      animalBox(saddle, 0.62, 0.06, 0.7, 0xa8433a, 0, 1.36, 0.0);   // попона
+      animalBox(saddle, 0.4, 0.12, 0.44, leather, 0, 1.44, 0.0);    // сидіння
+      animalBox(saddle, 0.66, 0.2, 0.1, dark, 0, 1.28, 0.0);        // підпруга
+      saddle.visible = false;
+      g.add(saddle);
+      g.userData.saddle = saddle;
+      return [
+        animalLeg(g, 0.16, 0.78, coat, -0.19, 0.78, -0.42),
+        animalLeg(g, 0.16, 0.78, coat, 0.19, 0.78, -0.42),
+        animalLeg(g, 0.16, 0.78, dark, -0.19, 0.78, 0.5),
+        animalLeg(g, 0.16, 0.78, dark, 0.19, 0.78, 0.5),
+      ];
+    },
+  },
 };
 
 // Час відростання вовни після стрижки, с
@@ -2151,6 +2208,8 @@ function spawnAnimal(type, x, y, z) {
     wagPhase: Math.random() * Math.PI * 2,
     tail: group.userData.tail || null,
     collar: group.userData.collar || null,
+    // Кінь: сідло (видиме після приручення)
+    saddle: group.userData.saddle || null,
   });
 }
 
@@ -2173,8 +2232,10 @@ function trySpawnAnimal() {
     type = 'wolf';
   } else if ((biome === BIOME.FOREST || biome === BIOME.SNOWY) && Math.random() < 0.3) {
     type = 'wolf';
+  } else if (biome === BIOME.PLAINS && Math.random() < 0.22) {
+    type = 'horse';   // коні пасуться на відкритих рівнинах
   } else {
-    const types = Object.keys(ANIMAL_TYPES).filter((t) => t !== 'wolf');
+    const types = Object.keys(ANIMAL_TYPES).filter((t) => t !== 'wolf' && t !== 'horse');
     type = types[Math.floor(Math.random() * types.length)];
   }
   spawnAnimal(type, x + 0.5, h + 1.01, z + 0.5);
@@ -2182,6 +2243,7 @@ function trySpawnAnimal() {
 
 function removeAnimal(index) {
   const a = animals[index];
+  if (ridingHorse === a) dismountHorse(false);   // кінь зник під вершником
   scene.remove(a.group);
   a.group.traverse((obj) => {
     if (obj.isMesh) {
@@ -2206,7 +2268,10 @@ function updateAnimal(a, dt) {
   // (приручений вовк не панікує — його веде updateTamedWolf)
   const panicking = !a.tamed && a.panic > 0;
   if (a.tamed) {
-    updateTamedWolf(a, dt);
+    // Вовк-компаньйон іде за гравцем і охороняє; приручений кінь пасеться
+    // на місці й чекає вершника (не блукає геть, поки гравець зайнятий)
+    if (a.type === 'wolf') updateTamedWolf(a, dt);
+    else a.state = 'idle';
   } else if (panicking) {
     a.panic -= dt;
     // Дивиться геть від гравця: «до гравця» — atan2(a−p); напрям утечі — протилежний
@@ -2311,7 +2376,9 @@ function updateAnimals(dt) {
     if (!a.tamed && (a.pos.distanceTo(player.pos) > ANIMAL_DESPAWN_DIST || a.pos.y < -10)) {
       removeAnimal(i);
     } else {
-      updateAnimal(a, dt);
+      // Кінь під вершником: фізику й анімацію веде driveHorse (з updatePlayer),
+      // але загибель (наприклад, у лаві) обробляємо тут, як для всіх тварин
+      if (a !== ridingHorse) updateAnimal(a, dt);
       // Загибель (наприклад, у лаві) — димок і зникнення, без м'яса
       if (a.health <= 0) {
         spawnParticles(a.pos.x, a.pos.y + a.height * 0.5, a.pos.z, SMOKE_COLOR, 10,
@@ -2454,14 +2521,15 @@ function feedWolfEntity(w) {
   return true;
 }
 
-// Вовк у прицілі поблизу (для ПКМ-взаємодії) — той самий конус, що й удар.
+// Тварина заданого типу в прицілі поблизу (для ПКМ-взаємодії) — той самий
+// конус, що й удар. Спільне для вовка (годування) і коня (сідлання).
 const _wolfDir = new THREE.Vector3();
-function wolfInSight(reach = 3.2) {
+function animalInSight(type, reach = 3.2) {
   camera.getWorldDirection(_wolfDir);
   const ox = camera.position.x, oy = camera.position.y, oz = camera.position.z;
   let best = null, bestDist = Infinity;
   for (const a of animals) {
-    if (a.type !== 'wolf') continue;
+    if (a.type !== type) continue;
     const tx = a.pos.x - ox;
     const ty = a.pos.y + a.height * 0.5 - oy;
     const tz = a.pos.z - oz;
@@ -2477,7 +2545,7 @@ function wolfInSight(reach = 3.2) {
 // ПКМ по вовку: дикого чи пораненого годуємо (якщо є м'ясо), здоровому
 // прирученому — команда «сидіти/йти». Повертає true, якщо клік оброблено.
 function tryInteractWolf() {
-  const w = wolfInSight();
+  const w = animalInSight('wolf');
   if (!w) return false;
   if (feedWolfEntity(w)) return true;
   if (w.tamed) {
@@ -2498,6 +2566,177 @@ if (savedGame && Array.isArray(savedGame.wolves)) {
     if (w.collar) w.collar.visible = true;
     if (Number.isFinite(e[3])) w.health = Math.max(1, Math.min(w.maxHealth, e[3]));
     w.sitting = e[4] === 1;
+  }
+}
+
+// ============================================================
+// Кінь: приручення їжею і їзда верхи — швидка подорож суходолом
+// ============================================================
+// Дикі коні пасуться на рівнинах. ПКМ з їжею в торбі (🍖) годує коня: кожна
+// порція — шанс приручити (третя — напевно). На прирученому з'являється сідло;
+// ПКМ по ньому — сісти верхи. Верхи кермуємо поглядом (W — уперед, S — назад),
+// кінь галопує швидше за біг, сам перестрибує блок заввишки; Space — злізти.
+const HORSE_TAME_CHANCE = 0.4;   // шанс приручення з однієї порції
+const HORSE_HEAL_PER_FEED = 6;   // скільки здоров'я лікує порція прирученому
+const HORSE_SEAT = 1.05;         // висота «сідла» над ногами коня (для вершника)
+const HORSE_MAXV = 9.5;          // макс. швидкість галопу (швидше за біг гравця)
+const HORSE_ACCEL = 40;          // прискорення розгону (з опором виходить на макс.)
+const HORSE_DRAG = 3.5;          // згасання швидкості без острогів
+const HORSE_JUMP = 8.5;          // вертикальний імпульс автострибка через блок
+let ridingHorse = null;          // кінь, на якому зараз їде гравець (або null)
+
+function nearestHorse(maxDist = Infinity) {
+  let best = null, bestDist = maxDist;
+  for (const a of animals) {
+    if (a.type !== 'horse') continue;
+    const d = a.pos.distanceTo(player.pos);
+    if (d < bestDist) { bestDist = d; best = a; }
+  }
+  return best;
+}
+
+// Погодувати коня порцією їжі з торби (🍖). Дикому — шанс приручення
+// (сердечка; третя порція приручує напевно), прирученому — лікування.
+// Повертає true, якщо порцію витрачено.
+function feedHorseEntity(h) {
+  if (player.food <= 0) return false;
+  if (h.tamed && h.health >= h.maxHealth) return false;   // ситий і здоровий
+  player.food--;
+  updateFoodHud();
+  h.panic = 0;
+  spawnParticles(h.pos.x, h.pos.y + h.height * 0.9, h.pos.z, HEART_COLOR, 7,
+    { radius: 0.4, speed: 1.2, upBias: 1.6, life: 0.8, size: 0.12, gravity: -2 });
+  if (h.tamed) {
+    h.health = Math.min(h.maxHealth, h.health + HORSE_HEAL_PER_FEED);
+    Sound.whine();
+    return true;
+  }
+  h.fedCount++;
+  if (h.fedCount >= 3 || Math.random() < HORSE_TAME_CHANCE) {
+    h.tamed = true;
+    if (h.saddle) h.saddle.visible = true;
+    Sound.neigh();
+    sleepToast('🐴 Кінь приручений — ПКМ по ньому, щоб сісти верхи!');
+    saveGame();
+  } else {
+    Sound.whine();
+  }
+  return true;
+}
+
+function mountHorse(h) {
+  if (!h || !h.tamed || ridingHorse || ridingBoat) return false;
+  ridingHorse = h;
+  h.vel.set(0, 0, 0);
+  h.state = 'idle';
+  mining = false;
+  cancelBowDraw();
+  player.vel.set(0, 0, 0);
+  player.flying = false;
+  unlockAch('rider');
+  Sound.neigh();
+  return true;
+}
+
+function dismountHorse(reposition = true) {
+  if (!ridingHorse) return;
+  const h = ridingHorse;
+  ridingHorse = null;
+  h.vel.x = 0; h.vel.z = 0;
+  h.state = 'idle';
+  if (reposition) {
+    player.pos.set(h.pos.x, h.pos.y + 0.6, h.pos.z);   // зіскочити біля коня
+    player.vel.set(0, 0, 0);
+    player.fallPeakY = player.pos.y;
+    player.prevOnGround = false;
+  }
+}
+
+// ПКМ по коню: дикого чи пораненого годуємо (якщо є їжа), на здорового
+// прирученого сідаємо верхи. Повертає true, якщо клік оброблено.
+function tryInteractHorse() {
+  if (ridingHorse) return false;
+  const h = animalInSight('horse');
+  if (!h) return false;
+  if (!h.tamed) return feedHorseEntity(h);
+  if (h.health < h.maxHealth && feedHorseEntity(h)) return true;
+  return mountHorse(h);
+}
+
+// Їзда верхи: фізика коня під вершником (викликається з updatePlayer замість
+// фізики гравця). Кермо — погляд гравця; кінь сам перестрибує блок заввишки.
+function driveHorse(dt) {
+  const h = ridingHorse;
+  h.yaw = h.targetYaw = player.yaw;             // кінь повертається за поглядом
+
+  let thrust = 0;
+  if (keys['KeyW']) thrust += 1;
+  if (keys['KeyS']) thrust -= 0.5;
+  if (joy.active) thrust += -joy.y;             // сенсор: уперед по джойстику
+  thrust = THREE.MathUtils.clamp(thrust, -0.5, 1);
+
+  const inWater = isWaterId(blockAt(
+    Math.floor(h.pos.x), Math.floor(h.pos.y + 0.3), Math.floor(h.pos.z)
+  ));
+  // У воді кінь бреде повільно (перепливає, але це не човен)
+  const fwdx = -Math.sin(h.yaw), fwdz = -Math.cos(h.yaw);
+  const accel = inWater ? HORSE_ACCEL * 0.4 : HORSE_ACCEL;
+  h.vel.x += fwdx * thrust * accel * dt;
+  h.vel.z += fwdz * thrust * accel * dt;
+  const drag = Math.max(0, 1 - HORSE_DRAG * dt);
+  h.vel.x *= drag;
+  h.vel.z *= drag;
+  const maxv = inWater ? HORSE_MAXV * 0.4 : HORSE_MAXV;
+  const sp = Math.hypot(h.vel.x, h.vel.z);
+  if (sp > maxv) { h.vel.x *= maxv / sp; h.vel.z *= maxv / sp; }
+
+  if (inWater) h.vel.y = Math.min(h.vel.y + 40 * dt, 3);   // спливає
+  else h.vel.y -= 24 * dt;
+
+  h.onGround = false;
+  moveEntityAxis(h, 'y', h.vel.y * dt);
+  const bumpedX = moveEntityAxis(h, 'x', h.vel.x * dt);
+  const bumpedZ = moveEntityAxis(h, 'z', h.vel.z * dt);
+  // Автострибок через блок — лише на ходу, щоб не підстрибувати біля стіни
+  if ((bumpedX || bumpedZ) && h.onGround && sp > 1) h.vel.y = HORSE_JUMP;
+
+  // Лава палить коня і під вершником (як updateAnimal для вільних тварин)
+  if (isLavaId(blockAt(Math.floor(h.pos.x), Math.floor(h.pos.y + 0.3), Math.floor(h.pos.z)))) {
+    h.health -= dt * 7;
+  }
+
+  // Ноги в такт галопу; спалах при пораненні згасає, як у вільних тварин
+  if (h.onGround || inWater) h.legPhase += dt * (3 + sp * 1.6);
+  const swing = Math.sin(h.legPhase) * 0.6 * Math.min(1, sp / 3);
+  h.legs.forEach((leg, i) => { leg.rotation.x = i % 2 === 0 ? swing : -swing; });
+  if (h.hurt > 0) {
+    h.hurt = Math.max(0, h.hurt - dt * 3);
+    for (const mat of h.mats) mat.emissive.setRGB(h.hurt * 0.6, 0, 0);
+  }
+
+  h.group.position.copy(h.pos);
+  h.group.rotation.y = h.yaw;
+  h.group.rotation.x = 0;
+
+  // Вершник у сідлі: без власної фізики й шкоди від падіння
+  player.pos.set(h.pos.x, h.pos.y + HORSE_SEAT, h.pos.z);
+  player.vel.set(0, 0, 0);
+  player.onGround = true;
+  player.fallPeakY = player.pos.y;
+
+  // Провалилися під світ (баг рельєфу) — злізти, щоб не застрягти
+  if (h.pos.y < -8) dismountHorse(false);
+}
+
+// Відновлення приручених коней зі збереження (формат [x, y, z, health])
+if (savedGame && Array.isArray(savedGame.horses)) {
+  for (const e of savedGame.horses) {
+    if (!Array.isArray(e) || e.length < 3) continue;
+    spawnAnimal('horse', e[0], e[1], e[2]);
+    const h = animals[animals.length - 1];
+    h.tamed = true;
+    if (h.saddle) h.saddle.visible = true;
+    if (Number.isFinite(e[3])) h.health = Math.max(1, Math.min(h.maxHealth, e[3]));
   }
 }
 
@@ -2906,7 +3145,8 @@ function tryAttack() {
     if (dist < bestDist) { bestDist = dist; best = e; bestIsAnimal = isAnimal; }
   };
   for (const m of mobs) consider(m, false);
-  for (const a of animals) consider(a, true);
+  // Власного коня під сідлом не вдарити (він просто під камерою вершника)
+  for (const a of animals) { if (a !== ridingHorse) consider(a, true); }
   if (!best) return false;
 
   triggerSwing();
@@ -5087,6 +5327,7 @@ function trySleep(bed) {
   sleeping = true;
   sleepT = 0;
   sleepJumped = false;
+  dismountHorse();   // спати верхи не вийде — злізти біля ліжка
   mining = false;
   cancelBowDraw();
   spawnPoint = { x: bed.x, z: bed.z };   // закріпити точку відродження біля ліжка
@@ -5510,6 +5751,9 @@ function placeBlock() {
 
   // Вовк у прицілі (ПКМ) → погодувати/приручити м'ясом або посадити прирученого
   if (animals.length > 0 && tryInteractWolf()) return;
+
+  // Кінь у прицілі (ПКМ) → погодувати/приручити їжею або сісти верхи
+  if (animals.length > 0 && tryInteractHorse()) return;
 
   // Двері в прицілі (ПКМ) → відчинити/зачинити, з будь-яким предметом у руці.
   // До raycast, бо двері не в воксельній сітці й промінь їх не бачить.
@@ -6724,6 +6968,7 @@ let lastJumpTouch = -1e9;   // подвійний тап по кнопці ст�
 bindTouchButton('btn-jump', () => {
   keys['Space'] = true;
   if (ridingBoat) { dismountBoat(); return; }   // у човні кнопка стрибка — злізти
+  if (ridingHorse) { dismountHorse(); return; } // верхи — теж злізти
   const now = performance.now();
   if (now - lastJumpTouch < 320) toggleFlight();
   lastJumpTouch = now;
@@ -6771,8 +7016,9 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
     if (!e.repeat && gameActive() && !blockMenuOpen && !achPanelOpen) {
-      // У човні Space — злізти (пріоритет над подвійним тапом польоту)
+      // У човні чи верхи Space — злізти (пріоритет над подвійним тапом польоту)
       if (ridingBoat) { dismountBoat(); return; }
+      if (ridingHorse) { dismountHorse(); return; }
       const now = performance.now();
       if (now - lastSpaceDown < 300) toggleFlight();
       lastSpaceDown = now;
@@ -7164,6 +7410,7 @@ const ACHIEVEMENTS = [
   { id: 'tame',        icon: '🐺', title: 'Вірний друг',        desc: 'Приручити вовка' },
   { id: 'fence',       icon: '🚧', title: 'Обгороджено',        desc: 'Поставити паркан чи хвіртку' },
   { id: 'grow_tree',   icon: '🌳', title: 'Лісівник',           desc: 'Виростити дерево з саджанця' },
+  { id: 'rider',       icon: '🐴', title: 'Вершник',            desc: 'Приручити коня й сісти верхи' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -7744,6 +7991,46 @@ window.MCDebug = {
   forceBite: () => { fishing.inWater = true; fishing.waitTimer = 0; return { active: fishing.active }; },
   // Змотати вудку; повертає приріст їжі (риба = +5, якщо підсічка вдалась)
   reelRod: () => { const f = player.food; reelIn(); return { foodBefore: f, foodAfter: player.food }; },
+  // ===== Коні: інспекція та тестування з консолі =====
+  get horses() {
+    return animals.filter((a) => a.type === 'horse').map((a) => ({
+      tamed: a.tamed, fed: a.fedCount,
+      health: +a.health.toFixed(1),
+      dist: +a.pos.distanceTo(player.pos).toFixed(1),
+    }));
+  },
+  get ridingHorse() { return !!ridingHorse; },
+  // Кінь просто перед гравцем (для тестів приручення та їзди)
+  spawnHorse: () => {
+    const x = Math.floor(player.pos.x) + 2, z = Math.floor(player.pos.z);
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0) return null;
+    spawnAnimal('horse', x + 0.5, gy + 1.01, z + 0.5);
+    return { x: x + 0.5, y: gy + 1.01, z: z + 0.5 };
+  },
+  // Погодувати найближчого коня тим самим шляхом, що й ПКМ (для тестів)
+  feedHorse: () => {
+    const h = nearestHorse();
+    if (!h) return null;
+    const fed = feedHorseEntity(h);
+    return { fed, tamed: h.tamed, fedCount: h.fedCount, health: +h.health.toFixed(1), food: player.food };
+  },
+  // Сісти верхи на найближчого коня / стан найближчого коня (для тестів)
+  mountHorse: () => { const h = nearestHorse(); return h ? mountHorse(h) : false; },
+  dismountHorse: () => { dismountHorse(); return !!ridingHorse; },
+  horseState: () => {
+    const h = ridingHorse || nearestHorse();
+    if (!h) return null;
+    return {
+      tamed: h.tamed, fedCount: h.fedCount, riding: h === ridingHorse,
+      health: +h.health.toFixed(1), state: h.state,
+      speed: +Math.hypot(h.vel.x, h.vel.z).toFixed(2),
+      x: +h.pos.x.toFixed(1), y: +h.pos.y.toFixed(1), z: +h.pos.z.toFixed(1),
+    };
+  },
   // ===== Човни: інспекція та тестування з консолі =====
   get boats() { return boats.length; },
   get riding() { return !!ridingBoat; },
