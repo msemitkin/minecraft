@@ -5578,7 +5578,9 @@ function nearestBoat(r = 2.8) {
 }
 
 function mountBoat(boat) {
-  if (!boat || ridingBoat) return false;
+  // Верхи на коні в човен не сісти (як і навпаки) — інакше обидва «сідла»
+  // тягли б гравця одночасно
+  if (!boat || ridingBoat || ridingHorse) return false;
   ridingBoat = boat;
   boat.vel.set(0, 0, 0);
   mining = false;
