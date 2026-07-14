@@ -89,6 +89,12 @@ const SAPLING = 39;
 // вилуплює курча — мале пташеня, що виростає в дорослу курку
 const EGG = 40;
 
+// Табличка — окремий предмет-сутність (як ліжко, не воксель): дерев'яний щит
+// на стовпчику, що ставиться ПКМ на тверду опору лицем до гравця. Відкриває
+// редактор напису; текст малюється на canvas-текстурі дошки. ПКМ по готовій
+// табличці — редагувати напис, ЛКМ — зняти.
+const SIGN = 41;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -103,6 +109,7 @@ const BLOCK_NAMES = {
   [WOOL]: 'Вовна', [FENCE]: 'Паркан', [GATE]: 'Хвіртка',
   [SAPLING]: 'Саджанець',
   [EGG]: 'Яйце',
+  [SIGN]: 'Табличка',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
@@ -110,7 +117,7 @@ const ALL_BLOCKS = [
   GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, GLASS, WOOL,
   WATER, LAVA,
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
-  BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG,
+  BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -323,6 +330,7 @@ function saveGame() {
       crops: [...crops.values()].map((c) => [c.x, c.y, c.z, c.stage, +c.growth.toFixed(2)]),
       saplings: [...saplings.values()].map((s) => [s.x, s.y, s.z, +s.growth.toFixed(2)]),
       beds: [...beds.values()].map((b) => [b.x, b.y, b.z, b.yaw]),
+      signs: [...signs.values()].map((s) => [s.x, s.y, s.z, +s.yaw.toFixed(3), s.text]),
       ladders: [...ladders.values()].map((l) => [l.x, l.y, l.z, l.dx, l.dz]),
       doors: [...doors.values()].map((d) => [d.x, d.y, d.z, d.dx, d.dz, d.open ? 1 : 0]),
       fences: [...fences.values()].map((f) => [f.x, f.y, f.z]),
@@ -3468,7 +3476,8 @@ function startBreakOrAttack() {
   }
   // Зняти смолоскип/драбину/саджанець або зібрати посів, якщо дивимось на них
   // (клітинка перед блоком)
-  if (torches.size > 0 || crops.size > 0 || ladders.size > 0 || saplings.size > 0) {
+  if (torches.size > 0 || crops.size > 0 || ladders.size > 0 || saplings.size > 0 ||
+      signs.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -3500,6 +3509,15 @@ function startBreakOrAttack() {
           { radius: 0.25, speed: 1.6, upBias: 0.8, life: 0.5, size: 0.08, gravity: 8 });
         Sound.breakBlock(LEAVES);
         removeSapling(key);
+        triggerSwing();
+        return;
+      }
+      if (signs.has(key)) {
+        spawnParticles(hit.prev[0] + 0.5, hit.prev[1] + 0.5, hit.prev[2] + 0.5,
+          blockColor(PLANK), 7,
+          { radius: 0.3, speed: 1.6, upBias: 0.6, life: 0.45, size: 0.09, gravity: 9 });
+        Sound.breakBlock(PLANK);
+        removeSign(key);
         triggerSwing();
         return;
       }
@@ -3952,6 +3970,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateTorches();  // вибух міг знести опору або клітинки смолоскипів
   validateCrops();    // ... і опору/клітинки посівів
   validateBeds();     // ... і опору/клітинки ліжок
+  validateSigns();    // ... і опору/клітинки табличок
   validateLadders();  // ... і опору/клітинки драбин
   validateDoors();    // ... і опору/клітинки дверей
   validateFences();   // ... і опору/клітинки парканів і хвірток
@@ -4089,6 +4108,7 @@ function updateFallingBlocks(dt) {
       validateTorches();  // блок міг зайняти клітинку смолоскипа/посіву/ліжка
       validateCrops();
       validateBeds();
+      validateSigns();
       validateLadders();
       validateDoors();
       validateFences();
@@ -4426,7 +4446,7 @@ function placeTorch(hit) {
   if (blockAt(x, y, z) !== AIR || torches.has(torchKey(x, y, z)) ||
       ladders.has(torchKey(x, y, z)) || doorAtCell(x, y, z) ||
       fences.has(torchKey(x, y, z)) || gates.has(torchKey(x, y, z)) ||
-      saplings.has(torchKey(x, y, z))) return false;
+      saplings.has(torchKey(x, y, z)) || signs.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -4584,7 +4604,8 @@ function placeLadder(hit) {
   if (ladders.has(ladderKey(x, y, z)) || torches.has(x + ',' + y + ',' + z) ||
       crops.has(x + ',' + y + ',' + z) || beds.has(x + ',' + y + ',' + z) ||
       doorAtCell(x, y, z) || fences.has(ladderKey(x, y, z)) ||
-      gates.has(ladderKey(x, y, z)) || saplings.has(ladderKey(x, y, z))) return false;
+      gates.has(ladderKey(x, y, z)) || saplings.has(ladderKey(x, y, z)) ||
+      signs.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -4792,7 +4813,7 @@ function placeDoor(hit) {
     const k = doorKey(x, cy, z);
     if (doorAtCell(x, cy, z) || torches.has(k) || crops.has(k) ||
         beds.has(k) || ladders.has(k) || fences.has(k) || gates.has(k) ||
-        saplings.has(k)) return false;
+        saplings.has(k) || signs.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -5056,7 +5077,7 @@ function fenceCellFree(x, y, z) {
   const k = fenceKey(x, y, z);
   return !fences.has(k) && !gates.has(k) && !doorAtCell(x, y, z) &&
          !torches.has(k) && !crops.has(k) && !beds.has(k) && !ladders.has(k) &&
-         !saplings.has(k);
+         !saplings.has(k) && !signs.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -5224,7 +5245,7 @@ function plantCrop(hit) {
   if (crops.has(cropKey(x, y, z)) || torches.has(torchKey(x, y, z)) ||
       ladders.has(cropKey(x, y, z)) || doorAtCell(x, y, z) ||
       fences.has(cropKey(x, y, z)) || gates.has(cropKey(x, y, z)) ||
-      saplings.has(cropKey(x, y, z))) return false;
+      saplings.has(cropKey(x, y, z)) || signs.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -5375,7 +5396,8 @@ function plantSapling(hit) {
   if (saplings.has(saplingKey(x, y, z)) || crops.has(cropKey(x, y, z)) ||
       torches.has(torchKey(x, y, z)) || ladders.has(saplingKey(x, y, z)) ||
       beds.has(saplingKey(x, y, z)) || doorAtCell(x, y, z) ||
-      fences.has(saplingKey(x, y, z)) || gates.has(saplingKey(x, y, z))) return false;
+      fences.has(saplingKey(x, y, z)) || gates.has(saplingKey(x, y, z)) ||
+      signs.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -5419,6 +5441,7 @@ function growSaplingTree(s) {
   validateTorches();
   validateCrops();
   validateBeds();
+  validateSigns();
   validateLadders();
   validateDoors();
   validateFences();
@@ -5520,7 +5543,8 @@ function placeBed(hit) {
   if (beds.has(bedKey(x, y, z)) || torches.has(torchKey(x, y, z)) ||
       crops.has(cropKey(x, y, z)) || ladders.has(bedKey(x, y, z)) ||
       doorAtCell(x, y, z) || fences.has(bedKey(x, y, z)) ||
-      gates.has(bedKey(x, y, z)) || saplings.has(bedKey(x, y, z))) return false;
+      gates.has(bedKey(x, y, z)) || saplings.has(bedKey(x, y, z)) ||
+      signs.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -5622,6 +5646,263 @@ if (savedGame && Array.isArray(savedGame.beds)) {
   }
 }
 
+// ============================================================
+// Таблички: дерев'яний щит на стовпчику з написом гравця
+// ============================================================
+// Табличка — сутність за патерном ліжка (не воксель): ставиться ПКМ на тверду
+// опору лицем до гравця й відкриває редактор напису (до 4 рядків); текст
+// малюється на canvas-текстурі дошки — нуль зовнішніх ассетів. ПКМ по готовій
+// табличці — редагувати, ЛКМ — зняти; спадає без опори, зберігається зі світом.
+const signs = new Map();
+const SIGN_MAX = 64;                    // межа, щоб збереження не розросталося
+const SIGN_TEXT_MAX = 64;               // максимум символів напису
+const SIGN_LINE_CHARS = 13;             // символів у рядку дошки
+const signKey = (x, y, z) => x + ',' + y + ',' + z;
+const SIGN_BOARD = 0x8a6a3d, SIGN_POST = 0x6b4a2b;
+
+// Розбити напис на ≤4 рядки по ≤13 символів: перенесення по словах,
+// задовгі слова ріжуться; явні переноси рядків шануються
+function wrapSignText(text) {
+  const lines = [];
+  for (const raw of String(text).split('\n')) {
+    let line = '';
+    for (let word of raw.split(/\s+/).filter(Boolean)) {
+      while (word.length > SIGN_LINE_CHARS) {
+        if (line) { lines.push(line); line = ''; }
+        lines.push(word.slice(0, SIGN_LINE_CHARS));
+        word = word.slice(SIGN_LINE_CHARS);
+      }
+      if (!word) continue;
+      const cand = line ? line + ' ' + word : word;
+      if (cand.length <= SIGN_LINE_CHARS) line = cand;
+      else { lines.push(line); line = word; }
+    }
+    lines.push(line);
+    if (lines.length >= 6) break;
+  }
+  while (lines.length && lines[lines.length - 1] === '') lines.pop();
+  return lines.slice(0, 4);
+}
+
+// Перемалювати напис на canvas-текстурі дошки таблички
+function renderSignTexture(s) {
+  const ctx = s.canvas.getContext('2d');
+  const W = s.canvas.width, H = s.canvas.height;
+  ctx.fillStyle = '#8a6a3d';                       // дошка
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(80, 54, 24, 0.55)';      // «шви» між дощечками
+  ctx.lineWidth = 2;
+  for (let y = H / 4; y < H; y += H / 4) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  ctx.strokeStyle = '#5d3f1e';                     // рамка
+  ctx.lineWidth = 8;
+  ctx.strokeRect(4, 4, W - 8, H - 8);
+  const lines = wrapSignText(s.text);
+  ctx.fillStyle = '#2b1c0c';
+  ctx.font = 'bold 26px system-ui, Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const y0 = H / 2 - (lines.length - 1) * 15;
+  lines.forEach((ln, i) => ctx.fillText(ln, W / 2, y0 + i * 30, W - 28));
+  s.texture.needsUpdate = true;
+}
+
+// Модель: стовпчик + дошка; напис — на лицьовій грані (+Z, обертається до гравця)
+function makeSignModel(s) {
+  const g = new THREE.Group();
+  animalBox(g, 0.1, 0.62, 0.1, SIGN_POST, 0, 0.31, 0);        // стовпчик
+  s.canvas = document.createElement('canvas');
+  s.canvas.width = 256; s.canvas.height = 128;
+  s.texture = new THREE.CanvasTexture(s.canvas);
+  const wood = new THREE.MeshLambertMaterial({ color: SIGN_BOARD });
+  const face = new THREE.MeshLambertMaterial({ map: s.texture });
+  const board = new THREE.Mesh(
+    new THREE.BoxGeometry(0.92, 0.5, 0.07),
+    [wood, wood, wood, wood, face, wood]                       // текст на грані +Z
+  );
+  board.position.set(0, 0.84, 0);
+  g.add(board);
+  return g;
+}
+
+function addSign(x, y, z, yaw = 0, text = '') {
+  const key = signKey(x, y, z);
+  if (signs.has(key) || signs.size >= SIGN_MAX) return false;
+  const s = { x, y, z, yaw, text: String(text).slice(0, SIGN_TEXT_MAX) };
+  s.group = makeSignModel(s);
+  s.group.position.set(x + 0.5, y, z + 0.5);
+  s.group.rotation.y = yaw;
+  renderSignTexture(s);
+  scene.add(s.group);
+  signs.set(key, s);
+  return true;
+}
+
+function removeSign(key) {
+  const s = signs.get(key);
+  if (!s) return;
+  scene.remove(s.group);
+  s.group.traverse((o) => {
+    if (o.isMesh) {
+      o.geometry.dispose();
+      (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.dispose());
+    }
+  });
+  s.texture.dispose();
+  signs.delete(key);
+}
+
+// Прибрати таблички, що втратили опору або клітинку яких зайняв блок
+function validateSigns() {
+  if (signs.size === 0) return;
+  for (const [key, s] of signs) {
+    const occupied = isSolid(blockAt(s.x, s.y, s.z));
+    const supported = isSolid(blockAt(s.x, s.y - 1, s.z));
+    if (occupied || !supported) {
+      spawnParticles(s.x + 0.5, s.y + 0.5, s.z + 0.5, blockColor(PLANK), 7,
+        { radius: 0.3, speed: 1.6, upBias: 0.7, life: 0.5, size: 0.09, gravity: 9 });
+      removeSign(key);
+    }
+  }
+}
+
+// Клітинка вільна для таблички (взаємовиключно з іншими сутностями)
+function signCellFree(x, y, z) {
+  const k = signKey(x, y, z);
+  return blockAt(x, y, z) === AIR && !signs.has(k) && !torches.has(k) &&
+         !crops.has(k) && !beds.has(k) && !ladders.has(k) && !doorAtCell(x, y, z) &&
+         !fences.has(k) && !gates.has(k) && !saplings.has(k);
+}
+
+// ===== Редактор напису (створюється в JS — без правок HTML) =====
+let signEditorOpen = false;
+let signEditorTarget = null;   // { pending: {x,y,z,yaw} } або { sign }
+
+const signOverlayEl = document.createElement('div');
+signOverlayEl.style.cssText =
+  'position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;' +
+  'align-items:center;justify-content:center;z-index:60';
+const signPanelEl = document.createElement('div');
+signPanelEl.style.cssText =
+  'background:#2d2417;border:2px solid #8a6a3d;border-radius:10px;padding:16px 18px;' +
+  'width:min(92vw,380px);box-shadow:0 8px 30px rgba(0,0,0,.5);' +
+  'font:14px system-ui,Arial,sans-serif;color:#e8dcc4';
+const signTitleEl = document.createElement('div');
+signTitleEl.textContent = '🪧 Табличка';
+signTitleEl.style.cssText = 'font-weight:700;font-size:17px;margin-bottom:10px';
+const signInputEl = document.createElement('textarea');
+signInputEl.maxLength = SIGN_TEXT_MAX;
+signInputEl.rows = 4;
+signInputEl.placeholder = 'Напишіть щось…';
+signInputEl.style.cssText =
+  'width:100%;box-sizing:border-box;resize:none;background:#8a6a3d;color:#2b1c0c;' +
+  'font:600 16px ui-monospace,Consolas,monospace;border:2px solid #5d3f1e;' +
+  'border-radius:6px;padding:8px;outline:none';
+const signHintEl = document.createElement('div');
+signHintEl.textContent = 'Enter — зберегти • Esc — скасувати';
+signHintEl.style.cssText = 'opacity:.7;margin:8px 0 10px';
+const signBtnRow = document.createElement('div');
+signBtnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end';
+const signSaveBtn = document.createElement('button');
+signSaveBtn.textContent = 'Зберегти';
+const signCancelBtn = document.createElement('button');
+signCancelBtn.textContent = 'Скасувати';
+for (const b of [signSaveBtn, signCancelBtn]) {
+  b.style.cssText =
+    'font:600 14px system-ui,Arial,sans-serif;padding:7px 14px;border-radius:6px;' +
+    'border:1px solid #8a6a3d;background:#4a3a22;color:#e8dcc4;cursor:pointer';
+}
+signBtnRow.append(signCancelBtn, signSaveBtn);
+signPanelEl.append(signTitleEl, signInputEl, signHintEl, signBtnRow);
+signOverlayEl.appendChild(signPanelEl);
+document.body.appendChild(signOverlayEl);
+
+function openSignEditor(pending, sign) {
+  if (signEditorOpen) return;
+  signEditorOpen = true;
+  signEditorTarget = { pending, sign };
+  signInputEl.value = sign ? sign.text : '';
+  signOverlayEl.style.display = 'flex';
+  mining = false;
+  cancelBowDraw();
+  for (const k of Object.keys(keys)) keys[k] = false;   // не «залипати» рухом
+  if (isLocked()) document.exitPointerLock();           // звільнити курсор для вводу
+  setTimeout(() => signInputEl.focus(), 0);
+}
+
+function closeSignEditor(save) {
+  if (!signEditorOpen) return;
+  const { pending, sign } = signEditorTarget || {};
+  signEditorOpen = false;
+  signEditorTarget = null;
+  signOverlayEl.style.display = 'none';
+  signInputEl.blur();
+  if (save) {
+    const text = signInputEl.value.slice(0, SIGN_TEXT_MAX);
+    if (sign) {
+      sign.text = text;
+      renderSignTexture(sign);
+      Sound.place(PLANK);
+      unlockAch('sign');
+      saveGame();
+    } else if (pending && signCellFree(pending.x, pending.y, pending.z) &&
+               isSolid(blockAt(pending.x, pending.y - 1, pending.z))) {
+      // Світ міг змінитися, поки писали, — клітинку перевіряємо ще раз
+      if (addSign(pending.x, pending.y, pending.z, pending.yaw, text)) {
+        Sound.place(PLANK);
+        spawnParticles(pending.x + 0.5, pending.y + 0.4, pending.z + 0.5,
+          blockColor(PLANK), 6,
+          { radius: 0.35, speed: 1.4, upBias: 0.4, life: 0.4, size: 0.09, gravity: 9 });
+        unlockAch('sign');
+        saveGame();
+      }
+    }
+  }
+  // На десктопі повернутися в гру, перехопивши курсор (як block menu)
+  if (!IS_TOUCH && !mobilePlaying && renderer.domElement.requestPointerLock) {
+    renderer.domElement.requestPointerLock();
+  }
+}
+
+signInputEl.addEventListener('keydown', (e) => {
+  e.stopPropagation();                                   // не пускати клавіші в гру
+  if (e.code === 'Enter' && !e.shiftKey) { e.preventDefault(); closeSignEditor(true); }
+  if (e.code === 'Escape') closeSignEditor(false);
+});
+signSaveBtn.addEventListener('click', () => closeSignEditor(true));
+signCancelBtn.addEventListener('click', () => closeSignEditor(false));
+signOverlayEl.addEventListener('pointerdown', (e) => {
+  if (e.target === signOverlayEl) closeSignEditor(false); // клік повз панель — скасувати
+});
+
+// Поставити табличку в клітинку перед прицілом (hit.prev): перевірити місце
+// й відкрити редактор — сама сутність з'явиться після збереження напису
+function placeSign(hit) {
+  const [x, y, z] = hit.prev;
+  if (!signCellFree(x, y, z)) return false;
+  if (!isSolid(blockAt(x, y - 1, z))) return false;      // потрібна тверда опора
+  // Не ставити табличку всередину гравця
+  const p = player.pos;
+  if (x + 1 > p.x - PLAYER_W && x < p.x + PLAYER_W &&
+      y + 1 > p.y && y < p.y + PLAYER_H &&
+      z + 1 > p.z - PLAYER_W && z < p.z + PLAYER_W) return false;
+  // Лицем до гравця, у кроці 45° (як компроміс між ліжком і вільним кутом)
+  const yaw = Math.round(player.yaw / (Math.PI / 4)) * (Math.PI / 4);
+  openSignEditor({ x, y, z, yaw }, null);
+  return true;
+}
+
+// Відновити збережені таблички (формат: [x, y, z, yaw, text])
+if (savedGame && Array.isArray(savedGame.signs)) {
+  for (const e of savedGame.signs) {
+    if (Array.isArray(e) && e.length >= 3 && e.slice(0, 3).every(Number.isFinite)) {
+      addSign(e[0], e[1], e[2], Number.isFinite(e[3]) ? e[3] : 0,
+        typeof e[4] === 'string' ? e[4] : '');
+    }
+  }
+}
+
 // ===== Поетапний видобуток =====
 let mining = false;                       // утримується кнопка руйнування
 const miningState = { key: null, progress: 0 };
@@ -5676,6 +5957,7 @@ function updateMining(dt, hit) {
     validateTorches();  // міг зникнути блок-опора смолоскипа
     validateCrops();    // ... або грунт під посівом
     validateBeds();     // ... або опора під ліжком
+    validateSigns();    // ... або опора під табличкою
     validateLadders();  // ... або стіна-опора драбини
     validateDoors();    // ... або опора під дверима
     validateFences();   // ... або опора під парканом/хвірткою
@@ -6023,6 +6305,12 @@ function placeBlock() {
   const hit = raycastBlock();
   if (!hit || !hit.prev) return;
 
+  // Табличка в прицілі (ПКМ) → редагувати напис, з будь-яким предметом у руці
+  if (signs.size > 0) {
+    const sk = signKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    if (signs.has(sk)) { openSignEditor(null, signs.get(sk)); return; }
+  }
+
   // Сон має пріоритет: дивимось на ліжко (ПКМ) → лягти спати (з будь-яким предметом)
   if (beds.size > 0) {
     const bk = bedKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -6083,6 +6371,12 @@ function placeBlock() {
     return;
   }
 
+  // Табличка — сутність із написом: ставиться на тверду опору й відкриває редактор
+  if (id === SIGN) {
+    placeSign(hit);
+    return;
+  }
+
   const [x, y, z] = hit.prev;
   const target = blockAt(x, y, z);
   if (target !== AIR && !isFluid(target)) return;   // можна ставити в повітря, воду чи лаву
@@ -6104,6 +6398,7 @@ function placeBlock() {
   validateTorches();  // блок міг зайняти клітинку смолоскипа
   validateCrops();    // ... або клітинку посіву
   validateBeds();     // ... або клітинку ліжка
+  validateSigns();    // ... або клітинку таблички
   validateLadders();  // ... або клітинку драбини
   validateDoors();    // ... або клітинку дверей
   validateFences();   // ... або клітинку паркана/хвіртки
@@ -6993,6 +7288,22 @@ function drawBlockIcon(canvas, id) {
     drawEggIcon(canvas);
     return;
   }
+  if (id === SIGN) {
+    // Процедурна іконка таблички: стовпчик + дошка з «рядками» напису
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#6b4a2b';
+    ctx.fillRect(7, 9, 2, 6);                     // стовпчик
+    ctx.fillStyle = '#8a6a3d';
+    ctx.fillRect(2, 2, 12, 7);                    // дошка
+    ctx.strokeStyle = '#5d3f1e';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(2.5, 2.5, 11, 6);
+    ctx.fillStyle = '#3a2a14';
+    ctx.fillRect(4, 4, 8, 1);                     // «рядки» напису
+    ctx.fillRect(4, 6, 6, 1);
+    return;
+  }
   const tile = BLOCK_TILES[id].side;
   canvas.getContext('2d').drawImage(
     atlasCanvas,
@@ -7168,7 +7479,8 @@ document.addEventListener('pointerlockchange', () => {
     overlay.style.display = 'none';
     hud.hidden = false;
     touchControls.hidden = true;
-  } else if (!mobilePlaying && !blockMenuOpen && !achPanelOpen && !player.dead) {
+  } else if (!mobilePlaying && !blockMenuOpen && !achPanelOpen && !signEditorOpen &&
+             !player.dead) {
     mining = false;
     cancelBowDraw();
     overlay.style.display = 'flex';
@@ -7310,6 +7622,11 @@ document.addEventListener('contextmenu', (e) => e.preventDefault());
 
 let lastSpaceDown = -1e9;   // час останнього натискання Space (для подвійного тапа → політ)
 document.addEventListener('keydown', (e) => {
+  // Пишемо табличку: клавіші належать редактору, не грі
+  if (signEditorOpen) {
+    if (e.code === 'Escape') closeSignEditor(false);
+    return;
+  }
   keys[e.code] = true;
   if (e.code === 'Space') {
     e.preventDefault();
@@ -7712,6 +8029,7 @@ const ACHIEVEMENTS = [
   { id: 'rider',       icon: '🐴', title: 'Вершник',            desc: 'Приручити коня й сісти верхи' },
   { id: 'egg',         icon: '🥚', title: 'Курочка ряба',       desc: 'Підібрати свіже яйце' },
   { id: 'hatch',       icon: '🐣', title: 'Нове життя',         desc: 'Вилупити курча з кинутого яйця' },
+  { id: 'sign',        icon: '🪧', title: 'Літописець',         desc: 'Написати табличку' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -8164,6 +8482,36 @@ window.MCDebug = {
       }
     }
     return beds.size;
+  },
+  // Таблички: керування з консолі для тестів
+  giveSign: () => { assignBlockToSlot(SIGN); return BLOCK_NAMES[SIGN]; },
+  // Поставити табличку з текстом поряд із гравцем, без редактора (для тестів)
+  placeSignNear: (text = 'Тест', dx = 2, dz = 0) => {
+    const x = Math.floor(player.pos.x) + dx, z = Math.floor(player.pos.z) + dz;
+    for (let y = Math.ceil(player.pos.y) + 2; y > Math.floor(player.pos.y) - 4; y--) {
+      if (isSolid(blockAt(x, y - 1, z)) && signCellFree(x, y, z)) {
+        return addSign(x, y, z, 0, text) ? { x, y, z, text: String(text) } : null;
+      }
+    }
+    return null;
+  },
+  // Редактор напису: відкрити для найближчої таблички / підтвердити з текстом
+  editNearestSign: () => {
+    const s = [...signs.values()][0];
+    if (!s) return false;
+    openSignEditor(null, s);
+    return true;
+  },
+  confirmSignEditor: (text) => {
+    if (!signEditorOpen) return false;
+    if (typeof text === 'string') signInputEl.value = text;
+    closeSignEditor(true);
+    return true;
+  },
+  cancelSignEditor: () => { closeSignEditor(false); return signEditorOpen; },
+  get signEditorOpen() { return signEditorOpen; },
+  get signs() {
+    return [...signs.values()].map((s) => ({ x: s.x, y: s.y, z: s.z, yaw: s.yaw, text: s.text }));
   },
   // Лягти спати в найближче ліжко (повертає true, якщо сон почався)
   sleep: () => trySleep([...beds.values()][0]),
