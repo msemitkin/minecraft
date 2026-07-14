@@ -84,6 +84,11 @@ const FENCE = 37, GATE = 38;
 // (стовбур з колод + крона з листя) — відновлюваний ліс.
 const SAPLING = 39;
 
+// Яйце — метальний предмет (як лук, не воксель): кури несуть яйця, які
+// підбираються в торбу; ПКМ кидає яйце дугою, і воно, розбившись, інколи
+// вилуплює курча — мале пташеня, що виростає в дорослу курку
+const EGG = 40;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -97,6 +102,7 @@ const BLOCK_NAMES = {
   [BOAT]: 'Човен', [LADDER]: 'Драбина', [GLASS]: 'Скло', [DOOR]: 'Двері',
   [WOOL]: 'Вовна', [FENCE]: 'Паркан', [GATE]: 'Хвіртка',
   [SAPLING]: 'Саджанець',
+  [EGG]: 'Яйце',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
@@ -104,7 +110,7 @@ const ALL_BLOCKS = [
   GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, GLASS, WOOL,
   WATER, LAVA,
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
-  BUCKET, BOAT, LADDER, DOOR, FENCE, GATE,
+  BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -308,6 +314,7 @@ function saveGame() {
         health: player.health,
         hunger: player.hunger,
         food: player.food,
+        eggs: player.eggs,
         flying: player.flying,
       },
       timeOfDay,
@@ -545,6 +552,39 @@ const Sound = (() => {
         if (!enabled) return;
         tone({ freq: 700, dur: 0.26, type: 'sawtooth', gain: 0.06, slideTo: 320, attack: 0.03 });
       }, 120);
+    },
+    // Курка кудкудаче, знісши яйце: два «кудах» і вищий переможний третій
+    cluck() {
+      tone({ freq: 620, dur: 0.08, type: 'square', gain: 0.07, slideTo: 470 });
+      setTimeout(() => {
+        if (!enabled) return;
+        tone({ freq: 660, dur: 0.08, type: 'square', gain: 0.07, slideTo: 500 });
+      }, 100);
+      setTimeout(() => {
+        if (!enabled) return;
+        tone({ freq: 920, dur: 0.14, type: 'square', gain: 0.08, slideTo: 620 });
+      }, 210);
+    },
+    // Писк курчати: два короткі високі «пі-пі»
+    peep() {
+      tone({ freq: 1500, dur: 0.07, type: 'sine', gain: 0.07, slideTo: 1780 });
+      setTimeout(() => {
+        if (!enabled) return;
+        tone({ freq: 1620, dur: 0.06, type: 'sine', gain: 0.055, slideTo: 1400 });
+      }, 90);
+    },
+    // Підняте яйце: короткий м'який висхідний «поп»
+    eggPop() { tone({ freq: 520, dur: 0.08, type: 'triangle', gain: 0.11, slideTo: 940 }); },
+    // Кидок яйця: легкий свист долоні
+    eggThrow() {
+      noise({ dur: 0.12, gain: 0.06, type: 'highpass', freq: 1800, q: 0.5 });
+      tone({ freq: 700, dur: 0.08, type: 'triangle', gain: 0.04, slideTo: 420 });
+    },
+    // Яйце розбивається: хрускіт шкаралупи + вологий «ляп»
+    eggCrack() {
+      noise({ dur: 0.09, gain: 0.17, type: 'highpass', freq: 2100, q: 0.7 });
+      tone({ freq: 420, dur: 0.09, type: 'square', gain: 0.05, slideTo: 210 });
+      noise({ dur: 0.08, gain: 0.08, type: 'bandpass', freq: 620, q: 0.9 });
     },
     // Вовче скавуління-подяка при годуванні: висхідний м'який тон
     whine() {
@@ -1553,6 +1593,7 @@ const MAX_HEALTH = 20;          // 10 сердець (по 2 одиниці ко
 const MAX_AIR = 11;             // запас повітря в секундах (10 бульбашок)
 const MAX_HUNGER = 20;          // 10 «ніжок» (по 2 одиниці кожна)
 const FOOD_MAX = 64;            // максимум сирого м'яса в торбі
+const EGG_MAX = 64;             // максимум курячих яєць у торбі
 const EAT_AMOUNT = 6;           // скільки голоду відновлює одна порція (3 ніжки)
 const EAT_COOLDOWN = 0.9;       // пауза між поїданнями, с
 const HUNGER_PER_EXHAUSTION = 4; // одиниць виснаження на 1 одиницю голоду
@@ -1578,6 +1619,7 @@ const player = {
   hunger: MAX_HUNGER,   // голод: спадає від активності
   exhaustion: 0,        // накопичене виснаження; на порозі знімає 1 голод
   food: 0,              // зібране сире м'ясо (їжа)
+  eggs: 0,              // зібрані курячі яйця (боєзапас для кидання)
   starveTick: 0,        // таймер шкоди від голоду
   eatTimer: 0,          // перезарядка поїдання
   dead: false,
@@ -1614,6 +1656,9 @@ if (savedGame && savedGame.player) {
   }
   if (Number.isFinite(p.food)) {
     player.food = THREE.MathUtils.clamp(Math.floor(p.food), 0, FOOD_MAX);
+  }
+  if (Number.isFinite(p.eggs)) {
+    player.eggs = THREE.MathUtils.clamp(Math.floor(p.eggs), 0, EGG_MAX);
   }
   player.flying = !!p.flying;
 }
@@ -1992,6 +2037,12 @@ function eatFood() {
 // ============================================================
 const ANIMAL_MAX = 12;
 const ANIMAL_DESPAWN_DIST = 80;
+// Кури та яйця: пауза між кладками (EGG_LAY_MIN + випадкові EGG_LAY_VAR секунд),
+// масштаб і час росту пташеняти, вилупленого з кинутого яйця
+const EGG_LAY_MIN = 25;
+const EGG_LAY_VAR = 25;
+const CHICK_SCALE = 0.45;
+const CHICK_GROW_TIME = 60;
 const animals = [];
 
 function animalBox(parent, w, h, d, color, x, y, z) {
@@ -2167,7 +2218,7 @@ const ANIMAL_TYPES = {
 // Час відростання вовни після стрижки, с
 const WOOL_REGROW_TIME = 60;
 
-function spawnAnimal(type, x, y, z) {
+function spawnAnimal(type, x, y, z, opts = {}) {
   const def = ANIMAL_TYPES[type];
   const group = new THREE.Group();
   const legs = def.build(group);
@@ -2177,21 +2228,28 @@ function spawnAnimal(type, x, y, z) {
   scene.add(group);
   const mats = [];
   group.traverse((o) => { if (o.isMesh) mats.push(o.material); });
+  // Пташеня (вилуплене з яйця): зменшена модель, що поступово виростає
+  const baby = !!opts.baby;
+  if (baby) group.scale.setScalar(CHICK_SCALE);
   animals.push({
     type, group, legs, mats,
     pos: new THREE.Vector3(x, y, z),
     vel: new THREE.Vector3(),
     yaw: Math.random() * Math.PI * 2,
     targetYaw: 0,
-    halfW: def.halfW,
-    height: def.height,
+    halfW: def.halfW * (baby ? CHICK_SCALE : 1),
+    height: def.height * (baby ? CHICK_SCALE : 1),
     speed: def.speed,
     state: 'idle',
     stateTimer: Math.random() * 2,
     legPhase: 0,
     onGround: false,
     health: def.hp,
-    foodValue: def.food,
+    foodValue: baby ? 1 : def.food,
+    baby,
+    growth: 0,     // накопичений час росту пташеняти
+    // Кури несуть яйця: таймер до наступної кладки (лише дорослі)
+    eggTimer: EGG_LAY_MIN + Math.random() * EGG_LAY_VAR,
     hurt: 0,       // спалах при ударі (0..1)
     panic: 0,      // тікає від гравця після удару
     // Вовна (лише вівці): меші руна, стан «нестрижена», таймер відростання
@@ -2347,6 +2405,31 @@ function updateAnimal(a, dt) {
     if (a.woolTimer <= 0) {
       a.wool = true;
       for (const m of a.woolMeshes) m.visible = true;
+    }
+  }
+
+  // Пташеня росте: модель і габарити плавно збільшуються до дорослих
+  if (a.baby) {
+    a.growth += dt;
+    const def = ANIMAL_TYPES[a.type];
+    const k = Math.min(1, CHICK_SCALE + (1 - CHICK_SCALE) * (a.growth / CHICK_GROW_TIME));
+    a.group.scale.setScalar(k);
+    a.halfW = def.halfW * k;
+    a.height = def.height * k;
+    if (a.growth >= CHICK_GROW_TIME) {
+      a.baby = false;
+      a.foodValue = def.food;
+    } else if (Math.random() < dt * 0.12) {
+      Sound.peep();   // зрідка попискує, поки мале
+    }
+  }
+
+  // Доросла курка час від часу несе яйце (не в паніці, стоячи на землі)
+  if (a.type === 'chicken' && !a.baby) {
+    a.eggTimer -= dt;
+    if (a.eggTimer <= 0 && a.onGround && a.panic <= 0) {
+      a.eggTimer = EGG_LAY_MIN + Math.random() * EGG_LAY_VAR;
+      layEgg(a);
     }
   }
 
@@ -2737,6 +2820,170 @@ if (savedGame && Array.isArray(savedGame.horses)) {
     h.tamed = true;
     if (h.saddle) h.saddle.visible = true;
     if (Number.isFinite(e[3])) h.health = Math.max(1, Math.min(h.maxHealth, e[3]));
+  }
+}
+
+// ============================================================
+// Кури несуть яйця: кладка, підбирання в торбу, кидання та вилуплення курчат
+// ============================================================
+// Доросла курка час від часу несе яйце — маленьку сутність на землі, яку
+// гравець підбирає, підійшовши впритул (лічильник 🥚 поряд із торбою їжі).
+// Предмет «Яйце» (Tab) кидається ПКМ дугою, як снаряд: розбивається об блок
+// чи істоту (нечисть дістає легкий відкид), а з уламків інколи (1 із 3)
+// вилуплюється курча, що виростає в дорослу курку. Загін із курей за
+// парканом — постійна яєчна ферма.
+const EGG_DESPAWN = 120;         // секунд, поки непідібране яйце зникне
+const EGG_PICKUP_R = 1.25;       // радіус підбирання яйця, бл
+const EGG_THROW_SPEED = 18;      // початкова швидкість кинутого яйця, бл/с
+const EGG_GRAVITY = 20;          // прискорення падіння яйця, бл/с²
+const EGG_FLY_LIFE = 8;          // секунд польоту до зникнення (у прірву)
+const EGG_HIT_R = 0.4;           // радіус влучання яйця в істоту
+const EGG_HATCH_CHANCE = 1 / 3;  // шанс, що з розбитого яйця вилупиться курча
+const EGG_SHELL_COLOR = new THREE.Color(0xf6eedd);
+const EGG_YOLK_COLOR = new THREE.Color(0xe8b83a);
+
+// Спільні ресурси моделі яйця (одна геометрія/матеріал на всі яйця)
+const EGG_GEO = new THREE.SphereGeometry(0.11, 8, 6);
+EGG_GEO.scale(1, 1.25, 1);
+const EGG_MAT = new THREE.MeshLambertMaterial({ color: 0xf6eedd });
+
+const groundEggs = [];           // знесені яйця, що лежать на землі
+const thrownEggs = [];           // кинуті яйця в польоті
+
+// Курка знесла яйце: кудкудакання, пір'яна хмарка й сутність-яйце на землі
+function layEgg(a) {
+  const mesh = new THREE.Mesh(EGG_GEO, EGG_MAT);
+  mesh.position.set(a.pos.x, a.pos.y + 0.12, a.pos.z);
+  scene.add(mesh);
+  groundEggs.push({ mesh, x: a.pos.x, y: a.pos.y, z: a.pos.z, life: 0, bob: Math.random() * Math.PI * 2 });
+  spawnParticles(a.pos.x, a.pos.y + 0.3, a.pos.z, EGG_SHELL_COLOR, 5,
+    { radius: 0.2, speed: 1.2, upBias: 1, life: 0.5, size: 0.08, gravity: -4 });
+  Sound.cluck();
+}
+
+function removeGroundEgg(i) {
+  scene.remove(groundEggs[i].mesh);   // спільна геометрія — не чіпаємо
+  groundEggs.splice(i, 1);
+}
+
+// Яйця на землі: погойдуються, підбираються гравцем упритул, зникають з часом
+function updateGroundEggs(dt) {
+  for (let i = groundEggs.length - 1; i >= 0; i--) {
+    const e = groundEggs[i];
+    e.life += dt;
+    e.bob += dt * 3;
+    e.mesh.position.y = e.y + 0.14 + Math.sin(e.bob) * 0.03;
+    e.mesh.rotation.y += dt * 1.2;
+    if (e.life > EGG_DESPAWN) { removeGroundEgg(i); continue; }
+    // Підбирання: гравець поряд і торба не переповнена
+    if (player.dead || player.eggs >= EGG_MAX) continue;
+    const dx = e.x - player.pos.x, dz = e.z - player.pos.z;
+    const dy = e.y - player.pos.y;
+    if (dx * dx + dz * dz <= EGG_PICKUP_R * EGG_PICKUP_R && dy > -1.6 && dy < 2) {
+      player.eggs = Math.min(EGG_MAX, player.eggs + 1);
+      updateEggHud();
+      spawnParticles(e.x, e.y + 0.2, e.z, EGG_SHELL_COLOR, 4,
+        { radius: 0.15, speed: 1, upBias: 1.2, life: 0.4, size: 0.07, gravity: -5 });
+      Sound.eggPop();
+      unlockAch('egg');
+      removeGroundEgg(i);
+    }
+  }
+}
+
+// Кинути яйце (ПКМ із яйцем у руці): дугою вперед; без яєць у торбі — підказка
+function throwEgg() {
+  if (player.eggs <= 0) {
+    flashItemName('Немає яєць — їх несуть кури');
+    return;
+  }
+  player.eggs--;
+  updateEggHud();
+  camera.getWorldDirection(_arrowDir);
+  const mesh = new THREE.Mesh(EGG_GEO, EGG_MAT);
+  const e = {
+    mesh,
+    pos: new THREE.Vector3(
+      camera.position.x + _arrowDir.x * 0.5,
+      camera.position.y + _arrowDir.y * 0.5 - 0.1,
+      camera.position.z + _arrowDir.z * 0.5
+    ),
+    vel: _arrowDir.clone().multiplyScalar(EGG_THROW_SPEED),
+    life: 0,
+  };
+  // Легкий підкид угору — кидок долонею, а не постріл
+  e.vel.y += 2.5;
+  mesh.position.copy(e.pos);
+  scene.add(mesh);
+  thrownEggs.push(e);
+  Sound.eggThrow();
+  triggerSwing();
+}
+
+// Розбити яйце: бризки шкаралупи з жовтком і, як пощастить, курча
+function crackEgg(e) {
+  spawnParticles(e.pos.x, e.pos.y, e.pos.z, EGG_SHELL_COLOR, 6,
+    { radius: 0.2, speed: 2, upBias: 0.8, life: 0.5, size: 0.08, gravity: 6 });
+  spawnParticles(e.pos.x, e.pos.y, e.pos.z, EGG_YOLK_COLOR, 4,
+    { radius: 0.15, speed: 1.4, upBias: 0.8, life: 0.45, size: 0.09, gravity: 8 });
+  Sound.eggCrack();
+  if (Math.random() < EGG_HATCH_CHANCE) {
+    spawnAnimal('chicken', e.pos.x, e.pos.y + 0.1, e.pos.z, { baby: true });
+    Sound.peep();
+    unlockAch('hatch');
+  }
+}
+
+// Влучання кинутого яйця в істоту: нечисть дістає легкий відкид і 1 шкоди,
+// тварин яйце не ранить (щоб не калічити власних курей у загоні)
+function eggHitEntity(e) {
+  const check = (m) => {
+    const dy = e.pos.y - (m.pos.y + m.height * 0.5);
+    if (Math.abs(dy) > m.height * 0.5 + EGG_HIT_R) return false;
+    const dx = e.pos.x - m.pos.x, dz = e.pos.z - m.pos.z;
+    const r = EGG_HIT_R + m.halfW;
+    return dx * dx + dz * dz <= r * r;
+  };
+  for (const m of mobs) {
+    if (check(m)) { damageEntity(m, false, 1, e.vel.x, e.vel.z, 2); return true; }
+  }
+  for (const an of animals) {
+    if (check(an)) return true;   // розбивається, але не ранить
+  }
+  return false;
+}
+
+function updateThrownEggs(dt) {
+  for (let i = thrownEggs.length - 1; i >= 0; i--) {
+    const e = thrownEggs[i];
+    e.life += dt;
+    e.vel.y -= EGG_GRAVITY * dt;
+    // Дрібні підкроки, щоб швидке яйце не «пролітало» блок чи істоту
+    const steps = Math.max(1, Math.ceil(e.vel.length() * dt / 0.3));
+    let broke = false;
+    for (let s = 0; s < steps; s++) {
+      e.pos.x += e.vel.x * dt / steps;
+      e.pos.y += e.vel.y * dt / steps;
+      e.pos.z += e.vel.z * dt / steps;
+      if (eggHitEntity(e)) { broke = true; break; }
+      const cx = Math.floor(e.pos.x), cy = Math.floor(e.pos.y), cz = Math.floor(e.pos.z);
+      const bid = blockAt(cx, cy, cz);
+      if (isSolid(bid) || doorBlocksCell(cx, cy, cz) || fenceSolidAtCell(cx, cy, cz)) {
+        broke = true;
+        break;
+      }
+    }
+    if (broke) {
+      crackEgg(e);
+      scene.remove(e.mesh);
+      thrownEggs.splice(i, 1);
+    } else if (e.pos.y < -20 || e.life > EGG_FLY_LIFE) {
+      scene.remove(e.mesh);
+      thrownEggs.splice(i, 1);
+    } else {
+      e.mesh.position.copy(e.pos);
+      e.mesh.rotation.x += dt * 9;
+    }
   }
 }
 
@@ -5770,6 +6017,9 @@ function placeBlock() {
     if (fg && fg.gate) { toggleGate(fg.gate); return; }
   }
 
+  // Яйце в руці — кинути дугою (до raycast: кидок у небо теж має відбутись)
+  if (hotbar[selectedSlot] === EGG) { throwEgg(); return; }
+
   const hit = raycastBlock();
   if (!hit || !hit.prev) return;
 
@@ -6315,12 +6565,22 @@ const itemNameEl = document.getElementById('item-name');
 const debugEl = document.getElementById('debug');
 let itemNameTimer = null;
 
+// Коротка підказка над хотбаром (той самий рядок, що й назва предмета)
+function flashItemName(text) {
+  itemNameEl.textContent = text;
+  itemNameEl.style.opacity = 1;
+  clearTimeout(itemNameTimer);
+  itemNameTimer = setTimeout(() => { itemNameEl.style.opacity = 0; }, 1200);
+}
+
 // ===== Здоров'я та повітря (HUD виживання) =====
 const healthEl = document.getElementById('health');
 const airEl = document.getElementById('air');
 const hungerEl = document.getElementById('hunger');
 const foodBadgeEl = document.getElementById('food-badge');
 const foodCountEl = document.getElementById('food-count');
+const eggBadgeEl = document.getElementById('egg-badge');
+const eggCountEl = document.getElementById('egg-count');
 const vignetteEl = document.getElementById('damage-vignette');
 const fireVignetteEl = document.getElementById('fire-vignette');
 const deathOverlay = document.getElementById('death-overlay');
@@ -6417,15 +6677,18 @@ function buildSurvivalHud() {
     hungerEl.appendChild(d);
     hungerCanvases.push(d);
   }
-  // Іконка бейджа їжі малюється один раз (більший масштаб через CSS)
+  // Іконки бейджів їжі та яєць малюються один раз (більший масштаб через CSS)
   const foodIcon = document.getElementById('food-icon');
   if (foodIcon) drawDrumstick(foodIcon, 'full');
+  const eggIcon = document.getElementById('egg-icon');
+  if (eggIcon) drawEggIcon(eggIcon);
 }
 
 let lastHealthDrawn = -1;
 let lastAirDrawn = -1;
 let lastHungerDrawn = -1;
 let lastFoodDrawn = -1;
+let lastEggsDrawn = -1;
 
 // Лічильник зібраного м'яса (бейдж 🍖)
 function updateFoodHud() {
@@ -6433,6 +6696,35 @@ function updateFoodHud() {
   lastFoodDrawn = player.food;
   foodCountEl.textContent = player.food;
   foodBadgeEl.hidden = player.food <= 0;
+}
+
+// Лічильник зібраних яєць (бейдж 🥚 над торбою їжі)
+function updateEggHud() {
+  if (player.eggs === lastEggsDrawn) return;
+  lastEggsDrawn = player.eggs;
+  eggCountEl.textContent = player.eggs;
+  eggBadgeEl.hidden = player.eggs <= 0;
+}
+
+// Піксельна іконка яйця (бейдж і слот хотбара, без атласу)
+function drawEggIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#f6eedd';                          // шкаралупа
+  ctx.beginPath();
+  ctx.ellipse(8, 9, 4.2, 5.4, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#fdfaf2';                          // відблиск
+  ctx.beginPath();
+  ctx.ellipse(6.6, 6.8, 1.4, 2, -0.4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#c9bda1';                        // тінь-контур
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.ellipse(8, 9, 4.2, 5.4, 0, 0, Math.PI * 2);
+  ctx.stroke();
 }
 
 function updateSurvivalHud() {
@@ -6695,6 +6987,10 @@ function drawBlockIcon(canvas, id) {
     ctx.beginPath();
     ctx.moveTo(1, 14); ctx.quadraticCurveTo(4, 12, 8, 14);
     ctx.quadraticCurveTo(12, 16, 15, 14); ctx.stroke();
+    return;
+  }
+  if (id === EGG) {
+    drawEggIcon(canvas);
     return;
   }
   const tile = BLOCK_TILES[id].side;
@@ -7104,6 +7400,7 @@ buildBlockMenu();
 buildSurvivalHud();
 updateSurvivalHud();
 updateFoodHud();
+updateEggHud();
 document.getElementById('respawn-btn').addEventListener('click', respawn);
 
 // ===== Вимикач звуку =====
@@ -7413,6 +7710,8 @@ const ACHIEVEMENTS = [
   { id: 'fence',       icon: '🚧', title: 'Обгороджено',        desc: 'Поставити паркан чи хвіртку' },
   { id: 'grow_tree',   icon: '🌳', title: 'Лісівник',           desc: 'Виростити дерево з саджанця' },
   { id: 'rider',       icon: '🐴', title: 'Вершник',            desc: 'Приручити коня й сісти верхи' },
+  { id: 'egg',         icon: '🥚', title: 'Курочка ряба',       desc: 'Підібрати свіже яйце' },
+  { id: 'hatch',       icon: '🐣', title: 'Нове життя',         desc: 'Вилупити курча з кинутого яйця' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -8067,6 +8366,40 @@ window.MCDebug = {
   // Дозволяє тестам натискати/відпускати клавіші руху (напр. 'KeyW')
   press: (code) => { keys[code] = true; return code; },
   release: (code) => { keys[code] = false; return code; },
+  // Кури та яйця (ручне тестування яєчної ферми з консолі)
+  spawnChicken: (baby = false) => {
+    const x = player.pos.x + 2, z = player.pos.z;
+    spawnAnimal('chicken', x, player.pos.y + 0.5, z, { baby });
+    return animals[animals.length - 1];
+  },
+  layEgg: () => {
+    let c = null, best = Infinity;
+    for (const a of animals) {
+      if (a.type !== 'chicken' || a.baby) continue;
+      const d = a.pos.distanceTo(player.pos);
+      if (d < best) { best = d; c = a; }
+    }
+    if (!c) return null;
+    layEgg(c);
+    const e = groundEggs[groundEggs.length - 1];
+    return { x: e.x, y: e.y, z: e.z, ground: groundEggs.length };
+  },
+  giveEggs: (n = 8) => {
+    player.eggs = Math.min(EGG_MAX, player.eggs + n);
+    updateEggHud();
+    return player.eggs;
+  },
+  giveEgg: () => { assignBlockToSlot(EGG); return BLOCK_NAMES[EGG]; },
+  throwEgg: () => { throwEgg(); return { bag: player.eggs, flying: thrownEggs.length }; },
+  get eggState() {
+    return {
+      bag: player.eggs,
+      ground: groundEggs.length,
+      flying: thrownEggs.length,
+      chickens: animals.filter((a) => a.type === 'chicken' && !a.baby).length,
+      chicks: animals.filter((a) => a.baby).length,
+    };
+  },
 };
 
 const clock = new THREE.Clock();
@@ -8094,6 +8427,8 @@ function animate() {
     updateGates(dt);
     if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
     updateArrows(dt);
+    updateGroundEggs(dt);
+    updateThrownEggs(dt);
     updateFallingBlocks(dt);
     updateBoats(dt);
     updateFishing(dt);
