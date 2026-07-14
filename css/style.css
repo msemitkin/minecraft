@@ -273,8 +273,9 @@ kbd {
   flex-direction: row-reverse;
 }
 
-/* ===== Їжа (лічильник сирого м'яса) ===== */
-#food-badge {
+/* ===== Їжа та яйця (лічильники торби) ===== */
+#food-badge,
+#egg-badge {
   position: fixed;
   right: 16px;
   bottom: 90px;
@@ -288,14 +289,27 @@ kbd {
   z-index: 5;
 }
 
-#food-icon {
+#egg-badge {
+  bottom: 134px;
+}
+
+/* display: flex перекриває атрибут hidden (UA-правило display: none програє
+   авторському) — порожні бейджі мусять зникати явно */
+#food-badge[hidden],
+#egg-badge[hidden] {
+  display: none;
+}
+
+#food-icon,
+#egg-icon {
   width: 26px;
   height: 26px;
   image-rendering: pixelated;
   filter: drop-shadow(1px 1px 0 rgba(0, 0, 0, 0.6));
 }
 
-#food-count {
+#food-count,
+#egg-count {
   font: bold 18px/1 system-ui, sans-serif;
   color: #fff;
   text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.7);
