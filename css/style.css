@@ -300,6 +300,16 @@ kbd {
   display: none;
 }
 
+/* На сенсорних пристроях праворуч унизу — стовпчик кнопок керування
+   (#touch-buttons, right: 20px, ширина 60px): бейджі зсуваються лівіше,
+   щоб не лягати на кнопки */
+@media (pointer: coarse) {
+  #food-badge,
+  #egg-badge {
+    right: 96px;
+  }
+}
+
 #food-icon,
 #egg-icon {
   width: 26px;
