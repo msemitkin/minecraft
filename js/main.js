@@ -48,7 +48,13 @@ const ROD = 28;
 // (порожнє / з водою / з лавою) кодується окремим id, що займає слот хотбара —
 // так само, як інші предмети. У воксельну сітку відро ніколи не потрапляє.
 const BUCKET = 29, WATER_BUCKET = 30, LAVA_BUCKET = 31;
-const isBucket = (id) => id === BUCKET || id === WATER_BUCKET || id === LAVA_BUCKET;
+// Молоко — ще один стан відра (id поза базовим діапазоном, щоб не зсувати
+// решту): ПКМ порожнім відром по корові в прицілі — подоїти. Випите молоко
+// (ПКМ) відновлює голод і гасить полум'я на гравцеві, повертаючи порожнє
+// відро; молоко не виливається у світ. Корова надоюється знову за пів хвилини.
+const MILK_BUCKET = 42;
+const isBucket = (id) => id === BUCKET || id === WATER_BUCKET || id === LAVA_BUCKET ||
+  id === MILK_BUCKET;
 
 // Човен — окремий предмет (як лук/вудка/відро): ставиться ПКМ на воду чи землю
 // й спливає окремою сутністю-моделлю. Гравець сідає в нього (ПКМ по човну) і
@@ -105,6 +111,7 @@ const BLOCK_NAMES = {
   [SNOW]: 'Сніг', [CACTUS]: 'Кактус', [GRAVEL]: 'Гравій', [LAVA]: 'Лава',
   [ROD]: 'Вудка',
   [BUCKET]: 'Відро', [WATER_BUCKET]: 'Відро з водою', [LAVA_BUCKET]: 'Відро з лавою',
+  [MILK_BUCKET]: 'Відро з молоком',
   [BOAT]: 'Човен', [LADDER]: 'Драбина', [GLASS]: 'Скло', [DOOR]: 'Двері',
   [WOOL]: 'Вовна', [FENCE]: 'Паркан', [GATE]: 'Хвіртка',
   [SAPLING]: 'Саджанець',
@@ -580,6 +587,24 @@ const Sound = (() => {
         if (!enabled) return;
         tone({ freq: 1620, dur: 0.06, type: 'sine', gain: 0.055, slideTo: 1400 });
       }, 90);
+    },
+    // Доїння: два ритмічні цвіркання струменя молока в цебро
+    milk() {
+      noise({ dur: 0.07, gain: 0.13, type: 'bandpass', freq: 2300, q: 2.4 });
+      tone({ freq: 340, dur: 0.06, type: 'triangle', gain: 0.05, slideTo: 520 });
+      setTimeout(() => {
+        if (!enabled) return;
+        noise({ dur: 0.07, gain: 0.13, type: 'bandpass', freq: 2000, q: 2.4 });
+        tone({ freq: 300, dur: 0.06, type: 'triangle', gain: 0.05, slideTo: 460 });
+      }, 150);
+    },
+    // Пиття молока: три булькотливі ковтки, дедалі нижчі
+    drink() {
+      [0, 160, 320].forEach((delay, i) => setTimeout(() => {
+        if (!enabled) return;
+        tone({ freq: 310 - i * 45, dur: 0.09, type: 'sine', gain: 0.1, slideTo: 150 });
+        noise({ dur: 0.05, gain: 0.05, type: 'lowpass', freq: 700, q: 0.8 });
+      }, delay));
     },
     // Підняте яйце: короткий м'який висхідний «поп»
     eggPop() { tone({ freq: 520, dur: 0.08, type: 'triangle', gain: 0.11, slideTo: 940 }); },
@@ -2047,6 +2072,10 @@ const ANIMAL_MAX = 12;
 const ANIMAL_DESPAWN_DIST = 80;
 // Кури та яйця: пауза між кладками (EGG_LAY_MIN + випадкові EGG_LAY_VAR секунд),
 // масштаб і час росту пташеняти, вилупленого з кинутого яйця
+// Корови й молоко: перезарядка доїння однієї корови (с), скільки голоду
+// відновлює випите відро молока, колір бризок при доїнні
+const MILK_COOLDOWN = 30;
+const MILK_FOOD = 6;
 const EGG_LAY_MIN = 25;
 const EGG_LAY_VAR = 25;
 const CHICK_SCALE = 0.45;
@@ -2258,6 +2287,8 @@ function spawnAnimal(type, x, y, z, opts = {}) {
     growth: 0,     // накопичений час росту пташеняти
     // Кури несуть яйця: таймер до наступної кладки (лише дорослі)
     eggTimer: EGG_LAY_MIN + Math.random() * EGG_LAY_VAR,
+    // Корова: перезарядка доїння (нова корова надоєна одразу)
+    milkTimer: 0,
     hurt: 0,       // спалах при ударі (0..1)
     panic: 0,      // тікає від гравця після удару
     // Вовна (лише вівці): меші руна, стан «нестрижена», таймер відростання
@@ -2440,6 +2471,9 @@ function updateAnimal(a, dt) {
       layEgg(a);
     }
   }
+
+  // Подоєна корова «надоюється» знову з часом
+  if (a.type === 'cow' && a.milkTimer > 0) a.milkTimer -= dt;
 
   a.group.position.copy(a.pos);
   a.group.rotation.y = a.yaw;
@@ -6230,10 +6264,55 @@ function findFluidSource() {
   return null;
 }
 
+// Подоїти корову порожнім відром (ПКМ по корові в прицілі): відро наповнюється
+// молоком, корова надоюється знову за MILK_COOLDOWN. Повертає true, якщо клік
+// оброблено (зокрема й «ще не надоїлась» — щоб не хапати флюїд позаду корови).
+const MILK_COLOR = new THREE.Color(0xf6f3ec);
+function milkCowEntity(cow) {
+  if (cow.milkTimer > 0) {
+    flashItemName('Корова ще не надоїлась');
+    return true;
+  }
+  cow.milkTimer = MILK_COOLDOWN;
+  assignBlockToSlot(MILK_BUCKET);
+  triggerSwing();
+  Sound.milk();
+  spawnParticles(cow.pos.x, cow.pos.y + cow.height * 0.45, cow.pos.z, MILK_COLOR, 8,
+    { radius: 0.3, speed: 1.4, upBias: 0.8, life: 0.5, size: 0.09, gravity: 6 });
+  unlockAch('milk');
+  return true;
+}
+
+// Випити молоко (ПКМ з відром молока): відновлює голод, гасить полум'я на
+// гравцеві й повертає порожнє відро. Ситому й не палаючому — підказка,
+// щоб не змарнувати надоєне.
+function drinkMilk() {
+  const burning = player.fireTicks > 0;
+  if (!burning && player.hunger >= MAX_HUNGER) {
+    flashItemName('Ситий — молоко зачекає');
+    return;
+  }
+  player.hunger = Math.min(MAX_HUNGER, player.hunger + MILK_FOOD);
+  if (burning) {
+    player.fireTicks = 0;
+    spawnParticles(player.pos.x, player.pos.y + PLAYER_H * 0.7, player.pos.z,
+      SMOKE_COLOR, 8, { radius: 0.3, speed: 1.4, upBias: 1.6, life: 0.6, size: 0.11, gravity: -3 });
+  }
+  assignBlockToSlot(BUCKET);
+  triggerSwing();
+  Sound.drink();
+}
+
 function useBucket() {
   const held = hotbar[selectedSlot];
 
+  // Відро з молоком — випити (молоко не виливається у світ)
+  if (held === MILK_BUCKET) { drinkMilk(); return; }
+
   if (held === BUCKET) {
+    // Корова в прицілі — подоїти (пріоритетніше за джерело флюїду позаду неї)
+    const cow = animalInSight('cow');
+    if (cow && milkCowEntity(cow)) return;
     // Порожнє відро — набрати найближче джерело води чи лави
     const src = findFluidSource();
     if (!src) return;
@@ -7190,9 +7269,9 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(12, 10, 3, 1);                       // білий верх
     return;
   }
-  if (id === BUCKET || id === WATER_BUCKET || id === LAVA_BUCKET) {
+  if (isBucket(id)) {
     // Процедурна іконка відра: сталеве цебро (трапеція) з дужкою; якщо повне —
-    // усередині плескіт води (синій) чи лави (помаранчевий).
+    // усередині плескіт води (синій), лави (помаранчевий) чи молока (біле).
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, TILE, TILE);
     ctx.strokeStyle = '#9aa3ad';                       // дужка
@@ -7208,13 +7287,18 @@ function drawBlockIcon(canvas, id) {
     ctx.lineWidth = 1;
     ctx.stroke();
     if (id !== BUCKET) {
-      ctx.fillStyle = id === WATER_BUCKET ? '#2f7bd6' : '#e8631f';   // вміст
+      ctx.fillStyle = id === WATER_BUCKET ? '#2f7bd6'
+        : id === MILK_BUCKET ? '#f4f1e8' : '#e8631f';   // вміст
       ctx.beginPath();
       ctx.moveTo(4, 7); ctx.lineTo(12, 7); ctx.lineTo(11, 10); ctx.lineTo(5, 10);
       ctx.closePath(); ctx.fill();
       if (id === LAVA_BUCKET) {                         // яскраві прожилки лави
         ctx.fillStyle = '#ffd24a';
         ctx.fillRect(6, 8, 2, 1); ctx.fillRect(9, 8, 1, 1);
+      }
+      if (id === MILK_BUCKET) {                         // вершковий відблиск
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(5, 8, 4, 1);
       }
     }
     ctx.fillStyle = '#8b949e';                          // світлова смуга на металі
@@ -7706,10 +7790,12 @@ document.addEventListener('visibilitychange', () => {
 addEventListener('pagehide', saveGame);
 
 // ===== Головний цикл =====
-// Відновити збережений хотбар (лише валідні блоки)
+// Відновити збережений хотбар (лише валідні блоки; повні стани відра не в
+// меню, але в хотбарі законні — інакше набране відро губилося б між сесіями)
 if (savedGame && Array.isArray(savedGame.hotbar)) {
   for (let i = 0; i < HOTBAR_SIZE; i++) {
-    if (ALL_BLOCKS.includes(savedGame.hotbar[i])) hotbar[i] = savedGame.hotbar[i];
+    const id = savedGame.hotbar[i];
+    if (ALL_BLOCKS.includes(id) || isBucket(id)) hotbar[i] = id;
   }
 }
 buildHotbar();
@@ -8030,6 +8116,7 @@ const ACHIEVEMENTS = [
   { id: 'egg',         icon: '🥚', title: 'Курочка ряба',       desc: 'Підібрати свіже яйце' },
   { id: 'hatch',       icon: '🐣', title: 'Нове життя',         desc: 'Вилупити курча з кинутого яйця' },
   { id: 'sign',        icon: '🪧', title: 'Літописець',         desc: 'Написати табличку' },
+  { id: 'milk',        icon: '🥛', title: 'Молочар',            desc: 'Подоїти корову' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -8436,9 +8523,43 @@ window.MCDebug = {
   },
   // Відро: видати порожнє/повне у слот і застосувати (набрати чи вилити) — для тестів
   giveBucket: (kind = 'empty') => {
-    const id = kind === 'water' ? WATER_BUCKET : kind === 'lava' ? LAVA_BUCKET : BUCKET;
+    const id = kind === 'water' ? WATER_BUCKET : kind === 'lava' ? LAVA_BUCKET
+      : kind === 'milk' ? MILK_BUCKET : BUCKET;
     assignBlockToSlot(id);
     return BLOCK_NAMES[id];
+  },
+  // Корова поряд із гравцем (для тестів доїння)
+  cowNear: (dx = 2, dz = 0) => {
+    const x = Math.floor(player.pos.x) + dx, z = Math.floor(player.pos.z) + dz;
+    const h = heightAt(x, z);
+    spawnAnimal('cow', x + 0.5, h + 1.01, z + 0.5);
+    return animals.filter((a) => a.type === 'cow').length;
+  },
+  // Подоїти найближчу корову (потрібне порожнє відро в руці) — для тестів
+  milkCow: () => {
+    if (hotbar[selectedSlot] !== BUCKET) return 'спершу MCDebug.giveBucket()';
+    let best = null, bestDist = Infinity;
+    for (const a of animals) {
+      if (a.type !== 'cow') continue;
+      const d = a.pos.distanceTo(player.pos);
+      if (d < bestDist) { bestDist = d; best = a; }
+    }
+    if (!best) return null;
+    milkCowEntity(best);
+    return BLOCK_NAMES[hotbar[selectedSlot]];
+  },
+  // Випити молоко з відра в руці — для тестів
+  drinkMilk: () => {
+    if (hotbar[selectedSlot] !== MILK_BUCKET) return 'потрібне відро з молоком';
+    drinkMilk();
+    return { held: BLOCK_NAMES[hotbar[selectedSlot]], hunger: player.hunger,
+      fire: +player.fireTicks.toFixed(2) };
+  },
+  get cows() {
+    return animals.filter((a) => a.type === 'cow').map((a) => ({
+      x: +a.pos.x.toFixed(1), y: +a.pos.y.toFixed(1), z: +a.pos.z.toFixed(1),
+      milkTimer: +a.milkTimer.toFixed(1),
+    }));
   },
   useBucket: () => { useBucket(); return BLOCK_NAMES[hotbar[selectedSlot]]; },
   get held() { return BLOCK_NAMES[hotbar[selectedSlot]]; },
