@@ -640,6 +640,11 @@ const Sound = (() => {
       noise({ dur: 1.1, gain: 0.28, type: 'highpass', freq: 2600, q: 0.5, attack: 0.25 });
       noise({ dur: 1.1, gain: 0.14, type: 'bandpass', freq: 1400, q: 0.7, attack: 0.25 });
     },
+    // Павук сичить перед стрибком: коротке різке шипіння з «скрекотом»
+    spiderHiss() {
+      noise({ dur: 0.35, gain: 0.2, type: 'highpass', freq: 3400, q: 0.6, attack: 0.03 });
+      tone({ freq: 880, dur: 0.18, type: 'sawtooth', gain: 0.045, slideTo: 460 });
+    },
     // Лук натягують: тиха висхідна «рипа» дерева й тятиви
     bowDraw() {
       tone({ freq: 320, dur: 0.45, type: 'triangle', gain: 0.07, slideTo: 520, attack: 0.05 });
@@ -3040,6 +3045,7 @@ let dayNightSun = 1; // оновлюється в updateDayNight: 1 — полу
 const ZOMBIE_COLOR = new THREE.Color(0x4f7a44);
 const CREEPER_COLOR = new THREE.Color(0x5fa64d);
 const SKELETON_COLOR = new THREE.Color(0xd8d6cc);
+const SPIDER_COLOR = new THREE.Color(0x2b2136);
 const SMOKE_COLOR = new THREE.Color(0x4a4a4a);
 const LAVA_FIRE_COLOR = new THREE.Color(0xff7a1a);
 const mobs = [];
@@ -3111,28 +3117,56 @@ function buildSkeleton(g) {
   return { legs: [legL, legR], arms: [armL, armR] };
 }
 
+// Будує присадкуватого павука: голова + черевце, вісім розчепірених ніг,
+// червоні очі, що жевріють у пітьмі. Модель дивиться в -Z (як гравець при yaw = 0).
+function buildSpider(g) {
+  const body = 0x2b2136, dark = 0x1d1626;
+  animalBox(g, 0.42, 0.3, 0.36, body, 0, 0.5, -0.3);        // голова
+  animalBox(g, 0.46, 0.34, 0.4, body, 0, 0.52, 0.02);       // груди
+  animalBox(g, 0.58, 0.44, 0.64, dark, 0, 0.56, 0.5);       // черевце
+  // Очі жевріють червоним і не беруть участі у спалаху болю (userData.noFlash)
+  for (const ex of [-0.1, 0.1]) {
+    const eye = animalBox(g, 0.09, 0.07, 0.03, 0x330a0a, ex, 0.56, -0.485);
+    eye.material.emissive.setHex(0xc22b1c);
+    eye.userData.noFlash = true;
+  }
+  // Вісім тонких ніг — по чотири з боків, пивот угорі, розчепірені (rotation.z)
+  const legs = [];
+  const zs = [-0.26, -0.09, 0.08, 0.25];
+  for (let side = -1; side <= 1; side += 2) {
+    for (let i = 0; i < 4; i++) {
+      const leg = animalLeg(g, 0.07, 0.62, dark, side * 0.28, 0.58, zs[i]);
+      leg.rotation.z = side * 0.75;                          // убік від тіла
+      legs.push(leg);
+    }
+  }
+  return { legs };
+}
+
 function spawnMob(x, y, z, type = 'zombie') {
   const group = new THREE.Group();
   const isCreeper = type === 'creeper';
   const isSkeleton = type === 'skeleton';
+  const isSpider = type === 'spider';
   const built = isCreeper ? buildCreeper(group)
-    : isSkeleton ? buildSkeleton(group) : buildZombie(group);
+    : isSkeleton ? buildSkeleton(group)
+    : isSpider ? buildSpider(group) : buildZombie(group);
   group.position.set(x, y, z);
   scene.add(group);
   const mats = [];
-  group.traverse((o) => { if (o.isMesh) mats.push(o.material); });
+  group.traverse((o) => { if (o.isMesh && !o.userData.noFlash) mats.push(o.material); });
   mobs.push({
     group, type, legs: built.legs, arms: built.arms || null, mats,
     pos: new THREE.Vector3(x, y, z),
     vel: new THREE.Vector3(),
     yaw: Math.random() * Math.PI * 2,
     targetYaw: 0,
-    halfW: isCreeper ? 0.28 : 0.3,
-    height: isCreeper ? 2.1 : 1.9,
-    speed: isCreeper ? 2.6 : isSkeleton ? 2.0 : 2.2,
+    halfW: isCreeper ? 0.28 : isSpider ? 0.45 : 0.3,
+    height: isCreeper ? 2.1 : isSpider ? 0.95 : 1.9,
+    speed: isCreeper ? 2.6 : isSkeleton ? 2.0 : isSpider ? 3.0 : 2.2,
     onGround: false,
     legPhase: 0,
-    health: isCreeper ? 10 : isSkeleton ? 12 : 14,
+    health: isCreeper ? 10 : isSkeleton ? 12 : isSpider ? 10 : 14,
     hurt: 0,        // спалах при ударі (0..1)
     attackCD: 0,    // перезарядка атаки
     attackAnim: 0,  // мах руками при ударі
@@ -3141,6 +3175,10 @@ function spawnMob(x, y, z, type = 'zombie') {
     detonated: false,
     shootCD: 1 + Math.random(),  // скелет: перезарядка пострілу з лука
     aimAnim: 0,                  // скелет: підняття рук під час прицілювання (0..1)
+    angry: false,   // павук: удень нейтральний, поки не зачепиш
+    pounceCD: 0,    // павук: перезарядка стрибка на гравця
+    wanderT: 0,     // павук: таймер зміни напрямку блукання вдень
+    wanderMove: false,
   });
 }
 
@@ -3158,9 +3196,9 @@ function trySpawnMob() {
   if (!isSolid(blockAt(x, h, z))) return;       // тверда опора
   if (isSolid(blockAt(x, h + 1, z)) || isSolid(blockAt(x, h + 2, z))) return; // є місце
   if (torchNear(x + 0.5, h + 1, z + 0.5, 7)) return; // світло смолоскипа відлякує нечисть
-  // Нічна нечисть: ~чверть кріпери (підривники), ~чверть скелети (лучники), решта зомбі
+  // Нічна нечисть: кріпери (підривники), скелети (лучники), павуки (верхолази), зомбі
   const r = Math.random();
-  const type = r < 0.25 ? 'creeper' : r < 0.5 ? 'skeleton' : 'zombie';
+  const type = r < 0.22 ? 'creeper' : r < 0.44 ? 'skeleton' : r < 0.66 ? 'spider' : 'zombie';
   spawnMob(x + 0.5, h + 1.01, z + 0.5, type);
 }
 
@@ -3184,6 +3222,12 @@ const SKEL_FAR = 11;            // далі — наближається
 const SKEL_SHOOT_RANGE = 16;    // максимальна дальність пострілу
 const SKEL_SHOOT_CD = 1.8;      // секунд між пострілами (+ розкид)
 
+// Павук: швидкість лазіння стіною, вікно та перезарядка стрибка на гравця
+const SPIDER_CLIMB_SPEED = 3.2; // блоків/с угору вздовж стіни
+const SPIDER_POUNCE_MIN = 1.6;  // стрибає, коли гравець у цьому діапазоні
+const SPIDER_POUNCE_MAX = 3.6;
+const SPIDER_POUNCE_CD = 2.4;   // секунд між стрибками
+
 // Груба перевірка лінії зору від голови моба до грудей гравця:
 // семплимо відрізок і шукаємо тверді блоки на шляху.
 function mobCanSeePlayer(m) {
@@ -3204,6 +3248,7 @@ function mobCanSeePlayer(m) {
 function updateMob(m, dt) {
   const isCreeper = m.type === 'creeper';
   const isSkeleton = m.type === 'skeleton';
+  const isSpider = m.type === 'spider';
 
   // Лава палить будь-яку істоту (навіть кріпера) — швидка шкода й полум'я
   if (isLavaId(blockAt(Math.floor(m.pos.x), Math.floor(m.pos.y + 0.3), Math.floor(m.pos.z)))) {
@@ -3215,8 +3260,8 @@ function updateMob(m, dt) {
     if (m.health <= 0) return;
   }
 
-  // Удень зомбі та скелети займаються вогнем і швидко гинуть; кріпери — ні
-  if (!isCreeper && dayNightSun > 0.15) {
+  // Удень зомбі та скелети займаються вогнем і швидко гинуть; кріпери й павуки — ні
+  if (!isCreeper && !isSpider && dayNightSun > 0.15) {
     m.burn += dt;
     if (Math.random() < dt * 7) {
       spawnParticles(m.pos.x, m.pos.y + 1.1, m.pos.z, SMOKE_COLOR, 1,
@@ -3227,12 +3272,27 @@ function updateMob(m, dt) {
     m.burn = 0;
   }
 
-  // Переслідування гравця
+  // Переслідування гравця. Павук удень нейтральний, поки його не зачепити;
+  // уночі (та розлючений ударом) полює, як решта нечисті.
+  if (isSpider && m.hurt > 0) m.angry = true;
   const dx = player.pos.x - m.pos.x;
   const dz = player.pos.z - m.pos.z;
   const distH = Math.hypot(dx, dz);
-  const chase = distH < 26 && !player.dead;
+  const hostile = !isSpider || dayNightSun <= 0.15 || m.angry;
+  const chase = distH < 26 && !player.dead && hostile;
   if (chase) m.targetYaw = Math.atan2(-dx, -dz); // дивиться в -Z
+
+  // Нейтральний павук неквапом блукає, час від часу міняючи напрямок
+  let wander = false;
+  if (isSpider && !chase) {
+    m.wanderT -= dt;
+    if (m.wanderT <= 0) {
+      m.wanderT = 2 + Math.random() * 3;
+      m.wanderMove = Math.random() < 0.6;
+      if (m.wanderMove) m.targetYaw = Math.random() * Math.PI * 2;
+    }
+    wander = m.wanderMove;
+  }
 
   let dyaw = m.targetYaw - m.yaw;
   dyaw = ((dyaw + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
@@ -3279,10 +3339,23 @@ function updateMob(m, dt) {
     }
   }
 
+  // Павук зблизька стрибає на гравця з сичанням (дуга додає вертикалі,
+  // горизонталь дає звичайна швидкість переслідування)
+  if (m.pounceCD > 0) m.pounceCD -= dt;
+  if (isSpider && chase && m.onGround && m.pounceCD <= 0 &&
+      distH > SPIDER_POUNCE_MIN && distH < SPIDER_POUNCE_MAX) {
+    m.vel.y = 5;
+    m.pounceCD = SPIDER_POUNCE_CD;
+    Sound.spiderHiss();
+  }
+
   let moving, sp;
   if (isSkeleton) {
     moving = chase && skelMove !== 0;
     sp = skelMove * m.speed;                          // знак задає напрям (наближення/відступ)
+  } else if (isSpider) {
+    moving = (chase && distH > 0.9) || wander;
+    sp = moving ? (chase ? m.speed : m.speed * 0.35) : 0;
   } else {
     moving = chase && distH > 1.0 && !fusing;
     sp = moving ? m.speed : 0;
@@ -3300,15 +3373,18 @@ function updateMob(m, dt) {
   moveEntityAxis(m, 'y', m.vel.y * dt);
   const bumpedX = moveEntityAxis(m, 'x', m.vel.x * dt);
   const bumpedZ = moveEntityAxis(m, 'z', m.vel.z * dt);
-  if ((bumpedX || bumpedZ) && m.onGround && moving) m.vel.y = 7.5; // перестрибнути
+  if (isSpider && (bumpedX || bumpedZ) && moving && !inWater) {
+    m.vel.y = SPIDER_CLIMB_SPEED;                    // чіпляється за стіну й лізе вгору
+  } else if ((bumpedX || bumpedZ) && m.onGround && moving) m.vel.y = 7.5; // перестрибнути
 
-  // Атака при контакті (лише зомбі; кріпер шкодить вибухом, скелет — стрілами)
+  // Атака при контакті (зомбі та павук; кріпер шкодить вибухом, скелет — стрілами)
   if (m.attackCD > 0) m.attackCD -= dt;
   if (!isCreeper && !isSkeleton) {
+    const reach = isSpider ? 1.5 : 1.2;
     const vOverlap = player.pos.y < m.pos.y + m.height &&
                      player.pos.y + player.height > m.pos.y;
-    if (chase && distH < 1.2 && vOverlap && m.attackCD <= 0 && !player.dead) {
-      damagePlayer(3, 'zombie');
+    if (chase && distH < reach && vOverlap && m.attackCD <= 0 && !player.dead) {
+      damagePlayer(isSpider ? 2 : 3, isSpider ? 'spider' : 'zombie');
       const k = distH || 1;
       player.vel.x += (dx / k) * 4;
       player.vel.z += (dz / k) * 4;
@@ -3334,6 +3410,11 @@ function updateMob(m, dt) {
     const armBase = -1.2 - m.aimAnim * 0.37;     // 0 → майже -π/2 (на рівень очей)
     m.arms[0].rotation.x = armBase;              // ліва тягне «тятиву»
     m.arms[1].rotation.x = armBase;              // права тримає лук
+  } else if (isSpider) {
+    // Вісім ніг дріботять у шаховому порядку (сусідні — у протифазі)
+    for (let i = 0; i < m.legs.length; i++) {
+      m.legs[i].rotation.x = (i % 2 === 0 ? legSwing : -legSwing) * 0.9;
+    }
   } else {
     m.legs[0].rotation.x = legSwing;
     m.legs[1].rotation.x = -legSwing;
@@ -3389,13 +3470,15 @@ function updateMobs(dt) {
     if (m.health <= 0) {
       if (!m.detonated) {                            // кріпер, що вибухнув, уже дав ефекти
         const deathColor = m.type === 'creeper' ? CREEPER_COLOR
-          : m.type === 'skeleton' ? SKELETON_COLOR : ZOMBIE_COLOR;
+          : m.type === 'skeleton' ? SKELETON_COLOR
+          : m.type === 'spider' ? SPIDER_COLOR : ZOMBIE_COLOR;
         spawnParticles(m.pos.x, m.pos.y + 0.9, m.pos.z, deathColor, 16,
           { radius: 0.4, speed: 3, upBias: 1.2, life: 0.7, size: 0.13 });
         Sound.mobDeath();
       }
       if (m.type === 'creeper') unlockAch('creeper');
       else if (m.type === 'skeleton') unlockAch('skeleton');
+      else if (m.type === 'spider') unlockAch('spider');
       else unlockAch('zombie');
       removeMob(i);
       continue;
@@ -7139,6 +7222,7 @@ const DEATH_CAUSES = {
   zombie: 'Розтерзаний зомбі',
   creeper: 'Підірваний кріпером',
   arrow: 'Застрелений скелетом',
+  spider: 'Ужалений павуком',
   starve: 'Помер від голоду',
   lava: 'Згорів у лаві',
 };
@@ -8095,6 +8179,7 @@ const ACHIEVEMENTS = [
   { id: 'zombie',      icon: '🧟', title: 'Нічний вартовий',    desc: 'Здолати зомбі' },
   { id: 'creeper',     icon: '💥', title: 'Знешкоджено',        desc: 'Здолати кріпера' },
   { id: 'skeleton',    icon: '☠',  title: 'Дуель лучників',     desc: 'Здолати скелета' },
+  { id: 'spider',      icon: '🕷', title: 'Арахнофобія',        desc: 'Здолати павука' },
   { id: 'sleep',       icon: '🛏', title: 'На добраніч',        desc: 'Проспати ніч у ліжку' },
   { id: 'biome_plains',icon: '🌳', title: 'Рівнини',            desc: 'Побувати на рівнині' },
   { id: 'biome_forest',icon: '🌲', title: 'Хащі',               desc: 'Побувати в лісі' },
@@ -8267,6 +8352,23 @@ window.MCDebug = {
       spawnMob(x + 0.5, h + 1.01, z + 0.5, 'skeleton');
     }
     return mobs.filter((m) => m.type === 'skeleton').length;
+  },
+  spawnSpider: (n = 1, angry = false) => {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = 5 + Math.random() * 4;
+      const x = Math.floor(player.pos.x + Math.cos(a) * d);
+      const z = Math.floor(player.pos.z + Math.sin(a) * d);
+      const h = heightAt(x, z);
+      spawnMob(x + 0.5, h + 1.01, z + 0.5, 'spider');
+      mobs[mobs.length - 1].angry = angry;
+    }
+    return mobs.filter((m) => m.type === 'spider').length;
+  },
+  get spiders() {
+    return mobs.filter((m) => m.type === 'spider')
+      .map((m) => ({ x: +m.pos.x.toFixed(1), y: +m.pos.y.toFixed(1), z: +m.pos.z.toFixed(1),
+        health: m.health, angry: m.angry, onGround: m.onGround }));
   },
   setWeather: (s) => {
     if (s !== 'rain' && s !== 'snow' && s !== 'clear') return 'use "rain" | "snow" | "clear"';
