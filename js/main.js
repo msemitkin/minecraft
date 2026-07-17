@@ -101,6 +101,13 @@ const EGG = 40;
 // табличці — редагувати напис, ЛКМ — зняти.
 const SIGN = 41;
 
+// Рейки — окремий предмет-сутність (як драбина, не воксель): кладуться ПКМ на
+// тверду поверхню й самі з'єднуються з сусідніми рейками у прямі та повороти.
+// Вагонетка — ридна сутність (як човен/кінь): ставиться ПКМ на рейки, гравець
+// сідає в неї (ПКМ) і їде колією (W — розганяє, S — гальмує/задкує, Space — злізти).
+// MILK_BUCKET уже зайняв id 42, тож рейки та вагонетка йдуть далі.
+const RAIL = 43, MINECART = 44;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -117,6 +124,7 @@ const BLOCK_NAMES = {
   [SAPLING]: 'Саджанець',
   [EGG]: 'Яйце',
   [SIGN]: 'Табличка',
+  [RAIL]: 'Рейки', [MINECART]: 'Вагонетка',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
@@ -124,7 +132,7 @@ const ALL_BLOCKS = [
   GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, GLASS, WOOL,
   WATER, LAVA,
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
-  BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN,
+  BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -343,6 +351,8 @@ function saveGame() {
       fences: [...fences.values()].map((f) => [f.x, f.y, f.z]),
       gates: [...gates.values()].map((g) => [g.x, g.y, g.z, g.dx, g.dz, g.open ? 1 : 0]),
       boats: boats.map((b) => [+b.pos.x.toFixed(2), +b.pos.y.toFixed(2), +b.pos.z.toFixed(2), +b.yaw.toFixed(3)]),
+      rails: [...rails.values()].map((r) => [r.x, r.y, r.z, r.a[0], r.a[1], r.b[0], r.b[1]]),
+      carts: carts.map((c) => [+c.pos.x.toFixed(2), +c.pos.y.toFixed(2), +c.pos.z.toFixed(2)]),
       wolves: animals.filter((a) => a.type === 'wolf' && a.tamed)
         .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
                      +a.health.toFixed(1), a.sitting ? 1 : 0]),
@@ -1763,6 +1773,14 @@ function updatePlayer(dt) {
     return;
   }
 
+  // Їдемо вагонеткою: власна фізика гравця вимкнена, кермуємо вагонеткою
+  if (ridingCart) {
+    driveCart(dt);
+    camera.position.set(player.pos.x, player.pos.y + EYE, player.pos.z);
+    camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+    return;
+  }
+
   // Їдемо верхи: власна фізика гравця вимкнена, кермуємо конем
   if (ridingHorse) {
     driveHorse(dt);
@@ -1923,6 +1941,7 @@ function die() {
   player.vel.set(0, 0, 0);
   dismountBoat(false);   // випасти з човна, не переміщуючи тіло
   dismountHorse(false);  // випасти з сідла
+  dismountCart(false);   // випасти з вагонетки
   mining = false;
   cancelBowDraw();
   reelIn();
@@ -2755,7 +2774,7 @@ function feedHorseEntity(h) {
 }
 
 function mountHorse(h) {
-  if (!h || !h.tamed || ridingHorse || ridingBoat) return false;
+  if (!h || !h.tamed || ridingHorse || ridingBoat || ridingCart) return false;
   ridingHorse = h;
   h.vel.set(0, 0, 0);
   h.state = 'idle';
@@ -3591,10 +3610,15 @@ function startBreakOrAttack() {
       return;
     }
   }
-  // Зняти смолоскип/драбину/саджанець або зібрати посів, якщо дивимось на них
-  // (клітинка перед блоком)
+  // Вагонетка в прицілі → зняти її (вона не у воксельній сітці)
+  if (carts.length > 0) {
+    const c = cartInSight();
+    if (c) { breakCart(c); triggerSwing(); return; }
+  }
+  // Зняти смолоскип/драбину/рейку/саджанець або зібрати посів, якщо дивимось на
+  // них (клітинка перед блоком)
   if (torches.size > 0 || crops.size > 0 || ladders.size > 0 || saplings.size > 0 ||
-      signs.size > 0) {
+      signs.size > 0 || rails.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -3611,6 +3635,14 @@ function startBreakOrAttack() {
           { radius: 0.25, speed: 1.4, upBias: 0.4, life: 0.45, size: 0.09, gravity: 10 });
         Sound.place(PLANK);
         removeLadder(key);
+        triggerSwing();
+        return;
+      }
+      if (rails.has(key)) {
+        spawnParticles(hit.prev[0] + 0.5, hit.prev[1] + 0.15, hit.prev[2] + 0.5, RAIL_COLOR, 6,
+          { radius: 0.3, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 10 });
+        Sound.breakBlock(STONE);
+        removeRail(key);
         triggerSwing();
         return;
       }
@@ -4092,6 +4124,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateDoors();    // ... і опору/клітинки дверей
   validateFences();   // ... і опору/клітинки парканів і хвірток
   validateSaplings(); // ... і опору/клітинки саджанців
+  validateRails();    // ... і опору рейок
   Sound.explosion();
   knockback(player, cx, cy, cz);
   for (const a of animals) knockback(a, cx, cy, cz);
@@ -4230,6 +4263,7 @@ function updateFallingBlocks(dt) {
       validateDoors();
       validateFences();
       validateSaplings();
+      validateRails();
     }
   }
 }
@@ -4563,7 +4597,8 @@ function placeTorch(hit) {
   if (blockAt(x, y, z) !== AIR || torches.has(torchKey(x, y, z)) ||
       ladders.has(torchKey(x, y, z)) || doorAtCell(x, y, z) ||
       fences.has(torchKey(x, y, z)) || gates.has(torchKey(x, y, z)) ||
-      saplings.has(torchKey(x, y, z)) || signs.has(torchKey(x, y, z))) return false;
+      saplings.has(torchKey(x, y, z)) || signs.has(torchKey(x, y, z)) ||
+      rails.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -4722,7 +4757,7 @@ function placeLadder(hit) {
       crops.has(x + ',' + y + ',' + z) || beds.has(x + ',' + y + ',' + z) ||
       doorAtCell(x, y, z) || fences.has(ladderKey(x, y, z)) ||
       gates.has(ladderKey(x, y, z)) || saplings.has(ladderKey(x, y, z)) ||
-      signs.has(ladderKey(x, y, z))) return false;
+      signs.has(ladderKey(x, y, z)) || rails.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -4930,7 +4965,7 @@ function placeDoor(hit) {
     const k = doorKey(x, cy, z);
     if (doorAtCell(x, cy, z) || torches.has(k) || crops.has(k) ||
         beds.has(k) || ladders.has(k) || fences.has(k) || gates.has(k) ||
-        saplings.has(k) || signs.has(k)) return false;
+        saplings.has(k) || signs.has(k) || rails.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -5194,7 +5229,7 @@ function fenceCellFree(x, y, z) {
   const k = fenceKey(x, y, z);
   return !fences.has(k) && !gates.has(k) && !doorAtCell(x, y, z) &&
          !torches.has(k) && !crops.has(k) && !beds.has(k) && !ladders.has(k) &&
-         !saplings.has(k) && !signs.has(k);
+         !saplings.has(k) && !signs.has(k) && !rails.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -5362,7 +5397,8 @@ function plantCrop(hit) {
   if (crops.has(cropKey(x, y, z)) || torches.has(torchKey(x, y, z)) ||
       ladders.has(cropKey(x, y, z)) || doorAtCell(x, y, z) ||
       fences.has(cropKey(x, y, z)) || gates.has(cropKey(x, y, z)) ||
-      saplings.has(cropKey(x, y, z)) || signs.has(cropKey(x, y, z))) return false;
+      saplings.has(cropKey(x, y, z)) || signs.has(cropKey(x, y, z)) ||
+      rails.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -5514,7 +5550,7 @@ function plantSapling(hit) {
       torches.has(torchKey(x, y, z)) || ladders.has(saplingKey(x, y, z)) ||
       beds.has(saplingKey(x, y, z)) || doorAtCell(x, y, z) ||
       fences.has(saplingKey(x, y, z)) || gates.has(saplingKey(x, y, z)) ||
-      signs.has(saplingKey(x, y, z))) return false;
+      signs.has(saplingKey(x, y, z)) || rails.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -5563,6 +5599,7 @@ function growSaplingTree(s) {
   validateDoors();
   validateFences();
   validateSaplings();
+  validateRails();
   unlockAch('grow_tree');
   return true;
 }
@@ -5661,7 +5698,7 @@ function placeBed(hit) {
       crops.has(cropKey(x, y, z)) || ladders.has(bedKey(x, y, z)) ||
       doorAtCell(x, y, z) || fences.has(bedKey(x, y, z)) ||
       gates.has(bedKey(x, y, z)) || saplings.has(bedKey(x, y, z)) ||
-      signs.has(bedKey(x, y, z))) return false;
+      signs.has(bedKey(x, y, z)) || rails.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -5887,7 +5924,7 @@ function validateSigns() {
 // Клітинка вільна для таблички (взаємовиключно з іншими сутностями)
 function signCellFree(x, y, z) {
   const k = signKey(x, y, z);
-  return blockAt(x, y, z) === AIR && !signs.has(k) && !torches.has(k) &&
+  return blockAt(x, y, z) === AIR && !signs.has(k) && !torches.has(k) && !rails.has(k) &&
          !crops.has(k) && !beds.has(k) && !ladders.has(k) && !doorAtCell(x, y, z) &&
          !fences.has(k) && !gates.has(k) && !saplings.has(k);
 }
@@ -6079,6 +6116,7 @@ function updateMining(dt, hit) {
     validateDoors();    // ... або опора під дверима
     validateFences();   // ... або опора під парканом/хвірткою
     validateSaplings(); // ... або грунт під саджанцем
+    validateRails();    // ... або опору рейки
     unlockAch('first_block');
     if (id === LOG) unlockAch('chop_wood');
     else if (id === COAL) unlockAch('coal');
@@ -6226,7 +6264,7 @@ function nearestBoat(r = 2.8) {
 function mountBoat(boat) {
   // Верхи на коні в човен не сісти (як і навпаки) — інакше обидва «сідла»
   // тягли б гравця одночасно
-  if (!boat || ridingBoat || ridingHorse) return false;
+  if (!boat || ridingBoat || ridingHorse || ridingCart) return false;
   ridingBoat = boat;
   boat.vel.set(0, 0, 0);
   mining = false;
@@ -6318,6 +6356,464 @@ if (savedGame && Array.isArray(savedGame.boats)) {
     if (Array.isArray(e) && e.length >= 3 && e.slice(0, 3).every(Number.isFinite)) {
       addBoat(e[0], e[1], e[2], Number.isFinite(e[3]) ? e[3] : 0);
     }
+  }
+}
+
+// ============================================================
+// Рейки та вагонетки: колія для швидких подорожей суходолом
+// ============================================================
+// Рейка — окрема сутність у клітинці (як драбина, не воксель): лежить на
+// твердому блоці й зберігає два кінці-напрямки (пряма або поворот на 90°).
+// При встановленні сама з'єднується із сусідніми рейками, а «висячі» кінці
+// сусідів розвертаються назустріч. Вагонетка їде графом центрів клітинок:
+// відрізок «центр A → центр B», на повороті напрямок змінюється у центрі.
+const rails = new Map();               // "x,y,z" -> { x, y, z, a:[dx,dz], b:[dx,dz], group }
+const RAIL_MAX = 1024;                 // межа, щоб збереження не розросталося
+const RAIL_COLOR = new THREE.Color(0x8f9aa5);
+
+// Спільні ресурси моделі (геометрії/матеріали не дублюються на кожну рейку)
+const RAIL_BAR_GEO = new THREE.BoxGeometry(0.07, 0.05, 1.0);
+const RAIL_TIE_GEO = new THREE.BoxGeometry(0.72, 0.05, 0.16);
+const RAIL_BAR_MAT = new THREE.MeshLambertMaterial({ color: 0x9aa3ad });
+const RAIL_TIE_MAT = new THREE.MeshLambertMaterial({ color: 0x7a5230 });
+
+const railKey = (x, y, z) => x + ',' + y + ',' + z;
+
+// Модель: дві сталеві рейки на дерев'яних шпалах. Пряма лежить уздовж своєї
+// осі; поворот — коротша діагональна хорда між серединами двох граней.
+function makeRailModel(a, b) {
+  const g = new THREE.Group();
+  const straight = a[0] === -b[0] && a[1] === -b[1];
+  const sub = new THREE.Group();
+  const barLen = straight ? 1.0 : 0.86;
+  for (const sx of [-0.26, 0.26]) {
+    const bar = new THREE.Mesh(RAIL_BAR_GEO, RAIL_BAR_MAT);
+    bar.scale.z = barLen;
+    bar.position.set(sx, 0.055, 0);
+    sub.add(bar);
+  }
+  for (const tz of (straight ? [-0.36, -0.12, 0.12, 0.36] : [-0.22, 0, 0.22])) {
+    const tie = new THREE.Mesh(RAIL_TIE_GEO, RAIL_TIE_MAT);
+    tie.position.set(0, 0.02, tz);
+    sub.add(tie);
+  }
+  let ux, uz, mx = 0, mz = 0;
+  if (straight) {
+    ux = a[0]; uz = a[1];
+  } else {
+    const cx = b[0] - a[0], cz = b[1] - a[1];
+    const n = Math.hypot(cx, cz);
+    ux = cx / n; uz = cz / n;
+    mx = (a[0] + b[0]) * 0.25; mz = (a[1] + b[1]) * 0.25;  // центр хорди
+  }
+  sub.rotation.y = Math.atan2(ux, uz);
+  sub.position.set(mx, 0, mz);
+  g.add(sub);
+  return g;
+}
+
+// Створити рейку в клітинці (x,y,z) з кінцями a та b (одиничні [dx,dz])
+function addRail(x, y, z, a, b) {
+  const key = railKey(x, y, z);
+  if (rails.has(key) || rails.size >= RAIL_MAX) return false;
+  if (Math.abs(a[0]) + Math.abs(a[1]) !== 1 || Math.abs(b[0]) + Math.abs(b[1]) !== 1) return false;
+  if (a[0] === b[0] && a[1] === b[1]) return false;
+  const group = makeRailModel(a, b);
+  group.position.set(x + 0.5, y + 0.01, z + 0.5);
+  scene.add(group);
+  rails.set(key, { x, y, z, a: [a[0], a[1]], b: [b[0], b[1]], group });
+  return true;
+}
+
+function removeRail(key) {
+  const r = rails.get(key);
+  if (!r) return;
+  scene.remove(r.group);   // геометрії/матеріали спільні — не dispose
+  rails.delete(key);
+}
+
+// Зняти рейки, що втратили опору або клітинку яких зайняв блок
+function validateRails() {
+  if (rails.size === 0) return;
+  for (const [key, r] of rails) {
+    if (isSolid(blockAt(r.x, r.y, r.z)) || !isSolid(blockAt(r.x, r.y - 1, r.z))) {
+      spawnParticles(r.x + 0.5, r.y + 0.15, r.z + 0.5, RAIL_COLOR, 6,
+        { radius: 0.3, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 10 });
+      removeRail(key);
+    }
+  }
+}
+
+// Розвернути сусідню рейку кінцем до (x,y,z)+dir, якщо жоден її кінець ще не
+// дивиться туди й у неї є «висячий» кінець (без рейки-сусіда)
+function reconnectRail(x, y, z, dir) {
+  const r = rails.get(railKey(x, y, z));
+  if (!r) return;
+  const pointsAt = (e) => e[0] === dir[0] && e[1] === dir[1];
+  if (pointsAt(r.a) || pointsAt(r.b)) return;
+  const dangling = (e) => !rails.has(railKey(x + e[0], y, z + e[1]));
+  let end = null;
+  if (dangling(r.a)) end = 'a';
+  else if (dangling(r.b)) end = 'b';
+  if (!end) return;   // обидва кінці вже з'єднані — не ламати чужу колію
+  r[end] = [dir[0], dir[1]];
+  scene.remove(r.group);
+  r.group = makeRailModel(r.a, r.b);
+  r.group.position.set(x + 0.5, y + 0.01, z + 0.5);
+  scene.add(r.group);
+}
+
+// Покласти рейку в клітинку перед прицілом: потрібна тверда опора знизу.
+// Орієнтація — за сусідніми рейками (пряма чи поворот), без сусідів — за поглядом.
+function placeRail(hit) {
+  const [x, y, z] = hit.prev;
+  const k = railKey(x, y, z);
+  if (blockAt(x, y, z) !== AIR || !isSolid(blockAt(x, y - 1, z))) return false;
+  if (rails.has(k) || torches.has(k) || crops.has(k) || beds.has(k) ||
+      ladders.has(k) || saplings.has(k) || signs.has(k) ||
+      doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
+  const nbr = [];
+  for (const d of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    if (rails.has(railKey(x + d[0], y, z + d[1]))) nbr.push(d);
+  }
+  let a, b;
+  if (nbr.length === 0) {
+    const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
+    if (Math.abs(fx) > Math.abs(fz)) { a = [1, 0]; b = [-1, 0]; }
+    else { a = [0, 1]; b = [0, -1]; }
+  } else if (nbr.length === 1) {
+    a = nbr[0]; b = [-a[0], -a[1]];
+  } else {
+    // серед сусідів є протилежна пара — пряма; інакше поворот із перших двох
+    let pair = null;
+    for (const d of nbr) {
+      if (nbr.some((e) => e[0] === -d[0] && e[1] === -d[1])) { pair = [d, [-d[0], -d[1]]]; break; }
+    }
+    [a, b] = pair || [nbr[0], nbr[1]];
+  }
+  if (!addRail(x, y, z, a, b)) return false;
+  for (const d of [a, b]) reconnectRail(x + d[0], y, z + d[1], [-d[0], -d[1]]);
+  Sound.place(IRON);
+  spawnParticles(x + 0.5, y + 0.15, z + 0.5, RAIL_COLOR, 6,
+    { radius: 0.3, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
+  return true;
+}
+
+// ===== Вагонетки =====
+const carts = [];
+const CART_MAX = 8;             // межа, щоб збереження не розросталося
+const CART_FLOAT = 0.05;        // низ вагонетки трохи над рейками
+const CART_SEAT = 0.35;         // підйом «сидіння» над низом вагонетки
+const CART_MAXV = 9;            // макс. швидкість, бл/с (швидше за спринт)
+const CART_ACCEL = 5;           // розгін від тяги (W/S)
+const CART_FRICTION = 0.9;      // тертя кочення без тяги, бл/с²
+let ridingCart = null;          // вагонетка, у якій зараз їде гравець (або null)
+let cartClick = 0;              // таймер поклацування коліс
+
+// Модель: залізний короб на маленьких колесах (низ моделі — на рейках)
+function makeCartModel() {
+  const g = new THREE.Group();
+  animalBox(g, 0.76, 0.1, 0.96, 0x4c525a, 0, 0.17, 0);       // днище
+  animalBox(g, 0.1, 0.34, 0.96, 0x555b63, -0.34, 0.36, 0);   // лівий борт
+  animalBox(g, 0.1, 0.34, 0.96, 0x555b63, 0.34, 0.36, 0);    // правий борт
+  animalBox(g, 0.76, 0.34, 0.1, 0x555b63, 0, 0.36, -0.44);   // передній борт
+  animalBox(g, 0.76, 0.34, 0.1, 0x555b63, 0, 0.36, 0.44);    // задній борт
+  for (const [wx, wz] of [[-0.24, -0.3], [0.24, -0.3], [-0.24, 0.3], [0.24, 0.3]]) {
+    animalBox(g, 0.08, 0.16, 0.16, 0x1e2126, wx, 0.08, wz);  // колеса
+  }
+  return g;
+}
+
+// Вільна вагонетка (поза колією): просто стоїть/падає у вказаній точці
+function addFreeCart(x, y, z) {
+  if (carts.length >= CART_MAX) return null;
+  const group = makeCartModel();
+  const cart = {
+    a: null, b: null, t: 0, speed: 0,          // стан руху колією
+    pos: new THREE.Vector3(x, y, z), vel: new THREE.Vector3(),
+    yaw: 0, targetYaw: 0, onRail: false,
+    halfW: 0.4, height: 0.5, onGround: false, group,
+  };
+  group.position.copy(cart.pos);
+  scene.add(group);
+  carts.push(cart);
+  return cart;
+}
+
+// Вагонетка, припаркована в центрі клітинки з рейкою
+function addCart(cell) {
+  const cart = addFreeCart(cell[0] + 0.5, cell[1] + CART_FLOAT, cell[2] + 0.5);
+  if (!cart) return null;
+  cart.a = [cell[0], cell[1], cell[2]];
+  cart.onRail = true;
+  const r = rails.get(railKey(cell[0], cell[1], cell[2]));
+  if (r) {
+    cart.yaw = Math.atan2(r.a[0], r.a[1]);
+    cart.targetYaw = cart.yaw;
+    cart.group.rotation.y = cart.yaw;
+  }
+  return cart;
+}
+
+function removeCart(cart) {
+  const i = carts.indexOf(cart);
+  if (i < 0) return;
+  if (ridingCart === cart) ridingCart = null;
+  scene.remove(cart.group);
+  cart.group.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
+  carts.splice(i, 1);
+}
+
+// Кінець рейки в клітинці cell, через який вагонетка виїде, приїхавши в
+// напрямку fromDir (вектор руху). Вхід — кінець, що дивиться назад; вихід — інший.
+function cartExitDir(cell, fromDir) {
+  const r = rails.get(railKey(cell[0], cell[1], cell[2]));
+  if (!r) return null;
+  const bx = -fromDir[0], bz = -fromDir[1];
+  if (r.a[0] === bx && r.a[1] === bz) return r.b;
+  if (r.b[0] === bx && r.b[1] === bz) return r.a;
+  // рейку переорієнтували під вагонеткою: якщо якийсь кінець продовжує рух — далі
+  if (r.a[0] === fromDir[0] && r.a[1] === fromDir[1]) return r.a;
+  if (r.b[0] === fromDir[0] && r.b[1] === fromDir[1]) return r.b;
+  return null;
+}
+
+// Політ/падіння вагонетки поза колією; приземлившись на рейку — стає на колію
+function cartFreeFall(cart, dt) {
+  cart.vel.y = Math.max(cart.vel.y - 22 * dt, -30);
+  cart.onGround = false;
+  moveEntityAxis(cart, 'y', cart.vel.y * dt);
+  if (cart.onGround) {
+    const cx = Math.floor(cart.pos.x), cy = Math.floor(cart.pos.y + 0.01), cz = Math.floor(cart.pos.z);
+    if (rails.has(railKey(cx, cy, cz))) {
+      cart.a = [cx, cy, cz]; cart.b = null; cart.t = 0; cart.speed = 0;
+      cart.onRail = true;
+      cart.vel.set(0, 0, 0);
+      cart.pos.set(cx + 0.5, cy + CART_FLOAT, cz + 0.5);
+    }
+  }
+}
+
+// Рух вагонетки колією. thrust −1..1 — тяга гравця (0 для вільних вагонеток):
+// на стоянці вибирає напрямок за поглядом, у русі розганяє/гальмує вздовж A→B.
+function updateCartMotion(cart, dt, thrust) {
+  if (!cart.onRail) { cartFreeFall(cart, dt); return; }
+  // Рейку могли зняти просто під вагонеткою — тоді вона сходить із колії
+  if (!rails.has(railKey(cart.a[0], cart.a[1], cart.a[2])) ||
+      (cart.b && !rails.has(railKey(cart.b[0], cart.b[1], cart.b[2])))) {
+    cart.onRail = false; cart.b = null; cart.speed = 0; cart.vel.set(0, 0, 0);
+    return;
+  }
+
+  // Стоїмо в центрі клітинки: тяга вибирає кінець рейки, ближчий до погляду
+  if (!cart.b && thrust !== 0) {
+    const r = rails.get(railKey(cart.a[0], cart.a[1], cart.a[2]));
+    const lx = -Math.sin(player.yaw) * Math.sign(thrust);
+    const lz = -Math.cos(player.yaw) * Math.sign(thrust);
+    const best = (r.a[0] * lx + r.a[1] * lz) >= (r.b[0] * lx + r.b[1] * lz) ? r.a : r.b;
+    const next = [cart.a[0] + best[0], cart.a[1], cart.a[2] + best[1]];
+    if (rails.has(railKey(next[0], next[1], next[2]))) {
+      cart.b = next;
+      cart.t = 0;
+      // Обраний бік уже враховує знак тяги — далі вона лише розганяє вперед
+      thrust = Math.abs(thrust);
+    }
+  }
+
+  if (cart.b) {
+    // Тяга і тертя кочення (з тягою тертя менше — котиться охочіше)
+    cart.speed += thrust * CART_ACCEL * dt;
+    const fr = (thrust === 0 ? CART_FRICTION : CART_FRICTION * 0.25) * dt;
+    if (cart.speed > 0) cart.speed = Math.max(0, cart.speed - fr);
+    else cart.speed = Math.min(0, cart.speed + fr);
+    cart.speed = THREE.MathUtils.clamp(cart.speed, -CART_MAXV, CART_MAXV);
+    if (cart.speed < 0) {
+      // задній хід — їхати тим самим відрізком у зворотний бік
+      const na = cart.b;
+      cart.b = [cart.a[0], cart.a[1], cart.a[2]];
+      cart.a = na;
+      cart.t = 1 - cart.t;
+      cart.speed = -cart.speed;
+    }
+    cart.t += cart.speed * dt;
+    while (cart.b && cart.t >= 1) {
+      // приїхали в центр B: продовжити на наступну клітинку або зупинитися
+      const d = [cart.b[0] - cart.a[0], cart.b[2] - cart.a[2]];
+      const exit = cartExitDir(cart.b, d);
+      const next = exit && [cart.b[0] + exit[0], cart.b[1], cart.b[2] + exit[1]];
+      if (next && rails.has(railKey(next[0], next[1], next[2]))) {
+        cart.a = cart.b; cart.b = next; cart.t -= 1;
+      } else {
+        cart.a = cart.b; cart.b = null; cart.t = 0; cart.speed = 0;   // глухий кут
+      }
+    }
+  }
+
+  // Позиція на відрізку та плавний розворот моделі
+  const ax = cart.a[0] + 0.5, az = cart.a[2] + 0.5;
+  let px = ax, pz = az;
+  if (cart.b) {
+    const bx = cart.b[0] + 0.5, bz = cart.b[2] + 0.5;
+    px = ax + (bx - ax) * cart.t;
+    pz = az + (bz - az) * cart.t;
+    cart.targetYaw = Math.atan2(bx - ax, bz - az);
+  }
+  cart.pos.set(px, cart.a[1] + CART_FLOAT, pz);
+  const dyaw = Math.atan2(Math.sin(cart.targetYaw - cart.yaw), Math.cos(cart.targetYaw - cart.yaw));
+  cart.yaw += dyaw * Math.min(1, 12 * dt);
+}
+
+// Знайти клітинку з рейкою вздовж погляду (для спуску вагонетки на колію)
+function cartPlacement() {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const start = camera.position.clone();
+  let prev = null;
+  for (let t = 0; t < 7; t += 0.06) {
+    const p = start.clone().addScaledVector(dir, t);
+    const bx = Math.floor(p.x), by = Math.floor(p.y), bz = Math.floor(p.z);
+    if (prev && bx === prev[0] && by === prev[1] && bz === prev[2]) continue;
+    if (rails.has(railKey(bx, by, bz))) return [bx, by, bz];
+    if (isSolid(blockAt(bx, by, bz))) return null;
+    prev = [bx, by, bz];
+  }
+  return null;
+}
+
+function placeCart() {
+  if (carts.length >= CART_MAX) return false;
+  const cell = cartPlacement();
+  if (!cell) return false;
+  // не ставити другу вагонетку в ту саму клітинку
+  for (const c of carts) {
+    if (c.a && c.a[0] === cell[0] && c.a[1] === cell[1] && c.a[2] === cell[2]) return false;
+  }
+  const cart = addCart(cell);
+  if (!cart) return false;
+  Sound.place(IRON);
+  spawnParticles(cell[0] + 0.5, cell[1] + 0.3, cell[2] + 0.5, RAIL_COLOR, 8,
+    { radius: 0.35, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 10 });
+  return true;
+}
+
+// Найближча вагонетка в радіусі r від гравця (для посадки)
+function nearestCart(r = 2.6) {
+  let best = null, bestD = r * r;
+  for (const c of carts) {
+    const d = c.pos.distanceToSquared(player.pos);
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  return best;
+}
+
+function mountCart(cart) {
+  // Інші «сідла» несумісні: з коня чи човна у вагонетку не пересісти на льоту
+  if (!cart || ridingCart || ridingBoat || ridingHorse) return false;
+  ridingCart = cart;
+  mining = false;
+  cancelBowDraw();
+  player.vel.set(0, 0, 0);
+  player.flying = false;
+  return true;
+}
+
+function tryMountCart() {
+  if (ridingCart) return false;
+  const cart = nearestCart();
+  return cart ? mountCart(cart) : false;
+}
+
+function dismountCart(reposition = true) {
+  if (!ridingCart) return;
+  const c = ridingCart;
+  ridingCart = null;
+  if (reposition) {
+    player.pos.set(c.pos.x, c.pos.y + 0.9, c.pos.z);   // вистрибнути над вагонеткою
+    player.vel.set(0, 0, 0);
+    player.fallPeakY = player.pos.y;
+    player.prevOnGround = false;
+  }
+}
+
+// Вагонетка в прицілі (промінь близько до її центру) — для зняття ЛКМ
+function cartInSight(maxDist = 4.5) {
+  if (carts.length === 0) return null;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const start = camera.position;
+  let best = null, bestT = maxDist;
+  const c0 = new THREE.Vector3();
+  for (const c of carts) {
+    if (c === ridingCart) continue;
+    c0.set(c.pos.x, c.pos.y + 0.25, c.pos.z);
+    const t = c0.clone().sub(start).dot(dir);
+    if (t < 0 || t > bestT) continue;
+    if (start.clone().addScaledVector(dir, t).distanceTo(c0) < 0.55) { best = c; bestT = t; }
+  }
+  return best;
+}
+
+function breakCart(cart) {
+  spawnParticles(cart.pos.x, cart.pos.y + 0.3, cart.pos.z, RAIL_COLOR, 10,
+    { radius: 0.4, speed: 2, upBias: 0.8, life: 0.5, size: 0.1, gravity: 10 });
+  Sound.breakBlock(IRON);
+  removeCart(cart);
+}
+
+// Кермування вагонеткою, у якій їде гравець (викликається з updatePlayer)
+function driveCart(dt) {
+  const cart = ridingCart;
+  let thrust = 0;
+  if (keys['KeyW']) thrust += 1;
+  if (keys['KeyS']) thrust -= 1;
+  if (joy.active) thrust += -joy.y;   // сенсор: тяга по джойстику
+  thrust = THREE.MathUtils.clamp(thrust, -1, 1);
+
+  updateCartMotion(cart, dt, thrust);
+  cart.group.position.copy(cart.pos);
+  cart.group.rotation.y = cart.yaw;
+
+  // Розігналися — досягнення і легке поклацування коліс на стиках
+  if (cart.onRail && cart.speed > 3) {
+    unlockAch('railman');
+    cartClick -= dt;
+    if (cartClick <= 0) { Sound.step(STONE); cartClick = 0.32; }
+  }
+
+  // Гравець «прив'язаний» до сидіння — без власної фізики й шкоди від падіння
+  player.pos.set(cart.pos.x, cart.pos.y + CART_SEAT, cart.pos.z);
+  player.vel.set(0, 0, 0);
+  player.onGround = true;
+  player.fallPeakY = player.pos.y;
+
+  // Провалилася під світ (баг рельєфу) — злізти, щоб не застрягти
+  if (cart.pos.y < -8) dismountCart(false);
+}
+
+// Оновлення вільних (некерованих) вагонеток: котяться за інерцією до зупинки
+function updateCarts(dt) {
+  for (let i = carts.length - 1; i >= 0; i--) {
+    const cart = carts[i];
+    if (cart.pos.y < -10) { removeCart(cart); continue; }
+    if (cart === ridingCart) continue;   // нею кермує driveCart з updatePlayer
+    updateCartMotion(cart, dt, 0);
+    cart.group.position.copy(cart.pos);
+    cart.group.rotation.y = cart.yaw;
+  }
+}
+
+// Відновити збережені рейки та вагонетки (сумісно зі старими сейвами)
+if (savedGame && Array.isArray(savedGame.rails)) {
+  for (const e of savedGame.rails) {
+    if (Array.isArray(e) && e.length >= 7) addRail(e[0], e[1], e[2], [e[3], e[4]], [e[5], e[6]]);
+  }
+}
+if (savedGame && Array.isArray(savedGame.carts)) {
+  for (const e of savedGame.carts) {
+    if (!Array.isArray(e) || e.length < 3 || !e.slice(0, 3).every(Number.isFinite)) continue;
+    const cx = Math.floor(e[0]), cy = Math.round(e[1] - CART_FLOAT), cz = Math.floor(e[2]);
+    if (rails.has(railKey(cx, cy, cz))) addCart([cx, cy, cz]);
+    else addFreeCart(e[0], e[1], e[2]);
   }
 }
 
@@ -6442,6 +6938,11 @@ function placeBlock() {
   // Човен у руці — спустити його на воду чи землю перед прицілом
   if (hotbar[selectedSlot] === BOAT) { placeBoat(); return; }
 
+  // Вагонетка поряд (ПКМ) → сісти в неї, з будь-яким предметом у руці
+  if (carts.length > 0 && tryMountCart()) return;
+  // Вагонетка в руці — поставити на рейки в прицілі
+  if (hotbar[selectedSlot] === MINECART) { placeCart(); return; }
+
   // Вовк у прицілі (ПКМ) → погодувати/приручити м'ясом або посадити прирученого
   if (animals.length > 0 && tryInteractWolf()) return;
 
@@ -6496,6 +6997,12 @@ function placeBlock() {
   // Драбина — сутність на бічній грані блока, не змінює воксельну сітку
   if (id === LADDER) {
     placeLadder(hit);
+    return;
+  }
+
+  // Рейки — сутність на твердій опорі, сама з'єднується із сусідніми рейками
+  if (id === RAIL) {
+    placeRail(hit);
     return;
   }
 
@@ -6565,6 +7072,7 @@ function placeBlock() {
   validateDoors();    // ... або клітинку дверей
   validateFences();   // ... або клітинку паркана/хвіртки
   validateSaplings(); // ... або клітинку саджанця
+  validateRails();    // ... або клітинку рейки
 }
 
 // ===== Менеджмент чанків =====
@@ -7456,6 +7964,32 @@ function drawBlockIcon(canvas, id) {
     drawEggIcon(canvas);
     return;
   }
+  if (id === RAIL) {
+    // Процедурна іконка рейок (вигляд згори): дві сталеві рейки на шпалах
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#7a5230';
+    ctx.fillRect(1, 2, 14, 2);          // шпали
+    ctx.fillRect(1, 7, 14, 2);
+    ctx.fillRect(1, 12, 14, 2);
+    ctx.fillStyle = '#9aa3ad';
+    ctx.fillRect(4, 0, 2, 16);          // рейки
+    ctx.fillRect(10, 0, 2, 16);
+    return;
+  }
+  if (id === MINECART) {
+    // Процедурна іконка вагонетки: залізний короб на колесах
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#555b63';
+    ctx.fillRect(2, 4, 12, 8);          // корпус
+    ctx.fillStyle = '#3a3f45';
+    ctx.fillRect(4, 6, 8, 4);           // нутро
+    ctx.fillStyle = '#1e2126';
+    ctx.fillRect(3, 12, 3, 3);          // колеса
+    ctx.fillRect(10, 12, 3, 3);
+    return;
+  }
   if (id === SIGN) {
     // Процедурна іконка таблички: стовпчик + дошка з «рядками» напису
     const ctx = canvas.getContext('2d');
@@ -7747,6 +8281,7 @@ bindTouchButton('btn-jump', () => {
   keys['Space'] = true;
   if (ridingBoat) { dismountBoat(); return; }   // у човні кнопка стрибка — злізти
   if (ridingHorse) { dismountHorse(); return; } // верхи — теж злізти
+  if (ridingCart) { dismountCart(); return; }   // і з вагонетки
   const now = performance.now();
   if (now - lastJumpTouch < 320) toggleFlight();
   lastJumpTouch = now;
@@ -7802,6 +8337,7 @@ document.addEventListener('keydown', (e) => {
       // У човні чи верхи Space — злізти (пріоритет над подвійним тапом польоту)
       if (ridingBoat) { dismountBoat(); return; }
       if (ridingHorse) { dismountHorse(); return; }
+      if (ridingCart) { dismountCart(); return; }
       const now = performance.now();
       if (now - lastSpaceDown < 300) toggleFlight();
       lastSpaceDown = now;
@@ -8202,6 +8738,7 @@ const ACHIEVEMENTS = [
   { id: 'hatch',       icon: '🐣', title: 'Нове життя',         desc: 'Вилупити курча з кинутого яйця' },
   { id: 'sign',        icon: '🪧', title: 'Літописець',         desc: 'Написати табличку' },
   { id: 'milk',        icon: '🥛', title: 'Молочар',            desc: 'Подоїти корову' },
+  { id: 'railman',     icon: '🛤', title: 'Машиніст',           desc: 'Розігнатися вагонеткою рейками' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -8971,6 +9508,81 @@ window.MCDebug = {
       chicks: animals.filter((a) => a.baby).length,
     };
   },
+  // Рейки та вагонетки (для тестів)
+  giveRail: () => { assignBlockToSlot(RAIL); return BLOCK_NAMES[RAIL]; },
+  giveMinecart: () => { assignBlockToSlot(MINECART); return BLOCK_NAMES[MINECART]; },
+  // Увійти в гру без pointer lock (сенсорний режим) — для автоматичних тестів
+  play: () => { enterMobileMode(); return true; },
+  // Пряма колія довжиною len на схід від гравця (кам'яна основа + рейки)
+  railLineNear: (len = 10) => {
+    const x0 = Math.floor(player.pos.x) + 2, z = Math.floor(player.pos.z);
+    const y = Math.floor(player.pos.y);
+    let built = 0;
+    for (let i = 0; i < len; i++) {
+      const x = x0 + i;
+      setBlock(x, y - 1, z, STONE);
+      if (blockAt(x, y, z) !== AIR) setBlock(x, y, z, AIR);
+      if (addRail(x, y, z, [1, 0], [-1, 0])) built++;
+    }
+    return { from: [x0, y, z], to: [x0 + len - 1, y, z], built };
+  },
+  // Замкнена прямокутна колія w×h із чотирма поворотами (для тестів поворотів)
+  railLoopNear: (w = 6, h = 6) => {
+    const x0 = Math.floor(player.pos.x) + 2, z0 = Math.floor(player.pos.z) - Math.floor(h / 2);
+    const y = Math.floor(player.pos.y);
+    const cells = [];
+    for (let i = 0; i < w; i++) { cells.push([x0 + i, z0]); cells.push([x0 + i, z0 + h - 1]); }
+    for (let j = 1; j < h - 1; j++) { cells.push([x0, z0 + j]); cells.push([x0 + w - 1, z0 + j]); }
+    for (const [x, z] of cells) {
+      setBlock(x, y - 1, z, STONE);
+      if (blockAt(x, y, z) !== AIR) setBlock(x, y, z, AIR);
+    }
+    let built = 0;
+    for (const [x, z] of cells) {
+      const ends = [];
+      for (const d of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        if (cells.some(([cx, cz]) => cx === x + d[0] && cz === z + d[1])) ends.push(d);
+      }
+      if (ends.length >= 2 && addRail(x, y, z, ends[0], ends[1])) built++;
+    }
+    return { at: [x0, y, z0], w, h, built };
+  },
+  // Поставити вагонетку на найближчу до гравця рейку
+  cartOnRail: () => {
+    let best = null, bestD = Infinity;
+    for (const r of rails.values()) {
+      const d = Math.hypot(r.x + 0.5 - player.pos.x, r.z + 0.5 - player.pos.z);
+      if (d < bestD) { bestD = d; best = r; }
+    }
+    if (!best) return null;
+    const cart = addCart([best.x, best.y, best.z]);
+    return cart ? { x: best.x, y: best.y, z: best.z } : null;
+  },
+  // Штовхнути вагонетку (ридну або найближчу) уздовж колії зі швидкістю v
+  cartPush: (v = 6) => {
+    const cart = ridingCart || nearestCart(8);
+    if (!cart || !cart.onRail) return null;
+    if (!cart.b) {
+      const r = rails.get(railKey(cart.a[0], cart.a[1], cart.a[2]));
+      if (!r) return null;
+      for (const e of [r.a, r.b]) {
+        const n = [cart.a[0] + e[0], cart.a[1], cart.a[2] + e[1]];
+        if (rails.has(railKey(n[0], n[1], n[2]))) { cart.b = n; cart.t = 0; break; }
+      }
+      if (!cart.b) return null;
+    }
+    cart.speed = v;
+    return { speed: cart.speed };
+  },
+  mountNearCart: () => { const c = nearestCart(6); return c ? mountCart(c) : false; },
+  dismountCart: () => { dismountCart(); return !!ridingCart; },
+  get rails() { return rails.size; },
+  get carts() {
+    return carts.map((c) => ({
+      x: +c.pos.x.toFixed(2), y: +c.pos.y.toFixed(2), z: +c.pos.z.toFixed(2),
+      speed: +c.speed.toFixed(2), onRail: c.onRail, riding: c === ridingCart,
+    }));
+  },
 };
 
 const clock = new THREE.Clock();
@@ -9002,6 +9614,7 @@ function animate() {
     updateThrownEggs(dt);
     updateFallingBlocks(dt);
     updateBoats(dt);
+    updateCarts(dt);
     updateFishing(dt);
     updateParticles(dt);
     updateWeather(dt);
