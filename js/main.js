@@ -108,6 +108,13 @@ const SIGN = 41;
 // MILK_BUCKET уже зайняв id 42, тож рейки та вагонетка йдуть далі.
 const RAIL = 43, MINECART = 44;
 
+// Багаття — окремий предмет-сутність (як смолоскип, не воксель): кам'яне коло
+// з колодами й живим полум'ям, ставиться ПКМ на тверду поверхню. ПКМ по
+// багатті з сирим м'ясом 🍖 у торбі — насадити порцію на рожен: за кілька
+// секунд вона стає смажениною 🍗, що відновлює більше голоду. Вогнище світить
+// у темряві, відлякує нечисть (як смолоскип) і обпікає, якщо стати в полум'я.
+const CAMPFIRE = 45;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -125,6 +132,7 @@ const BLOCK_NAMES = {
   [EGG]: 'Яйце',
   [SIGN]: 'Табличка',
   [RAIL]: 'Рейки', [MINECART]: 'Вагонетка',
+  [CAMPFIRE]: 'Багаття',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
@@ -132,7 +140,7 @@ const ALL_BLOCKS = [
   GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, GLASS, WOOL,
   WATER, LAVA,
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
-  BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART,
+  BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -336,6 +344,7 @@ function saveGame() {
         health: player.health,
         hunger: player.hunger,
         food: player.food,
+        cooked: player.cooked,
         eggs: player.eggs,
         flying: player.flying,
       },
@@ -353,6 +362,8 @@ function saveGame() {
       boats: boats.map((b) => [+b.pos.x.toFixed(2), +b.pos.y.toFixed(2), +b.pos.z.toFixed(2), +b.yaw.toFixed(3)]),
       rails: [...rails.values()].map((r) => [r.x, r.y, r.z, r.a[0], r.a[1], r.b[0], r.b[1]]),
       carts: carts.map((c) => [+c.pos.x.toFixed(2), +c.pos.y.toFixed(2), +c.pos.z.toFixed(2)]),
+      campfires: [...campfires.values()].map((c) =>
+        [c.x, c.y, c.z, c.cooking ? 1 : 0, +c.cookT.toFixed(1)]),
       wolves: animals.filter((a) => a.type === 'wolf' && a.tamed)
         .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
                      +a.health.toFixed(1), a.sitting ? 1 : 0]),
@@ -699,6 +710,20 @@ const Sound = (() => {
         if (!enabled) return;
         noise({ dur: 0.08, gain: 0.13, type: 'lowpass', freq: 560, q: 0.8 });
       }, 130);
+    },
+    // Шкварчання м'яса на багатті: сухий високий шум, як бризки жиру
+    sizzle(gain = 0.06) {
+      noise({ dur: 0.4, gain, type: 'highpass', freq: 4200, q: 0.7 });
+      noise({ dur: 0.22, gain: gain * 0.7, type: 'bandpass', freq: 2500, q: 1.6 });
+    },
+    // Дзвінке «дзинь» — страва на багатті приготувалася
+    cookDone() {
+      if (!ctx || !enabled) return;
+      tone({ freq: 880, dur: 0.1, type: 'triangle', gain: 0.1, attack: 0.004 });
+      setTimeout(() => {
+        if (!enabled) return;
+        tone({ freq: 1318.5, dur: 0.18, type: 'triangle', gain: 0.1, attack: 0.004 });
+      }, 100);
     },
     // Здобуте досягнення: коротка висхідна мажорна фанфара (C-E-G-C)
     achievement() {
@@ -1643,6 +1668,8 @@ const MAX_HUNGER = 20;          // 10 «ніжок» (по 2 одиниці ко
 const FOOD_MAX = 64;            // максимум сирого м'яса в торбі
 const EGG_MAX = 64;             // максимум курячих яєць у торбі
 const EAT_AMOUNT = 6;           // скільки голоду відновлює одна порція (3 ніжки)
+const COOKED_MAX = 64;          // максимум смаженого м'яса в торбі
+const COOKED_FOOD = 10;         // скільки голоду відновлює смаженина (5 ніжок)
 const EAT_COOLDOWN = 0.9;       // пауза між поїданнями, с
 const HUNGER_PER_EXHAUSTION = 4; // одиниць виснаження на 1 одиницю голоду
 const FALL_SAFE = 3;            // блоки падіння без шкоди
@@ -1667,13 +1694,15 @@ const player = {
   hunger: MAX_HUNGER,   // голод: спадає від активності
   exhaustion: 0,        // накопичене виснаження; на порозі знімає 1 голод
   food: 0,              // зібране сире м'ясо (їжа)
+  cooked: 0,            // смажене на багатті м'ясо (ситніше за сире)
   eggs: 0,              // зібрані курячі яйця (боєзапас для кидання)
   starveTick: 0,        // таймер шкоди від голоду
   eatTimer: 0,          // перезарядка поїдання
   dead: false,
   invuln: 0,        // короткі кадри невразливості після удару
   hurtFlash: 0,     // інтенсивність червоного спалаху (0..1)
-  fireTicks: 0,     // час, поки гравець горить (лава); догорає й поза лавою
+  fireTicks: 0,     // час, поки гравець горить (лава/багаття); догорає й поза вогнем
+  fireSource: 'lava', // що підпалило ('lava' | 'fire') — для причини смерті
   fireDmgTick: 0,   // таймер шкоди від вогню
   sinceHurt: 999,   // секунд від останньої шкоди (для регенерації)
   regenTick: 0,
@@ -1704,6 +1733,9 @@ if (savedGame && savedGame.player) {
   }
   if (Number.isFinite(p.food)) {
     player.food = THREE.MathUtils.clamp(Math.floor(p.food), 0, FOOD_MAX);
+  }
+  if (Number.isFinite(p.cooked)) {
+    player.cooked = THREE.MathUtils.clamp(Math.floor(p.cooked), 0, COOKED_MAX);
   }
   if (Number.isFinite(p.eggs)) {
     player.eggs = THREE.MathUtils.clamp(Math.floor(p.eggs), 0, EGG_MAX);
@@ -1990,13 +2022,17 @@ function updateSurvival(dt) {
   const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
   const inLavaBody = isLavaId(blockAt(px, Math.floor(player.pos.y + 0.4), pz)) ||
                      isLavaId(blockAt(px, Math.floor(player.pos.y + EYE), pz));
-  if (inLavaBody) { player.fireTicks = Math.max(player.fireTicks, 3); unlockAch('lava'); }
+  if (inLavaBody) {
+    player.fireTicks = Math.max(player.fireTicks, 3);
+    player.fireSource = 'lava';
+    unlockAch('lava');
+  }
   if (player.fireTicks > 0) {
     player.fireTicks = Math.max(0, player.fireTicks - dt);
     player.fireDmgTick -= dt;
     if (player.fireDmgTick <= 0) {
       player.fireDmgTick = 0.4;
-      damagePlayer(inLavaBody ? 2 : 1, 'lava');
+      damagePlayer(inLavaBody ? 2 : 1, inLavaBody ? 'lava' : player.fireSource);
     }
     // Полум'я довкола гравця
     if (Math.random() < dt * 26) {
@@ -2080,13 +2116,23 @@ let achEnvTimer = 0;
 // Зʼїсти одну порцію сирого м'яса (клавіша F / кнопка 🍖)
 function eatFood() {
   if (player.dead || player.eatTimer > 0) return;
-  if (player.food <= 0 || player.hunger >= MAX_HUNGER) return;
-  player.food -= 1;
-  player.hunger = Math.min(MAX_HUNGER, player.hunger + EAT_AMOUNT);
+  if ((player.food <= 0 && player.cooked <= 0) || player.hunger >= MAX_HUNGER) return;
+  // Смаженина ситніша, тож їмо її при великому голоді (щоб не змарнувати
+  // жодної «ніжки») або коли сирого не лишилось; інакше — сире м'ясо/зерно
+  const deficit = MAX_HUNGER - player.hunger;
+  const useCooked = player.cooked > 0 && (deficit >= COOKED_FOOD || player.food <= 0);
+  if (useCooked) {
+    player.cooked -= 1;
+    player.hunger = Math.min(MAX_HUNGER, player.hunger + COOKED_FOOD);
+  } else {
+    player.food -= 1;
+    player.hunger = Math.min(MAX_HUNGER, player.hunger + EAT_AMOUNT);
+  }
   player.eatTimer = EAT_COOLDOWN;
   Sound.eat();
   unlockAch('eat');
   updateFoodHud();
+  updateCookedHud();
 }
 
 // ============================================================
@@ -3215,6 +3261,7 @@ function trySpawnMob() {
   if (!isSolid(blockAt(x, h, z))) return;       // тверда опора
   if (isSolid(blockAt(x, h + 1, z)) || isSolid(blockAt(x, h + 2, z))) return; // є місце
   if (torchNear(x + 0.5, h + 1, z + 0.5, 7)) return; // світло смолоскипа відлякує нечисть
+  if (campfireNear(x + 0.5, h + 1, z + 0.5, 7)) return; // ... і жар багаття теж
   // Нічна нечисть: кріпери (підривники), скелети (лучники), павуки (верхолази), зомбі
   const r = Math.random();
   const type = r < 0.22 ? 'creeper' : r < 0.44 ? 'skeleton' : r < 0.66 ? 'spider' : 'zombie';
@@ -3618,10 +3665,15 @@ function startBreakOrAttack() {
   // Зняти смолоскип/драбину/рейку/саджанець або зібрати посів, якщо дивимось на
   // них (клітинка перед блоком)
   if (torches.size > 0 || crops.size > 0 || ladders.size > 0 || saplings.size > 0 ||
-      signs.size > 0 || rails.size > 0) {
+      signs.size > 0 || rails.size > 0 || campfires.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+      if (campfires.has(key)) {
+        breakCampfire(key);
+        triggerSwing();
+        return;
+      }
       if (torches.has(key)) {
         spawnParticles(hit.prev[0] + 0.5, hit.prev[1] + 0.4, hit.prev[2] + 0.5, torchEmber, 6,
           { radius: 0.2, speed: 1.4, upBias: 0.8, life: 0.5, size: 0.07, gravity: 6 });
@@ -4125,6 +4177,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateFences();   // ... і опору/клітинки парканів і хвірток
   validateSaplings(); // ... і опору/клітинки саджанців
   validateRails();    // ... і опору рейок
+  validateCampfires(); // ... і опору багать
   Sound.explosion();
   knockback(player, cx, cy, cz);
   for (const a of animals) knockback(a, cx, cy, cz);
@@ -4264,6 +4317,7 @@ function updateFallingBlocks(dt) {
       validateFences();
       validateSaplings();
       validateRails();
+      validateCampfires();
     }
   }
 }
@@ -4598,7 +4652,7 @@ function placeTorch(hit) {
       ladders.has(torchKey(x, y, z)) || doorAtCell(x, y, z) ||
       fences.has(torchKey(x, y, z)) || gates.has(torchKey(x, y, z)) ||
       saplings.has(torchKey(x, y, z)) || signs.has(torchKey(x, y, z)) ||
-      rails.has(torchKey(x, y, z))) return false;
+      rails.has(torchKey(x, y, z)) || campfires.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -4757,7 +4811,8 @@ function placeLadder(hit) {
       crops.has(x + ',' + y + ',' + z) || beds.has(x + ',' + y + ',' + z) ||
       doorAtCell(x, y, z) || fences.has(ladderKey(x, y, z)) ||
       gates.has(ladderKey(x, y, z)) || saplings.has(ladderKey(x, y, z)) ||
-      signs.has(ladderKey(x, y, z)) || rails.has(ladderKey(x, y, z))) return false;
+      signs.has(ladderKey(x, y, z)) || rails.has(ladderKey(x, y, z)) ||
+      campfires.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -4965,7 +5020,7 @@ function placeDoor(hit) {
     const k = doorKey(x, cy, z);
     if (doorAtCell(x, cy, z) || torches.has(k) || crops.has(k) ||
         beds.has(k) || ladders.has(k) || fences.has(k) || gates.has(k) ||
-        saplings.has(k) || signs.has(k) || rails.has(k)) return false;
+        saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -5229,7 +5284,7 @@ function fenceCellFree(x, y, z) {
   const k = fenceKey(x, y, z);
   return !fences.has(k) && !gates.has(k) && !doorAtCell(x, y, z) &&
          !torches.has(k) && !crops.has(k) && !beds.has(k) && !ladders.has(k) &&
-         !saplings.has(k) && !signs.has(k) && !rails.has(k);
+         !saplings.has(k) && !signs.has(k) && !rails.has(k) && !campfires.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -5398,7 +5453,7 @@ function plantCrop(hit) {
       ladders.has(cropKey(x, y, z)) || doorAtCell(x, y, z) ||
       fences.has(cropKey(x, y, z)) || gates.has(cropKey(x, y, z)) ||
       saplings.has(cropKey(x, y, z)) || signs.has(cropKey(x, y, z)) ||
-      rails.has(cropKey(x, y, z))) return false;
+      rails.has(cropKey(x, y, z)) || campfires.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -5550,7 +5605,8 @@ function plantSapling(hit) {
       torches.has(torchKey(x, y, z)) || ladders.has(saplingKey(x, y, z)) ||
       beds.has(saplingKey(x, y, z)) || doorAtCell(x, y, z) ||
       fences.has(saplingKey(x, y, z)) || gates.has(saplingKey(x, y, z)) ||
-      signs.has(saplingKey(x, y, z)) || rails.has(saplingKey(x, y, z))) return false;
+      signs.has(saplingKey(x, y, z)) || rails.has(saplingKey(x, y, z)) ||
+      campfires.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -5600,6 +5656,7 @@ function growSaplingTree(s) {
   validateFences();
   validateSaplings();
   validateRails();
+  validateCampfires();
   unlockAch('grow_tree');
   return true;
 }
@@ -5698,7 +5755,8 @@ function placeBed(hit) {
       crops.has(cropKey(x, y, z)) || ladders.has(bedKey(x, y, z)) ||
       doorAtCell(x, y, z) || fences.has(bedKey(x, y, z)) ||
       gates.has(bedKey(x, y, z)) || saplings.has(bedKey(x, y, z)) ||
-      signs.has(bedKey(x, y, z)) || rails.has(bedKey(x, y, z))) return false;
+      signs.has(bedKey(x, y, z)) || rails.has(bedKey(x, y, z)) ||
+      campfires.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -5925,6 +5983,7 @@ function validateSigns() {
 function signCellFree(x, y, z) {
   const k = signKey(x, y, z);
   return blockAt(x, y, z) === AIR && !signs.has(k) && !torches.has(k) && !rails.has(k) &&
+         !campfires.has(k) &&
          !crops.has(k) && !beds.has(k) && !ladders.has(k) && !doorAtCell(x, y, z) &&
          !fences.has(k) && !gates.has(k) && !saplings.has(k);
 }
@@ -6117,6 +6176,7 @@ function updateMining(dt, hit) {
     validateFences();   // ... або опора під парканом/хвірткою
     validateSaplings(); // ... або грунт під саджанцем
     validateRails();    // ... або опору рейки
+    validateCampfires(); // ... або опору багаття
     unlockAch('first_block');
     if (id === LOG) unlockAch('chop_wood');
     else if (id === COAL) unlockAch('coal');
@@ -6470,7 +6530,7 @@ function placeRail(hit) {
   const k = railKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || !isSolid(blockAt(x, y - 1, z))) return false;
   if (rails.has(k) || torches.has(k) || crops.has(k) || beds.has(k) ||
-      ladders.has(k) || saplings.has(k) || signs.has(k) ||
+      ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
   for (const d of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -6818,6 +6878,295 @@ if (savedGame && Array.isArray(savedGame.carts)) {
 }
 
 // ============================================================
+// Багаття: вогнище для приготування їжі
+// ============================================================
+// Багаття — сутність у клітинці (як смолоскип, воксельну сітку не змінює):
+// кам'яне коло, перехрещені колоди, живе полум'я з димом та іскрами. ПКМ по
+// багатті з сирим м'ясом у торбі — насадити порцію на рожен; за COOK_TIME
+// секунд вона стає смажениною (player.cooked), що відновлює більше голоду.
+// Вогнище світить (власний пул точкових ламп), відлякує нічну нечисть, як
+// смолоскип, і підпалює гравця, який став у полум'я. ЛКМ — розібрати
+// (недосмажене сире м'ясо повертається в торбу).
+const campfires = new Map();           // "x,y,z" -> { x, y, z, group, ... }
+const CAMPFIRE_MAX = 64;               // межа, щоб збереження не розросталося
+const COOK_TIME = 6;                   // секунд смаження однієї порції
+const CAMPFIRE_LIGHT_POOL = 3;         // скільки багать світять реально водночас
+const CAMPFIRE_LIGHT_RANGE = 34;       // далі за це лампа не призначається
+
+const CAMPFIRE_STONE = 0x7d848d;
+const CAMPFIRE_LOG = 0x6b4a2b;
+const CAMPFIRE_LOG_DARK = 0x54381f;
+const MEAT_RAW_COLOR = new THREE.Color(0xc0392b);
+const MEAT_DONE_COLOR = new THREE.Color(0x7a4a1f);
+
+const campfireLights = [];
+for (let i = 0; i < CAMPFIRE_LIGHT_POOL; i++) {
+  const l = new THREE.PointLight(0xffa050, 0, 12, 1.5);
+  scene.add(l);
+  campfireLights.push(l);
+}
+
+const campfireKey = (x, y, z) => x + ',' + y + ',' + z;
+
+function makeCampfireModel() {
+  const g = new THREE.Group();
+  // Кам'яне коло довкола вогнища
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + 0.26;
+    animalBox(g, 0.16, 0.13, 0.16, i % 2 ? CAMPFIRE_STONE : 0x6e757e,
+      Math.cos(a) * 0.38, 0.065, Math.sin(a) * 0.38);
+  }
+  // Дві пари перехрещених колод
+  animalBox(g, 0.68, 0.11, 0.15, CAMPFIRE_LOG, 0, 0.1, -0.13);
+  animalBox(g, 0.68, 0.11, 0.15, CAMPFIRE_LOG_DARK, 0, 0.1, 0.13);
+  animalBox(g, 0.15, 0.11, 0.68, CAMPFIRE_LOG_DARK, -0.13, 0.21, 0);
+  animalBox(g, 0.15, 0.11, 0.68, CAMPFIRE_LOG, 0.13, 0.21, 0);
+  // Жар у серці вогнища
+  const ember = new THREE.Mesh(
+    new THREE.BoxGeometry(0.3, 0.09, 0.3),
+    new THREE.MeshLambertMaterial({ color: 0xff9a40, emissive: 0xff5a00, emissiveIntensity: 1 })
+  );
+  ember.position.set(0, 0.16, 0);
+  g.add(ember);
+  // Язики полум'я: три бокси різної висоти, мерехтять у updateCampfires
+  const flames = [];
+  const flameSpots = [[0, 0.38, 0, 0.26], [-0.12, 0.33, 0.09, 0.17], [0.11, 0.34, -0.1, 0.15]];
+  for (const [fx, fy, fz, s] of flameSpots) {
+    const f = new THREE.Mesh(
+      new THREE.BoxGeometry(s, s * 1.7, s),
+      new THREE.MeshLambertMaterial({ color: 0xffd070, emissive: 0xff7a1a, emissiveIntensity: 1.2 })
+    );
+    f.position.set(fx, fy, fz);
+    g.add(f);
+    flames.push(f);
+  }
+  // Сяйво (як у смолоскипа, але більше)
+  const glowMat = new THREE.SpriteMaterial({
+    map: torchGlowTex, transparent: true, depthWrite: false,
+    blending: THREE.AdditiveBlending, opacity: 0.85,
+  });
+  const glow = new THREE.Sprite(glowMat);
+  glow.scale.setScalar(2.2);
+  glow.position.set(0, 0.45, 0);
+  g.add(glow);
+  // Рожен: дві рогатини й поперечина, на якій смажиться м'ясо
+  animalBox(g, 0.05, 0.62, 0.05, CAMPFIRE_LOG_DARK, -0.34, 0.31, 0);
+  animalBox(g, 0.05, 0.62, 0.05, CAMPFIRE_LOG_DARK, 0.34, 0.31, 0);
+  animalBox(g, 0.76, 0.045, 0.045, CAMPFIRE_LOG, 0, 0.66, 0);
+  const meatMat = new THREE.MeshLambertMaterial({ color: MEAT_RAW_COLOR.clone() });
+  const meat = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.15, 0.16), meatMat);
+  meat.position.set(0, 0.58, 0);
+  meat.visible = false;
+  g.add(meat);
+  return { group: g, ember, flames, glow, glowMat, meat, meatMat };
+}
+
+function addCampfire(x, y, z, cooking = false, cookT = 0) {
+  const key = campfireKey(x, y, z);
+  if (campfires.has(key) || campfires.size >= CAMPFIRE_MAX) return false;
+  const m = makeCampfireModel();
+  m.group.position.set(x + 0.5, y, z + 0.5);
+  scene.add(m.group);
+  campfires.set(key, {
+    x, y, z, group: m.group, ember: m.ember, flames: m.flames,
+    glow: m.glow, glowMat: m.glowMat, meat: m.meat, meatMat: m.meatMat,
+    flick: Math.random() * 6.28, spark: Math.random(), smoke: Math.random() * 0.8,
+    sizzleT: 0, cooking: !!cooking, cookT: cooking ? cookT : 0,
+  });
+  if (cooking) m.meat.visible = true;
+  return true;
+}
+
+function removeCampfire(key) {
+  const c = campfires.get(key);
+  if (!c) return;
+  scene.remove(c.group);
+  c.group.traverse((o) => {
+    if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
+    if (o.isSprite) o.material.dispose();
+  });
+  campfires.delete(key);
+}
+
+// Розібрати багаття ударом: недосмажена порція повертається сирим м'ясом
+function breakCampfire(key) {
+  const c = campfires.get(key);
+  if (!c) return;
+  if (c.cooking) {
+    player.food = Math.min(FOOD_MAX, player.food + 1);
+    updateFoodHud();
+  }
+  spawnParticles(c.x + 0.5, c.y + 0.35, c.z + 0.5, torchEmber, 10,
+    { radius: 0.3, speed: 1.6, upBias: 0.8, life: 0.55, size: 0.08, gravity: 6 });
+  Sound.breakBlock(LOG);
+  removeCampfire(key);
+}
+
+// Зняти багаття, що втратили опору або клітинку яких зайняв блок
+function validateCampfires() {
+  if (campfires.size === 0) return;
+  for (const [key, c] of campfires) {
+    const occupied = isSolid(blockAt(c.x, c.y, c.z));
+    const supported = isSolid(blockAt(c.x, c.y - 1, c.z));
+    if (occupied || !supported) breakCampfire(key);
+  }
+}
+
+// Чи є багаття в радіусі r від точки (стримує нічний спавн, як смолоскип)
+function campfireNear(x, y, z, r) {
+  if (campfires.size === 0) return false;
+  const r2 = r * r;
+  for (const c of campfires.values()) {
+    const dx = c.x + 0.5 - x, dy = c.y + 0.5 - y, dz = c.z + 0.5 - z;
+    if (dx * dx + dy * dy + dz * dz < r2) return true;
+  }
+  return false;
+}
+
+// Поставити багаття в клітинку перед прицілом (лише на тверду підлогу)
+function placeCampfire(hit) {
+  const [x, y, z] = hit.prev;
+  const k = campfireKey(x, y, z);
+  if (blockAt(x, y, z) !== AIR || campfires.has(k) || torches.has(k) ||
+      ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
+      crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
+      rails.has(k)) return false;
+  if (!isSolid(blockAt(x, y - 1, z))) return false;
+  if (!addCampfire(x, y, z)) return false;
+  Sound.torch(0.2);
+  spawnParticles(x + 0.5, y + 0.45, z + 0.5, torchEmber, 8,
+    { radius: 0.3, speed: 1.5, upBias: 1.1, life: 0.5, size: 0.08, gravity: -2 });
+  return true;
+}
+
+// ПКМ по багатті: насадити порцію сирого м'яса на рожен
+function tryCookAt(c) {
+  if (c.cooking) {
+    flashItemName('На багатті вже смажиться порція');
+    return true;
+  }
+  if (player.food <= 0) {
+    flashItemName("Немає сирого м'яса — вполюйте здобич");
+    return true;
+  }
+  player.food -= 1;
+  updateFoodHud();
+  c.cooking = true;
+  c.cookT = 0;
+  c.meat.visible = true;
+  c.meatMat.color.copy(MEAT_RAW_COLOR);
+  Sound.sizzle(0.09);
+  spawnParticles(c.x + 0.5, c.y + 0.62, c.z + 0.5, MEAT_RAW_COLOR, 5,
+    { radius: 0.12, speed: 0.8, upBias: 0.6, life: 0.4, size: 0.06, gravity: 4 });
+  return true;
+}
+
+const _campfireSorted = [];
+let campfireCrackleTimer = 2;
+function updateCampfires(dt) {
+  if (campfires.size === 0) {
+    for (const l of campfireLights) l.intensity = 0;
+    return;
+  }
+  const px = Math.floor(player.pos.x), py = Math.floor(player.pos.y),
+        pz = Math.floor(player.pos.z);
+  for (const c of campfires.values()) {
+    // Мерехтіння полум'я та жару
+    c.flick += dt * (6 + Math.random() * 3);
+    const f = 0.75 + 0.25 * Math.sin(c.flick) + (Math.random() - 0.5) * 0.08;
+    for (let i = 0; i < c.flames.length; i++) {
+      const fl = c.flames[i];
+      const w = 0.7 + 0.3 * Math.sin(c.flick * (1.1 + i * 0.35) + i * 2.1);
+      fl.scale.y = 0.75 + w * 0.5;
+      fl.material.emissiveIntensity = 0.9 + w * 0.6;
+    }
+    c.ember.material.emissiveIntensity = 0.7 + f * 0.5;
+    c.glowMat.opacity = 0.5 + f * 0.35;
+    c.glow.scale.setScalar(2.0 + f * 0.55);
+    // Іскри та дим
+    c.spark -= dt;
+    if (c.spark <= 0) {
+      c.spark = 0.35 + Math.random() * 0.9;
+      spawnParticles(c.x + 0.5, c.y + 0.5, c.z + 0.5, torchEmber, 1,
+        { radius: 0.12, speed: 0.7, upBias: 1.2, life: 0.7, size: 0.06, gravity: -2 });
+    }
+    c.smoke -= dt;
+    if (c.smoke <= 0) {
+      c.smoke = 0.5 + Math.random() * 0.7;
+      spawnParticles(c.x + 0.5, c.y + 0.75, c.z + 0.5, SMOKE_COLOR, 1,
+        { radius: 0.14, speed: 0.35, upBias: 1.6, life: 1.6, size: 0.14, gravity: -1.2 });
+    }
+    // Смаження: колір порції повзе від сирого до підсмаженого
+    if (c.cooking) {
+      c.cookT += dt;
+      const t = Math.min(1, c.cookT / COOK_TIME);
+      c.meatMat.color.copy(MEAT_RAW_COLOR).lerp(MEAT_DONE_COLOR, t);
+      c.sizzleT -= dt;
+      if (c.sizzleT <= 0) {
+        c.sizzleT = 0.8 + Math.random() * 0.8;
+        const d2p = c.group.position.distanceToSquared(player.pos);
+        if (d2p < 120) Sound.sizzle(0.05);
+        spawnParticles(c.x + 0.5, c.y + 0.6, c.z + 0.5, SMOKE_COLOR, 1,
+          { radius: 0.1, speed: 0.4, upBias: 1.2, life: 0.8, size: 0.08, gravity: -1.5 });
+      }
+      if (c.cookT >= COOK_TIME) {
+        c.cooking = false;
+        c.meat.visible = false;
+        player.cooked = Math.min(COOKED_MAX, player.cooked + 1);
+        updateCookedHud();
+        Sound.cookDone();
+        flashItemName("🍗 М'ясо готове!");
+        unlockAch('cook');
+        spawnParticles(c.x + 0.5, c.y + 0.62, c.z + 0.5, MEAT_DONE_COLOR, 8,
+          { radius: 0.15, speed: 1.4, upBias: 1, life: 0.5, size: 0.07, gravity: 5 });
+      }
+    }
+    // Стати у вогнище — обпектися (вогонь догорає, як після лави)
+    if (px === c.x && pz === c.z && (py === c.y || py === c.y - 1) &&
+        player.pos.y < c.y + 1) {
+      player.fireTicks = Math.max(player.fireTicks, 1.2);
+      player.fireSource = 'fire';
+    }
+  }
+  // Призначити пул найближчих ламп (як у смолоскипів)
+  _campfireSorted.length = 0;
+  for (const c of campfires.values()) {
+    const dx = c.x + 0.5 - camera.position.x;
+    const dy = c.y + 0.5 - camera.position.y;
+    const dz = c.z + 0.5 - camera.position.z;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 < CAMPFIRE_LIGHT_RANGE * CAMPFIRE_LIGHT_RANGE) _campfireSorted.push({ c, d2 });
+  }
+  _campfireSorted.sort((a, b) => a.d2 - b.d2);
+  for (let i = 0; i < CAMPFIRE_LIGHT_POOL; i++) {
+    const l = campfireLights[i];
+    if (i < _campfireSorted.length) {
+      const c = _campfireSorted[i].c;
+      const flick = 0.85 + 0.15 * Math.sin(c.flick * 1.2);
+      l.position.set(c.x + 0.5, c.y + 0.55, c.z + 0.5);
+      l.intensity = 2.2 * flick;
+    } else {
+      l.intensity = 0;
+    }
+  }
+  // Потріскування найближчого вогнища
+  campfireCrackleTimer -= dt;
+  if (campfireCrackleTimer <= 0) {
+    campfireCrackleTimer = 1.2 + Math.random() * 2;
+    if (_campfireSorted.length && _campfireSorted[0].d2 < 80) Sound.torch(0.07);
+  }
+}
+
+// Відновити збережені багаття (формат: [x, y, z, cooking, cookT])
+if (savedGame && Array.isArray(savedGame.campfires)) {
+  for (const e of savedGame.campfires) {
+    if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
+      addCampfire(e[0], e[1], e[2], !!e[3], Number.isFinite(e[4]) ? e[4] : 0);
+    }
+  }
+}
+
+// ============================================================
 // Відро: перенесення джерел води й лави
 // ============================================================
 // Порожнє відро набирає перше джерело (WATER/LAVA), у яке дивиться гравець,
@@ -6980,6 +7329,12 @@ function placeBlock() {
     if (beds.has(bk)) { trySleep(beds.get(bk)); return; }
   }
 
+  // Багаття в прицілі (ПКМ) → засмажити порцію м'яса, з будь-яким предметом у руці
+  if (campfires.size > 0) {
+    const ck = campfireKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    if (campfires.has(ck)) { tryCookAt(campfires.get(ck)); return; }
+  }
+
   if (hotbar[selectedSlot] === BOW) return;   // луком не ставлять блок
   if (hotbar[selectedSlot] === ROD) return;   // вудкою теж не ставлять блок
 
@@ -6997,6 +7352,12 @@ function placeBlock() {
   // Драбина — сутність на бічній грані блока, не змінює воксельну сітку
   if (id === LADDER) {
     placeLadder(hit);
+    return;
+  }
+
+  // Багаття — сутність на твердій підлозі, не змінює воксельну сітку
+  if (id === CAMPFIRE) {
+    placeCampfire(hit);
     return;
   }
 
@@ -7073,6 +7434,7 @@ function placeBlock() {
   validateFences();   // ... або клітинку паркана/хвіртки
   validateSaplings(); // ... або клітинку саджанця
   validateRails();    // ... або клітинку рейки
+  validateCampfires(); // ... або клітинку багаття
 }
 
 // ===== Менеджмент чанків =====
@@ -7543,6 +7905,8 @@ const healthEl = document.getElementById('health');
 const airEl = document.getElementById('air');
 const hungerEl = document.getElementById('hunger');
 const foodBadgeEl = document.getElementById('food-badge');
+const cookedBadgeEl = document.getElementById('cooked-badge');
+const cookedCountEl = document.getElementById('cooked-count');
 const foodCountEl = document.getElementById('food-count');
 const eggBadgeEl = document.getElementById('egg-badge');
 const eggCountEl = document.getElementById('egg-count');
@@ -7647,12 +8011,15 @@ function buildSurvivalHud() {
   if (foodIcon) drawDrumstick(foodIcon, 'full');
   const eggIcon = document.getElementById('egg-icon');
   if (eggIcon) drawEggIcon(eggIcon);
+  const cookedIcon = document.getElementById('cooked-icon');
+  if (cookedIcon) drawCookedIcon(cookedIcon);
 }
 
 let lastHealthDrawn = -1;
 let lastAirDrawn = -1;
 let lastHungerDrawn = -1;
 let lastFoodDrawn = -1;
+let lastCookedDrawn = -1;
 let lastEggsDrawn = -1;
 
 // Лічильник зібраного м'яса (бейдж 🍖)
@@ -7661,6 +8028,37 @@ function updateFoodHud() {
   lastFoodDrawn = player.food;
   foodCountEl.textContent = player.food;
   foodBadgeEl.hidden = player.food <= 0;
+}
+
+// Лічильник смаженого м'яса (бейдж 🍗 над торбою сирого)
+function updateCookedHud() {
+  if (player.cooked === lastCookedDrawn) return;
+  lastCookedDrawn = player.cooked;
+  cookedCountEl.textContent = player.cooked;
+  cookedBadgeEl.hidden = player.cooked <= 0;
+}
+
+// Піксельна іконка смаженої ніжки (бейдж, без атласу)
+function drawCookedIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#a4652a';                          // засмажене м'ясо
+  ctx.beginPath();
+  ctx.ellipse(6.5, 6.5, 4.6, 4.2, -0.6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#7a4a1f';                          // піджарені боки
+  ctx.beginPath();
+  ctx.ellipse(5.4, 5.6, 2.2, 1.8, -0.6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#e8d9b0';                          // кісточка
+  ctx.fillRect(9, 9, 2, 2);
+  ctx.fillRect(10, 10, 2, 2);
+  ctx.fillRect(11, 11, 3, 2);
+  ctx.fillStyle = '#f6efdf';
+  ctx.fillRect(13, 10, 2, 2);
+  ctx.fillRect(12, 13, 2, 2);
 }
 
 // Лічильник зібраних яєць (бейдж 🥚 над торбою їжі)
@@ -7733,6 +8131,7 @@ const DEATH_CAUSES = {
   spider: 'Ужалений павуком',
   starve: 'Помер від голоду',
   lava: 'Згорів у лаві',
+  fire: 'Згорів у багатті',
 };
 
 function showDeathScreen(cause) {
@@ -7758,6 +8157,24 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(6, 3, 4, 4);          // полум'я (зовнішнє)
     ctx.fillStyle = '#ffd070';
     ctx.fillRect(7, 4, 2, 2);          // ядро полум'я
+    return;
+  }
+  if (id === CAMPFIRE) {
+    // Процедурна іконка багаття: каміння, колоди й полум'я (без атласу)
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#7d848d';                 // каміння з боків
+    ctx.fillRect(1, 12, 3, 3);
+    ctx.fillRect(12, 12, 3, 3);
+    ctx.fillStyle = '#6b4a2b';                 // колоди
+    ctx.fillRect(3, 12, 10, 2);
+    ctx.fillStyle = '#54381f';
+    ctx.fillRect(5, 10, 6, 2);
+    ctx.fillStyle = '#ff7a1a';                 // полум'я
+    ctx.fillRect(6, 5, 4, 5);
+    ctx.fillRect(5, 7, 6, 3);
+    ctx.fillStyle = '#ffd070';                 // ядро полум'я
+    ctx.fillRect(7, 6, 2, 3);
     return;
   }
   if (id === SEEDS) {
@@ -8423,6 +8840,7 @@ buildBlockMenu();
 buildSurvivalHud();
 updateSurvivalHud();
 updateFoodHud();
+updateCookedHud();
 updateEggHud();
 document.getElementById('respawn-btn').addEventListener('click', respawn);
 
@@ -8739,6 +9157,7 @@ const ACHIEVEMENTS = [
   { id: 'sign',        icon: '🪧', title: 'Літописець',         desc: 'Написати табличку' },
   { id: 'milk',        icon: '🥛', title: 'Молочар',            desc: 'Подоїти корову' },
   { id: 'railman',     icon: '🛤', title: 'Машиніст',           desc: 'Розігнатися вагонеткою рейками' },
+  { id: 'cook',        icon: '🍗', title: 'Кухар',              desc: "Засмажити м'ясо на багатті" },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -9576,6 +9995,56 @@ window.MCDebug = {
   },
   mountNearCart: () => { const c = nearestCart(6); return c ? mountCart(c) : false; },
   dismountCart: () => { dismountCart(); return !!ridingCart; },
+  // Багаття та смаженина (для тестів)
+  giveCampfire: () => { assignBlockToSlot(CAMPFIRE); return BLOCK_NAMES[CAMPFIRE]; },
+  giveFood: (n = 8) => {
+    player.food = Math.min(FOOD_MAX, player.food + n);
+    updateFoodHud();
+    return player.food;
+  },
+  setHunger: (h = 0) => {
+    player.hunger = THREE.MathUtils.clamp(h, 0, MAX_HUNGER);
+    return player.hunger;
+  },
+  // Поставити багаття на поверхню за 2 блоки на схід від гравця
+  campfireNear: () => {
+    const x = Math.floor(player.pos.x) + 2, z = Math.floor(player.pos.z);
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0 || isSolid(blockAt(x, gy + 1, z))) return null;
+    return addCampfire(x, gy + 1, z) ? { x, y: gy + 1, z } : null;
+  },
+  // Насадити порцію м'яса на найближче до гравця багаття
+  cookMeat: () => {
+    let best = null, bestD = Infinity;
+    for (const c of campfires.values()) {
+      const d = Math.hypot(c.x + 0.5 - player.pos.x, c.z + 0.5 - player.pos.z);
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    if (!best) return null;
+    tryCookAt(best);
+    return { cooking: best.cooking, food: player.food, cooked: player.cooked };
+  },
+  // Миттєво досмажити всі порції (наступний кадр завершить смаження)
+  cookFast: () => {
+    let n = 0;
+    for (const c of campfires.values()) {
+      if (c.cooking) { c.cookT = COOK_TIME; n++; }
+    }
+    return n;
+  },
+  eat: () => {
+    eatFood();
+    return { hunger: player.hunger, food: player.food, cooked: player.cooked };
+  },
+  get campfires() {
+    return [...campfires.values()].map((c) => ({
+      x: c.x, y: c.y, z: c.z, cooking: c.cooking, cookT: +c.cookT.toFixed(1),
+    }));
+  },
+  get bag() { return { food: player.food, cooked: player.cooked, eggs: player.eggs }; },
   get rails() { return rails.size; },
   get carts() {
     return carts.map((c) => ({
@@ -9603,6 +10072,7 @@ function animate() {
     updateMobs(dt);
     updateTnt(dt);
     updateTorches(dt);
+    updateCampfires(dt);
     updateLavaLights(dt);
     updateCrops(dt);
     updateSaplings(dt);
