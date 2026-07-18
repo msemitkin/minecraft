@@ -273,9 +273,10 @@ kbd {
   flex-direction: row-reverse;
 }
 
-/* ===== Їжа та яйця (лічильники торби) ===== */
+/* ===== Їжа, смаженина та яйця (лічильники торби) ===== */
 #food-badge,
-#egg-badge {
+#egg-badge,
+#cooked-badge {
   position: fixed;
   right: 16px;
   bottom: 90px;
@@ -293,10 +294,15 @@ kbd {
   bottom: 134px;
 }
 
+#cooked-badge {
+  bottom: 178px;
+}
+
 /* display: flex перекриває атрибут hidden (UA-правило display: none програє
    авторському) — порожні бейджі мусять зникати явно */
 #food-badge[hidden],
-#egg-badge[hidden] {
+#egg-badge[hidden],
+#cooked-badge[hidden] {
   display: none;
 }
 
@@ -305,13 +311,15 @@ kbd {
    щоб не лягати на кнопки */
 @media (pointer: coarse) {
   #food-badge,
-  #egg-badge {
+  #egg-badge,
+  #cooked-badge {
     right: 96px;
   }
 }
 
 #food-icon,
-#egg-icon {
+#egg-icon,
+#cooked-icon {
   width: 26px;
   height: 26px;
   image-rendering: pixelated;
