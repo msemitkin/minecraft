@@ -115,6 +115,13 @@ const RAIL = 43, MINECART = 44;
 // у темряві, відлякує нечисть (як смолоскип) і обпікає, якщо стати в полум'я.
 const CAMPFIRE = 45;
 
+// Сніжка — метальний снаряд (як яйце, але з безлімітним запасом): ПКМ кидає
+// дугою, нечисть дістає легку шкоду й відкид, тварин сніжка не ранить.
+// Сніговик-охоронець зліплюється у світі з двох блоків снігу та гравієвої
+// «голови» зверху: колона оживає й обстрілює нічну нечисть сніжками,
+// охороняючи місце, де його зліпили.
+const SNOWBALL = 46;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -133,6 +140,7 @@ const BLOCK_NAMES = {
   [SIGN]: 'Табличка',
   [RAIL]: 'Рейки', [MINECART]: 'Вагонетка',
   [CAMPFIRE]: 'Багаття',
+  [SNOWBALL]: 'Сніжка',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
@@ -141,6 +149,7 @@ const ALL_BLOCKS = [
   WATER, LAVA,
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
+  SNOWBALL,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -368,6 +377,9 @@ function saveGame() {
         .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
                      +a.health.toFixed(1), a.sitting ? 1 : 0]),
       horses: animals.filter((a) => a.type === 'horse' && a.tamed)
+        .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
+                     +a.health.toFixed(1)]),
+      golems: animals.filter((a) => a.type === 'golem')
         .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
                      +a.health.toFixed(1)]),
       spawn: spawnPoint,
@@ -741,6 +753,24 @@ const Sound = (() => {
       if (rainGain && ctx) {
         rainGain.gain.setTargetAtTime(Math.max(0.0001, level * 0.2), ctx.currentTime, 0.4);
       }
+    },
+    // Кидок сніжки: м'який короткий свист
+    snowThrow() {
+      noise({ dur: 0.12, gain: 0.08, type: 'highpass', freq: 1800, q: 0.5 });
+      tone({ freq: 520, dur: 0.08, type: 'triangle', gain: 0.04, slideTo: 300 });
+    },
+    // Сніжка розсипається: глухий м'який «пух»
+    snowHit() {
+      noise({ dur: 0.12, gain: 0.14, type: 'lowpass', freq: 700, q: 0.8 });
+    },
+    // Сніговик оживає: «пух» снігу + висхідний дзвінкий мотив
+    golemForm() {
+      if (!ctx || !enabled) return;
+      noise({ dur: 0.3, gain: 0.2, type: 'lowpass', freq: 600, q: 0.7 });
+      [392, 523.25, 659.25].forEach((f, i) => setTimeout(() => {
+        if (!enabled) return;
+        tone({ freq: f, dur: 0.16, type: 'triangle', gain: 0.09, attack: 0.005 });
+      }, 60 + i * 90));
     },
     // Грім: глибокий гуркіт із низьких тонів і шуму
     thunder() {
@@ -2320,6 +2350,30 @@ const ANIMAL_TYPES = {
       ];
     },
   },
+  // Сніговик-охоронець: не водиться в дикій природі — зліплюється гравцем
+  // із двох блоків снігу та гравієвої «голови» (tryFormGolem)
+  golem: {
+    speed: 0.8, halfW: 0.38, height: 1.85, hp: 20, food: 0,
+    build(g) {
+      const snow = 0xf2f7fb, shade = 0xdde7ef, dark = 0x2b2b2b,
+        carrot = 0xe8731f, stick = 0x6b4a2b, cap = 0x8d949c;
+      animalBox(g, 0.8, 0.68, 0.8, snow, 0, 0.34, 0);        // нижня грудка
+      animalBox(g, 0.64, 0.56, 0.64, snow, 0, 0.94, 0);      // середня грудка
+      animalBox(g, 0.5, 0.5, 0.5, shade, 0, 1.46, 0);        // голова
+      animalBox(g, 0.09, 0.09, 0.04, dark, -0.11, 1.56, -0.26); // очі-вуглинки
+      animalBox(g, 0.09, 0.09, 0.04, dark, 0.11, 1.56, -0.26);
+      animalBox(g, 0.08, 0.08, 0.3, carrot, 0, 1.44, -0.36);    // ніс-морквина
+      animalBox(g, 0.07, 0.07, 0.05, dark, 0, 1.06, -0.33);     // ґудзики
+      animalBox(g, 0.07, 0.07, 0.05, dark, 0, 0.88, -0.33);
+      animalBox(g, 0.54, 0.1, 0.54, cap, 0, 1.74, 0);        // гравієва «шапка»
+      // Руки-гілки: тонкі похилі палиці по боках
+      const armL = animalBox(g, 0.5, 0.07, 0.07, stick, -0.55, 1.12, 0);
+      armL.rotation.z = 0.45;
+      const armR = animalBox(g, 0.5, 0.07, 0.07, stick, 0.55, 1.12, 0);
+      armR.rotation.z = -0.45;
+      return [];   // ніг немає — сніговик ковзає, як і личить сніговику
+    },
+  },
 };
 
 // Час відростання вовни після стрижки, с
@@ -2377,6 +2431,8 @@ function spawnAnimal(type, x, y, z, opts = {}) {
     collar: group.userData.collar || null,
     // Кінь: сідло (видиме після приручення)
     saddle: group.userData.saddle || null,
+    // Сніговик: місце, де його зліпили — охороняє й блукає поряд із ним
+    homeX: x, homeZ: z,
   });
 }
 
@@ -2402,7 +2458,8 @@ function trySpawnAnimal() {
   } else if (biome === BIOME.PLAINS && Math.random() < 0.22) {
     type = 'horse';   // коні пасуться на відкритих рівнинах
   } else {
-    const types = Object.keys(ANIMAL_TYPES).filter((t) => t !== 'wolf' && t !== 'horse');
+    const types = Object.keys(ANIMAL_TYPES)
+      .filter((t) => t !== 'wolf' && t !== 'horse' && t !== 'golem');
     type = types[Math.floor(Math.random() * types.length)];
   }
   spawnAnimal(type, x + 0.5, h + 1.01, z + 0.5);
@@ -2435,9 +2492,10 @@ function updateAnimal(a, dt) {
   // (приручений вовк не панікує — його веде updateTamedWolf)
   const panicking = !a.tamed && a.panic > 0;
   if (a.tamed) {
-    // Вовк-компаньйон іде за гравцем і охороняє; приручений кінь пасеться
-    // на місці й чекає вершника (не блукає геть, поки гравець зайнятий)
+    // Вовк-компаньйон іде за гравцем і охороняє; сніговик вартує біля місця,
+    // де його зліпили; приручений кінь пасеться на місці й чекає вершника
     if (a.type === 'wolf') updateTamedWolf(a, dt);
+    else if (a.type === 'golem') updateGolem(a, dt);
     else a.state = 'idle';
   } else if (panicking) {
     a.panic -= dt;
@@ -2565,6 +2623,8 @@ function updateAnimals(dt) {
     // повертається до гравця (замість зникнути)
     if (a.tamed && a.pos.y < -10) {
       wolfWarpToPlayer(a);
+      // Сніговик, що випав за межі світу, вартує тепер там, куди повернувся
+      if (a.type === 'golem') { a.homeX = a.pos.x; a.homeZ = a.pos.z; }
       updateAnimal(a, dt);
       continue;
     }
@@ -2761,6 +2821,128 @@ if (savedGame && Array.isArray(savedGame.wolves)) {
     if (w.collar) w.collar.visible = true;
     if (Number.isFinite(e[3])) w.health = Math.max(1, Math.min(w.maxHealth, e[3]));
     w.sitting = e[4] === 1;
+  }
+}
+
+// ============================================================
+// Сніговик-охоронець: зліплюється з двох блоків снігу та гравієвої «голови»,
+// оживає й обстрілює нічну нечисть сніжками, вартуючи місце створення
+// ============================================================
+const GOLEM_GUARD_R = 12;      // радіус пошуку нечисті довкола сніговика
+const GOLEM_THROW_CD = 1.6;    // секунд між кидками сніжок (+ розкид)
+const GOLEM_HOME_R = 4;        // далі від «дому» — повертається до нього
+
+// Лінія зору сніговика до цілі: семплимо відрізок від голови до грудей нечисті
+function golemCanSee(a, m) {
+  const ox = a.pos.x, oy = a.pos.y + 1.55, oz = a.pos.z;
+  const tx = m.pos.x, ty = m.pos.y + m.height * 0.5, tz = m.pos.z;
+  const dist = Math.hypot(tx - ox, ty - oy, tz - oz);
+  const steps = Math.ceil(dist / 0.7);
+  for (let s = 1; s < steps; s++) {
+    const t = s / steps;
+    if (isSolid(blockAt(
+      Math.floor(ox + (tx - ox) * t),
+      Math.floor(oy + (ty - oy) * t),
+      Math.floor(oz + (tz - oz) * t)
+    ))) return false;
+  }
+  return true;
+}
+
+// ШІ сніговика: цілиться в найближчу ворожу нечисть у радіусі охорони й кидає
+// сніжки; без цілі — неквапом тупцює довкола місця, де його зліпили
+function updateGolem(a, dt) {
+  a.attackCD = Math.max(0, a.attackCD - dt);
+  let target = null, bestDist = Infinity;
+  for (const m of mobs) {
+    // Нейтрального денного павука не чіпаємо — не варто його злити
+    if (m.type === 'spider' && dayNightSun > 0.15 && !m.angry) continue;
+    const d = m.pos.distanceTo(a.pos);
+    if (d < GOLEM_GUARD_R && d < bestDist) { bestDist = d; target = m; }
+  }
+  if (target) {
+    a.state = 'idle';
+    a.targetYaw = Math.atan2(-(target.pos.x - a.pos.x), -(target.pos.z - a.pos.z));
+    if (a.attackCD <= 0 && golemCanSee(a, target)) {
+      a.attackCD = GOLEM_THROW_CD + Math.random() * 0.6;
+      golemThrowAt(a, target);
+    }
+    return;
+  }
+  // Спокій: відійшов від «дому» — вертається; інакше тупцює/стоїть
+  const hx = a.homeX - a.pos.x, hz = a.homeZ - a.pos.z;
+  if (Math.hypot(hx, hz) > GOLEM_HOME_R) {
+    a.state = 'walk';
+    a.targetYaw = Math.atan2(-hx, -hz);
+    return;
+  }
+  a.stateTimer -= dt;
+  if (a.stateTimer <= 0) {
+    if (a.state === 'walk') {
+      a.state = 'idle';
+      a.stateTimer = 2 + Math.random() * 4;
+    } else {
+      a.state = 'walk';
+      a.stateTimer = 1 + Math.random() * 2;
+      a.targetYaw = Math.random() * Math.PI * 2;
+    }
+  }
+}
+
+// Кидок сніжки в ціль: приціл у груди з випередженням руху цілі
+// й компенсацією падіння дуги
+function golemThrowAt(a, m) {
+  const ox = a.pos.x - Math.sin(a.yaw) * 0.4;
+  const oy = a.pos.y + 1.5;
+  const oz = a.pos.z - Math.cos(a.yaw) * 0.4;
+  // Випередження: цілимося туди, де нечисть буде за час польоту сніжки
+  const lead = Math.hypot(m.pos.x - ox, m.pos.z - oz) / SNOWBALL_SPEED;
+  const dx = m.pos.x + m.vel.x * lead - ox;
+  const dz = m.pos.z + m.vel.z * lead - oz;
+  const horiz = Math.hypot(dx, dz) || 0.0001;
+  const t = horiz / SNOWBALL_SPEED;
+  const drop = 0.5 * SNOWBALL_GRAVITY * t * t;
+  const aimY = (m.pos.y + m.height * 0.6) + drop - oy;
+  _golemAim.set(dx, aimY, dz).normalize();
+  const spread = 0.03;
+  _golemAim.x += (Math.random() - 0.5) * spread;
+  _golemAim.y += (Math.random() - 0.5) * spread;
+  _golemAim.z += (Math.random() - 0.5) * spread;
+  _golemAim.normalize();
+  launchSnowball(ox, oy, oz,
+    _golemAim.x * SNOWBALL_SPEED, _golemAim.y * SNOWBALL_SPEED, _golemAim.z * SNOWBALL_SPEED, a);
+  Sound.snowThrow();
+}
+const _golemAim = new THREE.Vector3();
+
+// Оживлення сніговика: гравієва «голова» щойно лягла поверх двох блоків снігу.
+// Колона з блоків зникає, а на її місці постає сніговик-охоронець.
+function tryFormGolem(x, y, z) {
+  if (blockAt(x, y, z) !== GRAVEL) return false;
+  if (blockAt(x, y - 1, z) !== SNOW || blockAt(x, y - 2, z) !== SNOW) return false;
+  setBlock(x, y, z, AIR);        // згори вниз, щоб гравій не почав падати
+  setBlock(x, y - 1, z, AIR);
+  setBlock(x, y - 2, z, AIR);
+  spawnAnimal('golem', x + 0.5, y - 2 + 0.01, z + 0.5);
+  const g = animals[animals.length - 1];
+  g.tamed = true;                // свій: гравець і стріли його не ранять
+  spawnParticles(x + 0.5, y - 0.5, z + 0.5, SNOW_PUFF_COLOR, 14,
+    { radius: 0.5, speed: 2.2, upBias: 1.2, life: 0.7, size: 0.12, gravity: 6 });
+  Sound.golemForm();
+  sleepToast('⛄ Сніговик ожив і вартуватиме це місце!');
+  unlockAch('golem');
+  saveGame();
+  return true;
+}
+
+// Відновлення сніговиків зі збереження (формат [x, y, z, health])
+if (savedGame && Array.isArray(savedGame.golems)) {
+  for (const e of savedGame.golems) {
+    if (!Array.isArray(e) || e.length < 3) continue;
+    spawnAnimal('golem', e[0], e[1], e[2]);
+    const g = animals[animals.length - 1];
+    g.tamed = true;
+    if (Number.isFinite(e[3])) g.health = Math.max(1, Math.min(g.maxHealth, e[3]));
   }
 }
 
@@ -3095,6 +3277,112 @@ function updateThrownEggs(dt) {
     } else {
       e.mesh.position.copy(e.pos);
       e.mesh.rotation.x += dt * 9;
+    }
+  }
+}
+
+// ============================================================
+// Сніжки: метальний снаряд гравця (безлімітний, ПКМ) і сніговика-охоронця.
+// Нечисть дістає легку шкоду з відкидом, тварин сніжка не ранить.
+// ============================================================
+const SNOWBALL_SPEED = 18;       // початкова швидкість сніжки, бл/с
+const SNOWBALL_GRAVITY = 20;     // прискорення падіння, бл/с²
+const SNOWBALL_DMG = 1;          // шкода нечисті
+const SNOWBALL_HIT_R = 0.4;      // радіус влучання в істоту
+const SNOWBALL_FLY_LIFE = 8;     // секунд польоту до зникнення (у прірву)
+const SNOW_PUFF_COLOR = new THREE.Color(0xeef4f8);
+
+const SNOWBALL_GEO = new THREE.SphereGeometry(0.12, 8, 6);
+const SNOWBALL_MAT = new THREE.MeshLambertMaterial({ color: 0xf4f8fc });
+
+const snowballs = [];            // сніжки в польоті
+
+// Запустити сніжку з точки з заданою швидкістю; owner — сніговик-кидач
+// (щоб не влучити в самого себе), у гравця owner = null
+function launchSnowball(ox, oy, oz, vx, vy, vz, owner = null) {
+  const mesh = new THREE.Mesh(SNOWBALL_GEO, SNOWBALL_MAT);
+  const s = {
+    mesh, owner,
+    pos: new THREE.Vector3(ox, oy, oz),
+    vel: new THREE.Vector3(vx, vy, vz),
+    life: 0,
+  };
+  mesh.position.copy(s.pos);
+  scene.add(mesh);
+  snowballs.push(s);
+  return s;
+}
+
+const _snowDir = new THREE.Vector3();
+function throwSnowball() {
+  camera.getWorldDirection(_snowDir);
+  const s = launchSnowball(
+    camera.position.x + _snowDir.x * 0.5,
+    camera.position.y + _snowDir.y * 0.5 - 0.1,
+    camera.position.z + _snowDir.z * 0.5,
+    _snowDir.x * SNOWBALL_SPEED, _snowDir.y * SNOWBALL_SPEED, _snowDir.z * SNOWBALL_SPEED
+  );
+  s.vel.y += 2.5;                // легкий підкид — кидок долонею
+  Sound.snowThrow();
+  triggerSwing();
+}
+
+// Розсипатися хмаркою снігу з м'яким «пух»
+function puffSnowball(s) {
+  spawnParticles(s.pos.x, s.pos.y, s.pos.z, SNOW_PUFF_COLOR, 7,
+    { radius: 0.2, speed: 1.8, upBias: 0.7, life: 0.45, size: 0.09, gravity: 7 });
+  Sound.snowHit();
+}
+
+// Влучання сніжки: нечисть дістає легку шкоду й відкид; об тварину сніжка
+// розсипається нешкідливо (кидач-сніговик не влучає сам у себе)
+function snowballHitEntity(s) {
+  const check = (m) => {
+    const dy = s.pos.y - (m.pos.y + m.height * 0.5);
+    if (Math.abs(dy) > m.height * 0.5 + SNOWBALL_HIT_R) return false;
+    const dx = s.pos.x - m.pos.x, dz = s.pos.z - m.pos.z;
+    const r = SNOWBALL_HIT_R + m.halfW;
+    return dx * dx + dz * dz <= r * r;
+  };
+  for (const m of mobs) {
+    if (check(m)) { damageEntity(m, false, SNOWBALL_DMG, s.vel.x, s.vel.z, 2); return true; }
+  }
+  for (const an of animals) {
+    if (an === s.owner) continue;
+    if (check(an)) return true;   // розсипається, але не ранить
+  }
+  return false;
+}
+
+function updateSnowballs(dt) {
+  for (let i = snowballs.length - 1; i >= 0; i--) {
+    const s = snowballs[i];
+    s.life += dt;
+    s.vel.y -= SNOWBALL_GRAVITY * dt;
+    // Дрібні підкроки, щоб швидка сніжка не «пролітала» блок чи істоту
+    const steps = Math.max(1, Math.ceil(s.vel.length() * dt / 0.3));
+    let broke = false;
+    for (let st = 0; st < steps; st++) {
+      s.pos.x += s.vel.x * dt / steps;
+      s.pos.y += s.vel.y * dt / steps;
+      s.pos.z += s.vel.z * dt / steps;
+      if (snowballHitEntity(s)) { broke = true; break; }
+      const cx = Math.floor(s.pos.x), cy = Math.floor(s.pos.y), cz = Math.floor(s.pos.z);
+      if (isSolid(blockAt(cx, cy, cz)) || doorBlocksCell(cx, cy, cz) ||
+          fenceSolidAtCell(cx, cy, cz)) {
+        broke = true;
+        break;
+      }
+    }
+    if (broke) {
+      puffSnowball(s);
+      scene.remove(s.mesh);
+      snowballs.splice(i, 1);
+    } else if (s.pos.y < -20 || s.life > SNOWBALL_FLY_LIFE) {
+      scene.remove(s.mesh);
+      snowballs.splice(i, 1);
+    } else {
+      s.mesh.position.copy(s.pos);
     }
   }
 }
@@ -4318,6 +4606,8 @@ function updateFallingBlocks(dt) {
       validateSaplings();
       validateRails();
       validateCampfires();
+      // Гравій, що впав просто на колону з двох блоків снігу, теж оживає
+      if (f.id === GRAVEL) tryFormGolem(f.x, landY, f.z);
     }
   }
 }
@@ -7314,6 +7604,9 @@ function placeBlock() {
   // Яйце в руці — кинути дугою (до raycast: кидок у небо теж має відбутись)
   if (hotbar[selectedSlot] === EGG) { throwEgg(); return; }
 
+  // Сніжка в руці — кинути (запас безлімітний, кидок у небо теж має відбутись)
+  if (hotbar[selectedSlot] === SNOWBALL) { throwSnowball(); return; }
+
   const hit = raycastBlock();
   if (!hit || !hit.prev) return;
 
@@ -7435,6 +7728,9 @@ function placeBlock() {
   validateSaplings(); // ... або клітинку саджанця
   validateRails();    // ... або клітинку рейки
   validateCampfires(); // ... або клітинку багаття
+
+  // Гравій поверх двох блоків снігу — сніговик оживає
+  if (id === GRAVEL) tryFormGolem(x, y, z);
 }
 
 // ===== Менеджмент чанків =====
@@ -8381,6 +8677,18 @@ function drawBlockIcon(canvas, id) {
     drawEggIcon(canvas);
     return;
   }
+  if (id === SNOWBALL) {
+    // Процедурна іконка сніжки: біла грудка з тінню знизу й відблиском
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#c9d6e2';
+    ctx.beginPath(); ctx.arc(8, 8.6, 5.4, 0, Math.PI * 2); ctx.fill();  // тінь
+    ctx.fillStyle = '#eef4f8';
+    ctx.beginPath(); ctx.arc(8, 8, 5.2, 0, Math.PI * 2); ctx.fill();    // грудка
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(6, 6, 2, 0, Math.PI * 2); ctx.fill();      // відблиск
+    return;
+  }
   if (id === RAIL) {
     // Процедурна іконка рейок (вигляд згори): дві сталеві рейки на шпалах
     const ctx = canvas.getContext('2d');
@@ -9158,6 +9466,7 @@ const ACHIEVEMENTS = [
   { id: 'milk',        icon: '🥛', title: 'Молочар',            desc: 'Подоїти корову' },
   { id: 'railman',     icon: '🛤', title: 'Машиніст',           desc: 'Розігнатися вагонеткою рейками' },
   { id: 'cook',        icon: '🍗', title: 'Кухар',              desc: "Засмажити м'ясо на багатті" },
+  { id: 'golem',       icon: '⛄', title: 'Снігова варта',      desc: 'Зліпити сніговика-охоронця' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -9927,6 +10236,27 @@ window.MCDebug = {
       chicks: animals.filter((a) => a.baby).length,
     };
   },
+  // Сніжки та сніговик-охоронець (для тестів)
+  giveSnowball: () => { assignBlockToSlot(SNOWBALL); return BLOCK_NAMES[SNOWBALL]; },
+  throwSnowball: () => { throwSnowball(); return { flying: snowballs.length }; },
+  // Зліпити сніговика поряд справжнім шляхом: колона сніг+сніг+гравій
+  buildGolemNear: (dx = 2, dz = 0) => {
+    const x = Math.floor(player.pos.x + dx), z = Math.floor(player.pos.z + dz);
+    let y = Math.floor(player.pos.y);
+    while (y > 1 && !isSolid(blockAt(x, y - 1, z))) y--;
+    setBlock(x, y, z, SNOW);
+    setBlock(x, y + 1, z, SNOW);
+    setBlock(x, y + 2, z, GRAVEL);
+    return tryFormGolem(x, y + 2, z);
+  },
+  get golems() {
+    return animals.filter((a) => a.type === 'golem').map((a) => ({
+      x: +a.pos.x.toFixed(1), y: +a.pos.y.toFixed(1), z: +a.pos.z.toFixed(1),
+      health: a.health, home: [+a.homeX.toFixed(1), +a.homeZ.toFixed(1)],
+      attackCD: +a.attackCD.toFixed(2),
+    }));
+  },
+  get snowballsFlying() { return snowballs.length; },
   // Рейки та вагонетки (для тестів)
   giveRail: () => { assignBlockToSlot(RAIL); return BLOCK_NAMES[RAIL]; },
   giveMinecart: () => { assignBlockToSlot(MINECART); return BLOCK_NAMES[MINECART]; },
@@ -10082,6 +10412,7 @@ function animate() {
     updateArrows(dt);
     updateGroundEggs(dt);
     updateThrownEggs(dt);
+    updateSnowballs(dt);
     updateFallingBlocks(dt);
     updateBoats(dt);
     updateCarts(dt);
