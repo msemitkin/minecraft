@@ -358,6 +358,7 @@ function saveGame() {
         flying: player.flying,
       },
       timeOfDay,
+      night: [nightNo, sinceBlood, bloodNight ? 1 : 0],
       weather: { state: weatherState, timer: weatherTimer, intensity: weatherIntensity },
       torches: [...torches.values()].map((t) => [t.x, t.y, t.z, t.face, t.dx, t.dz]),
       crops: [...crops.values()].map((c) => [c.x, c.y, c.z, c.stage, +c.growth.toFixed(2)]),
@@ -778,6 +779,13 @@ const Sound = (() => {
       noise({ dur: 1.6, gain: 0.4, type: 'lowpass', freq: 280, q: 0.5, attack: 0.03 });
       tone({ freq: 72, dur: 1.4, type: 'sine', gain: 0.3, slideTo: 30, attack: 0.04 });
       tone({ freq: 120, dur: 0.9, type: 'triangle', gain: 0.14, slideTo: 45, attack: 0.06 });
+    },
+    // Кривава ніч: низький дисонансний гул-передвістя на два детюнені голоси
+    bloodMoon() {
+      if (!ctx || !enabled) return;
+      tone({ freq: 66, dur: 2.4, type: 'sawtooth', gain: 0.18, slideTo: 44, attack: 0.5 });
+      tone({ freq: 93, dur: 2.2, type: 'triangle', gain: 0.14, slideTo: 62, attack: 0.4 });
+      noise({ dur: 2.0, gain: 0.1, type: 'lowpass', freq: 220, q: 0.8, attack: 0.5 });
     },
   };
 })();
@@ -2000,6 +2008,7 @@ function safeSpawnY(x, z) {
 function die() {
   if (player.dead) return;
   player.dead = true;
+  if (bloodNight) bloodSurvived = false; // смерть в облогу — ніч не «пережита»
   player.vel.set(0, 0, 0);
   dismountBoat(false);   // випасти з човна, не переміщуючи тіло
   dismountHorse(false);  // випасти з сідла
@@ -3395,6 +3404,41 @@ const MOB_MAX = 6;
 const MOB_DESPAWN_DIST = 80;
 let dayNightSun = 1; // оновлюється в updateDayNight: 1 — полудень, -1 — північ
 
+// ===== Кривава ніч: періодична облога =====
+// Час від часу (не раніше 3-ї ночі; шанс 25%, але не рідше ніж кожна 5-та
+// ніч) сутінки западають багряні: небо й місяць червоніють, нечисть суне
+// втричі частіше й ушестеро численніше, свіжа — швидша та міцніша, а світло
+// смолоскипів і жар багать відлякують її лише впритул. Проспати облогу в
+// ліжку не вдасться — тримай оборону до світанку (парканами, вовками,
+// сніговиками), і за пережиту ніч без жодної смерті — досягнення.
+const BLOOD_MOB_MAX = 14;      // стеля нечисті замість звичних 6
+const BLOOD_FIRST_NIGHT = 3;   // перші дві ночі — завжди спокійні
+const BLOOD_CHANCE = 0.25;
+const BLOOD_MAX_CALM = 4;      // стільки спокійних ночей поспіль — і облога гарантована
+const BLOOD_GUARD_R = 3.5;     // радіус захисту смолоскипа/багаття під час облоги (замість 7)
+const BLOOD_SPEED = 1.15;      // множник швидкості нечисті, спавненої кривавої ночі
+const BLOOD_HEALTH = 4;        // додаткове здоров'я такої нечисті
+let nightNo = 0;               // скільки ночей уже западало в цьому світі
+let sinceBlood = 0;            // спокійних ночей від минулої облоги
+let bloodNight = false;
+let bloodSurvived = false;     // жодної смерті від сутінків до світанку
+let bloodK = 0;                // плавність багряного тону неба (0..1)
+let wasNight = null;           // null — визначиться з першого кадру (сейв не тригерить сутінки)
+if (Array.isArray(savedGame?.night)) {
+  nightNo = savedGame.night[0] | 0;
+  sinceBlood = savedGame.night[1] | 0;
+  bloodNight = !!savedGame.night[2];
+  bloodSurvived = bloodNight;  // перервана сейвом облога продовжується
+}
+
+function startBloodNight() {
+  bloodNight = true;
+  bloodSurvived = true;
+  sinceBlood = 0;
+  sleepToast('🌘 Кривава ніч! Нечисть суне звідусіль — протримайся до світанку!');
+  Sound.bloodMoon();
+}
+
 const ZOMBIE_COLOR = new THREE.Color(0x4f7a44);
 const CREEPER_COLOR = new THREE.Color(0x5fa64d);
 const SKELETON_COLOR = new THREE.Color(0xd8d6cc);
@@ -3516,10 +3560,13 @@ function spawnMob(x, y, z, type = 'zombie') {
     targetYaw: 0,
     halfW: isCreeper ? 0.28 : isSpider ? 0.45 : 0.3,
     height: isCreeper ? 2.1 : isSpider ? 0.95 : 1.9,
-    speed: isCreeper ? 2.6 : isSkeleton ? 2.0 : isSpider ? 3.0 : 2.2,
+    // Нечисть, що вилазить кривавої ночі, — швидша й міцніша
+    speed: (isCreeper ? 2.6 : isSkeleton ? 2.0 : isSpider ? 3.0 : 2.2) *
+           (bloodNight ? BLOOD_SPEED : 1),
     onGround: false,
     legPhase: 0,
-    health: isCreeper ? 10 : isSkeleton ? 12 : isSpider ? 10 : 14,
+    health: (isCreeper ? 10 : isSkeleton ? 12 : isSpider ? 10 : 14) +
+            (bloodNight ? BLOOD_HEALTH : 0),
     hurt: 0,        // спалах при ударі (0..1)
     attackCD: 0,    // перезарядка атаки
     attackAnim: 0,  // мах руками при ударі
@@ -3538,7 +3585,7 @@ function spawnMob(x, y, z, type = 'zombie') {
 let mobSpawnTimer = 4;
 
 function trySpawnMob() {
-  if (mobs.length >= MOB_MAX) return;
+  if (mobs.length >= (bloodNight ? BLOOD_MOB_MAX : MOB_MAX)) return;
   if (dayNightSun > -0.05) return;             // тільки в темряві
   const angle = Math.random() * Math.PI * 2;
   const dist = 14 + Math.random() * 16;
@@ -3548,8 +3595,10 @@ function trySpawnMob() {
   if (h <= SEA + 1) return;                     // не у воді й не на пляжі
   if (!isSolid(blockAt(x, h, z))) return;       // тверда опора
   if (isSolid(blockAt(x, h + 1, z)) || isSolid(blockAt(x, h + 2, z))) return; // є місце
-  if (torchNear(x + 0.5, h + 1, z + 0.5, 7)) return; // світло смолоскипа відлякує нечисть
-  if (campfireNear(x + 0.5, h + 1, z + 0.5, 7)) return; // ... і жар багаття теж
+  // Світло смолоскипа й жар багаття відлякують нечисть; кривавої ночі — лише впритул
+  const guardR = bloodNight ? BLOOD_GUARD_R : 7;
+  if (torchNear(x + 0.5, h + 1, z + 0.5, guardR)) return;
+  if (campfireNear(x + 0.5, h + 1, z + 0.5, guardR)) return;
   // Нічна нечисть: кріпери (підривники), скелети (лучники), павуки (верхолази), зомбі
   const r = Math.random();
   const type = r < 0.22 ? 'creeper' : r < 0.44 ? 'skeleton' : r < 0.66 ? 'spider' : 'zombie';
@@ -3808,7 +3857,7 @@ function updateMobs(dt) {
   mobSpawnTimer -= dt;
   if (mobSpawnTimer <= 0) {
     trySpawnMob();
-    mobSpawnTimer = 3;
+    mobSpawnTimer = bloodNight ? 1 : 3; // облога: нечисть суне втричі частіше
   }
   // Випадкові стогони, коли неподалік є зомбі (частіше — коли їх більше)
   if (mobs.length > 0) {
@@ -6096,6 +6145,7 @@ function sleepToast(msg) {
 function trySleep(bed) {
   if (sleeping || player.dead || !bed) return false;
   if (!canSleepNow()) { sleepToast('Спати можна лише вночі'); return false; }
+  if (bloodNight) { sleepToast('Кривавої ночі не заснути — тримай оборону!'); return false; }
   if (monstersNear(8)) { sleepToast('Поряд монстри — не заснути'); return false; }
   sleeping = true;
   sleepT = 0;
@@ -8115,6 +8165,10 @@ function updateWeather(dt) {
 const dayColor = new THREE.Color(0x87ceeb);
 const nightColor = new THREE.Color(0x0b1026);
 const skyColor = new THREE.Color();
+// Кривава ніч: багряне небо, червоний місяць
+const bloodSkyColor = new THREE.Color(0x2a0507);
+const bloodMoonColor = new THREE.Color(0xff5040);
+const moonWhite = new THREE.Color(0xffffff);
 let timeOfDay = Number.isFinite(savedGame?.timeOfDay)
   ? savedGame.timeOfDay
   : DAY_LENGTH * 0.25; // почати вранці
@@ -8124,6 +8178,28 @@ function updateDayNight(dt) {
   const angle = (timeOfDay / DAY_LENGTH) * Math.PI * 2;
   const sunHeight = Math.sin(angle); // 1 — полудень, -1 — північ
   dayNightSun = sunHeight;            // для спавну/горіння зомбі
+
+  // ===== Кривава ніч: рішення ухвалюється в мить, коли западає темрява =====
+  const nightNow = sunHeight <= -0.05;
+  if (wasNight === null) wasNight = nightNow; // перший кадр після завантаження
+  if (nightNow && !wasNight) {
+    nightNo++;
+    if (bloodNight) {
+      // облогу вже форсовано (дебаг) — не переграємо жереб
+    } else if (nightNo >= BLOOD_FIRST_NIGHT &&
+               (sinceBlood >= BLOOD_MAX_CALM || Math.random() < BLOOD_CHANCE)) {
+      startBloodNight();
+    } else {
+      sinceBlood++;
+    }
+  } else if (!nightNow && wasNight && bloodNight) {
+    bloodNight = false;
+    sleepToast('🌅 Кривава ніч минула!');
+    if (bloodSurvived && !player.dead) unlockAch('bloodmoon');
+  }
+  wasNight = nightNow;
+  // Багряний тон плавно наростає в сутінках облоги й тане на світанку
+  bloodK += ((bloodNight ? 1 : 0) - bloodK) * Math.min(1, dt / 2.5);
 
   sun.position.set(Math.cos(angle) * 100, sunHeight * 100, 30);
   sun.intensity = Math.max(0, sunHeight) * 1.2;
@@ -8136,6 +8212,12 @@ function updateDayNight(dt) {
   const sunset = Math.max(0, 1 - Math.abs(sunHeight) / 0.22) *
                  THREE.MathUtils.clamp((sunHeight + 0.32) / 0.32, 0, 1);
   skyColor.lerp(sunsetColor, sunset * 0.55);
+  // Багрянець облоги поверх нічного неба (перед погодою, щоб гроза лягала зверху)
+  if (bloodK > 0.001) {
+    skyColor.lerp(bloodSkyColor, bloodK * 0.6);
+    hemi.intensity *= 1 - bloodK * 0.25;
+  }
+  moonSprite.material.color.lerpColors(moonWhite, bloodMoonColor, bloodK);
   scene.fog.color.copy(skyColor);
 
   // ===== Небесні тіла =====
@@ -8159,6 +8241,7 @@ function updateDayNight(dt) {
   // Тон: білі вдень, темно-сині вночі, теплі на сході/заході
   _cloudColor.copy(cloudDayColor).lerp(cloudNightColor, 1 - day);
   _cloudColor.lerp(sunsetColor, sunset * 0.4);
+  _cloudColor.lerp(bloodSkyColor, bloodK * 0.6); // хмари теж багряніють в облогу
   cloudMat.color.copy(_cloudColor);
   cloudMat.opacity = 0.35 + day * 0.5;
 
@@ -9467,6 +9550,7 @@ const ACHIEVEMENTS = [
   { id: 'railman',     icon: '🛤', title: 'Машиніст',           desc: 'Розігнатися вагонеткою рейками' },
   { id: 'cook',        icon: '🍗', title: 'Кухар',              desc: "Засмажити м'ясо на багатті" },
   { id: 'golem',       icon: '⛄', title: 'Снігова варта',      desc: 'Зліпити сніговика-охоронця' },
+  { id: 'bloodmoon',   icon: '🌘', title: 'Багряна варта',      desc: 'Пережити криваву ніч' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -9585,6 +9669,16 @@ window.MCDebug = {
   setTime: (t) => { timeOfDay = ((t % DAY_LENGTH) + DAY_LENGTH) % DAY_LENGTH; },
   night: () => { timeOfDay = DAY_LENGTH * 0.75; },       // північ
   day: () => { timeOfDay = DAY_LENGTH * 0.25; },         // ранок
+  forceBloodNight: () => {
+    timeOfDay = DAY_LENGTH * 0.62;                       // щойно западають сутінки
+    if (!bloodNight) startBloodNight();
+    return MCDebug.bloodInfo;
+  },
+  endBloodNight: () => { bloodNight = false; return MCDebug.bloodInfo; },
+  get bloodInfo() {
+    return { bloodNight, nightNo, sinceBlood, bloodK: +bloodK.toFixed(2),
+             survived: bloodSurvived, mobs: mobs.length };
+  },
   spawnZombie: (n = 1) => {
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
