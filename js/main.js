@@ -8165,8 +8165,9 @@ function updateWeather(dt) {
 const dayColor = new THREE.Color(0x87ceeb);
 const nightColor = new THREE.Color(0x0b1026);
 const skyColor = new THREE.Color();
-// Кривава ніч: багряне небо, червоний місяць
-const bloodSkyColor = new THREE.Color(0x2a0507);
+// Кривава ніч: багряне небо, червоний місяць. Тон достатньо яскравий, щоб
+// глибокої ночі небо читалося червоним, а не фіолетовим (QA після деплою)
+const bloodSkyColor = new THREE.Color(0x400a0c);
 const bloodMoonColor = new THREE.Color(0xff5040);
 const moonWhite = new THREE.Color(0xffffff);
 let timeOfDay = Number.isFinite(savedGame?.timeOfDay)
@@ -8214,7 +8215,7 @@ function updateDayNight(dt) {
   skyColor.lerp(sunsetColor, sunset * 0.55);
   // Багрянець облоги поверх нічного неба (перед погодою, щоб гроза лягала зверху)
   if (bloodK > 0.001) {
-    skyColor.lerp(bloodSkyColor, bloodK * 0.6);
+    skyColor.lerp(bloodSkyColor, bloodK * 0.65);
     hemi.intensity *= 1 - bloodK * 0.25;
   }
   moonSprite.material.color.lerpColors(moonWhite, bloodMoonColor, bloodK);
