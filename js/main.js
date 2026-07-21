@@ -122,6 +122,15 @@ const CAMPFIRE = 45;
 // охороняючи місце, де його зліпили.
 const SNOWBALL = 46;
 
+// Зоряний камінь — воксельний блок, що не генерується рельєфом: його лишає
+// по собі метеорит, який зрідка падає вночі неподалік від гравця. Мерехтить
+// холодним сяйвом (окремий пул PointLight, як у лави) і відлякує нечисть
+// далі за смолоскип. Добувається і ставиться як звичайний блок.
+const STARBLOCK = 47;
+// Реєстр клітинок зоряного каменю (ключі "x,y,z"): блок існує лише через
+// setBlock-правки, тож реєстр наповнюється в setBlock та зі збережених edits.
+const starCells = new Set();
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -141,6 +150,7 @@ const BLOCK_NAMES = {
   [RAIL]: 'Рейки', [MINECART]: 'Вагонетка',
   [CAMPFIRE]: 'Багаття',
   [SNOWBALL]: 'Сніжка',
+  [STARBLOCK]: 'Зоряний камінь',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
@@ -149,7 +159,7 @@ const ALL_BLOCKS = [
   WATER, LAVA,
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
-  SNOWBALL,
+  SNOWBALL, STARBLOCK,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -183,6 +193,7 @@ const BLOCK_HARDNESS = {
   [LEAVES]: 0.3, [LOG]: 1.0, [PLANK]: 0.9, [STONE]: 1.6,
   [COAL]: 2.2, [IRON]: 2.8, [GOLD]: 2.8, [DIAMOND]: 3.6,
   [SNOW]: 0.4, [CACTUS]: 0.5, [GRAVEL]: 0.7, [GLASS]: 0.35, [WOOL]: 0.45,
+  [STARBLOCK]: 3.0,
 };
 const DEFAULT_HARDNESS = 0.6;
 
@@ -787,6 +798,13 @@ const Sound = (() => {
       tone({ freq: 93, dur: 2.2, type: 'triangle', gain: 0.14, slideTo: 62, attack: 0.4 });
       noise({ dur: 2.0, gain: 0.1, type: 'lowpass', freq: 220, q: 0.8, attack: 0.5 });
     },
+    // Метеорит: довгий спадний свист + наростаючий гуркіт польоту
+    meteor() {
+      if (!ctx || !enabled) return;
+      tone({ freq: 1350, dur: 2.6, type: 'sine', gain: 0.08, slideTo: 160, attack: 0.25 });
+      tone({ freq: 900, dur: 2.4, type: 'triangle', gain: 0.05, slideTo: 120, attack: 0.3 });
+      noise({ dur: 2.6, gain: 0.14, type: 'bandpass', freq: 700, q: 0.7, attack: 0.6 });
+    },
   };
 })();
 
@@ -902,7 +920,11 @@ function setBlock(wx, wy, wz, id) {
   const cx = Math.floor(wx / CHUNK), cz = Math.floor(wz / CHUNK);
   const lx = wx - cx * CHUNK, lz = wz - cz * CHUNK;
   getChunkData(cx, cz)[blockIndex(lx, wy, lz)] = id;
-  edits.set(wx + ',' + wy + ',' + wz, id);
+  const editKey = wx + ',' + wy + ',' + wz;
+  edits.set(editKey, id);
+  // Реєстр зоряного каменю: світло та відлякування нечисті йдуть від клітинок
+  if (id === STARBLOCK) starCells.add(editKey);
+  else starCells.delete(editKey);
   dirtyChunks.add(chunkKey(cx, cz));
   if (lx === 0) dirtyChunks.add(chunkKey(cx - 1, cz));
   if (lx === CHUNK - 1) dirtyChunks.add(chunkKey(cx + 1, cz));
@@ -1219,6 +1241,22 @@ function makeAtlas() {
     });                                                                          // 22 вовна
   }
 
+  // Зоряний камінь: темна індигова основа з яскравими крижано-блакитними
+  // «зорями» та рідкими золотими іскрами (детерміновано, без зовнішніх ассетів)
+  {
+    let s = 0x517a2be1 >>> 0;
+    const r = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+    const bright = new Set(), gold = new Set();
+    for (let n = 0; n < 20; n++) bright.add(Math.floor(r() * TILE) * TILE + Math.floor(r() * TILE));
+    for (let n = 0; n < 6; n++) gold.add(Math.floor(r() * TILE) * TILE + Math.floor(r() * TILE));
+    paint(23, (x, y) => {
+      const k = x * TILE + y;
+      if (bright.has(k)) return vary(170, 226, 255, 12);  // крижані зорі
+      if (gold.has(k)) return vary(240, 212, 120, 10);    // золоті іскри
+      return vary(38, 42, 74, 10);                        // індигова основа
+    });                                                                          // 23 зоряний камінь
+  }
+
   const tex = new THREE.CanvasTexture(atlasCanvas);
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
@@ -1253,6 +1291,7 @@ const BLOCK_TILES = {
   [LFLOW1]:  { top: 20, bottom: 20, side: 20 },
   [GLASS]:   { top: 21, bottom: 21, side: 21 },
   [WOOL]:    { top: 22, bottom: 22, side: 22 },
+  [STARBLOCK]: { top: 23, bottom: 23, side: 23 },
 };
 
 function tileUV(tile) {
@@ -3599,6 +3638,9 @@ function trySpawnMob() {
   const guardR = bloodNight ? BLOOD_GUARD_R : 7;
   if (torchNear(x + 0.5, h + 1, z + 0.5, guardR)) return;
   if (campfireNear(x + 0.5, h + 1, z + 0.5, guardR)) return;
+  // Зоряний камінь світить далі за смолоскип — і навіть кривавої ночі тримає
+  // нечисть трохи далі, ніж звичайний вогонь
+  if (starNear(x + 0.5, h + 1, z + 0.5, bloodNight ? STAR_BLOOD_GUARD_R : STAR_GUARD_R)) return;
   // Нічна нечисть: кріпери (підривники), скелети (лучники), павуки (верхолази), зомбі
   const r = Math.random();
   const type = r < 0.22 ? 'creeper' : r < 0.44 ? 'skeleton' : r < 0.66 ? 'spider' : 'zombie';
@@ -6523,6 +6565,7 @@ function updateMining(dt, hit) {
     else if (id === IRON) unlockAch('iron');
     else if (id === GOLD) unlockAch('gold');
     else if (id === DIAMOND) unlockAch('diamond');
+    else if (id === STARBLOCK) unlockAch('star');
     resetMining();
     return;
   }
@@ -8193,6 +8236,7 @@ function updateDayNight(dt) {
     } else {
       sinceBlood++;
     }
+    scheduleMeteorNight(); // жереб падаючої зорі — щоночі, незалежно від облоги
   } else if (!nightNow && wasNight && bloodNight) {
     bloodNight = false;
     sleepToast('🌅 Кривава ніч минула!');
@@ -8229,6 +8273,7 @@ function updateDayNight(dt) {
   // Прозорість: сонце видно над обрієм, місяць і зорі — вночі
   sunSprite.material.opacity = THREE.MathUtils.clamp((sunHeight + 0.04) / 0.12, 0, 1);
   const night = THREE.MathUtils.clamp((-sunHeight + 0.08) / 0.22, 0, 1);
+  nightVis = night;                    // видимість нічного неба — для зорепаду
   moonSprite.material.opacity = night;
   // Легке мерехтіння зір
   const twinkle = 0.85 + 0.15 * Math.sin(timeOfDay * 3.3);
@@ -8263,6 +8308,281 @@ function updateDayNight(dt) {
     skyColor.lerp(flashColor, skyFlash * 0.7);
   }
   scene.fog.color.copy(skyColor);
+}
+
+// ============================================================
+// Зорепад і метеорити: падаючі зорі прикрашають ніч, а зрідка одна з них
+// летить у світ по-справжньому — вибухає неподалік і лишає в кратері
+// уламки зоряного каменю. Все процедурне, жодних зовнішніх ассетів.
+// ============================================================
+const METEOR_CHANCE = 0.45;       // шанс, що цієї ночі впаде зоря
+const METEOR_SPEED = 26;          // швидкість польоту метеорита, бл/с
+const METEOR_STARS_MIN = 3;       // мінімум блоків зоряного каменю в кратері
+const METEOR_STARS_MAX = 6;       // максимум
+const STAR_GUARD_R = 9;           // радіус відлякування нечисті (смолоскип — 7)
+const STAR_BLOOD_GUARD_R = 4.5;   // кривавої ночі (смолоскип — 3.5)
+const SHOOT_STAR_TRAIL = 6;       // сліду-привидів за головою падаючої зорі
+
+let nightVis = 0;                 // видимість нічного неба (0..1) з updateDayNight
+let meteorDelay = 0;              // секунд до появи метеорита цієї ночі (0 — не буде)
+let meteor = null;                // активний метеорит { pos, vel, group, light }
+let meteorsFallen = 0;            // лічильник для дебагу
+
+// Відновити реєстр зоряного каменю зі збережених правок світу
+for (const [k, id] of edits) if (id === STARBLOCK) starCells.add(k);
+
+// Чи є зоряний камінь у радіусі r від точки (реєстр малий — простий перебір)
+function starNear(x, y, z, r) {
+  const r2 = r * r;
+  for (const k of starCells) {
+    const p = k.split(',');
+    const dx = +p[0] + 0.5 - x, dy = +p[1] + 0.5 - y, dz = +p[2] + 0.5 - z;
+    if (dx * dx + dy * dy + dz * dz <= r2) return true;
+  }
+  return false;
+}
+
+// ===== Світло зоряного каменю: пул ламп, як у лави, але з реєстру клітинок =====
+const STAR_LIGHT_POOL = 4;
+const starLights = [];
+for (let i = 0; i < STAR_LIGHT_POOL; i++) {
+  const l = new THREE.PointLight(0x9fd4ff, 0, 13, 1.8);
+  scene.add(l);
+  starLights.push(l);
+}
+let starLightTimer = 0;
+let starPulse = 0;
+const _starCellArr = [];
+function updateStarLights(dt) {
+  starPulse += dt;
+  // Повільне «дихання» сяйва — щокадру, дешево
+  const pulse = 0.82 + 0.18 * Math.sin(starPulse * 2.1);
+  for (const l of starLights) if (l.userData.on) l.intensity = l.userData.base * pulse;
+
+  starLightTimer -= dt;
+  if (starLightTimer > 0) return;
+  starLightTimer = 0.25;
+
+  _starCellArr.length = 0;
+  for (const k of starCells) {
+    const p = k.split(',');
+    const dx = +p[0] + 0.5 - camera.position.x;
+    const dy = +p[1] + 0.5 - camera.position.y;
+    const dz = +p[2] + 0.5 - camera.position.z;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 < 45 * 45) _starCellArr.push({ x: +p[0], y: +p[1], z: +p[2], d2 });
+  }
+  _starCellArr.sort((a, b) => a.d2 - b.d2);
+  for (let i = 0; i < STAR_LIGHT_POOL; i++) {
+    const l = starLights[i];
+    if (i < _starCellArr.length) {
+      const c = _starCellArr[i];
+      l.position.set(c.x + 0.5, c.y + 0.9, c.z + 0.5);
+      l.userData.on = true;
+      l.userData.base = 2.2;
+    } else {
+      l.userData.on = false;
+      l.intensity = 0;
+    }
+  }
+}
+
+// ===== Жереб ночі: чи впаде зоря і коли саме =====
+function scheduleMeteorNight() {
+  meteorDelay = Math.random() < METEOR_CHANCE
+    ? 8 + Math.random() * DAY_LENGTH * 0.25   // будь-коли впродовж ночі
+    : 0;
+}
+
+// Модель метеорита: розжарене ядро + адитивне гало + власне світло
+function spawnMeteor(distMin = 25, distVar = 25) {
+  // Шукаємо точку падіння на суходолі неподалік від гравця
+  let tx = 0, tz = 0, ty = 0, ok = false;
+  for (let i = 0; i < 24 && !ok; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const d = distMin + Math.random() * distVar;
+    tx = Math.floor(player.pos.x + Math.cos(a) * d);
+    tz = Math.floor(player.pos.z + Math.sin(a) * d);
+    ty = heightAt(tx, tz);
+    if (ty > SEA + 1) ok = true;
+  }
+  if (!ok) return false;   // довкола сама вода — цієї ночі не судилося
+
+  const target = new THREE.Vector3(tx + 0.5, ty + 1, tz + 0.5);
+  const az = Math.random() * Math.PI * 2;
+  const start = new THREE.Vector3(
+    target.x + Math.cos(az) * 46, HEIGHT + 40, target.z + Math.sin(az) * 46);
+
+  const group = new THREE.Group();
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(0.55, 10, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffe0a8 })
+  );
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: makeGlowTexture('rgba(255,214,150,0.95)', 'rgba(255,150,60,0.5)'),
+    transparent: true, depthWrite: false, fog: false,
+    blending: THREE.AdditiveBlending,
+  }));
+  halo.scale.setScalar(6);
+  const light = new THREE.PointLight(0xffb060, 3.2, 34, 1.6);
+  group.add(core, halo, light);
+  group.position.copy(start);
+  scene.add(group);
+
+  meteor = {
+    pos: start.clone(),
+    vel: target.clone().sub(start).normalize().multiplyScalar(METEOR_SPEED),
+    group, trailT: 0,
+  };
+  Sound.meteor();
+  sleepToast('🌠 З неба летить зоря!');
+  return true;
+}
+
+function disposeMeteor() {
+  if (!meteor) return;
+  scene.remove(meteor.group);
+  meteor.group.traverse((o) => {
+    if (o.isMesh || o.isSprite) {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
+    }
+  });
+  meteor = null;
+}
+
+// Вибух і уламки зоряного каменю, вкраплені в дно кратера
+function meteorImpact(ix, iy, iz) {
+  explode(ix, iy, iz, 'meteor');
+  const bx = Math.floor(ix), bz = Math.floor(iz);
+  // Після вибуху шукаємо дно кратера під точкою удару
+  const floorY = (x, z, fromY) => {
+    let y = Math.min(HEIGHT - 1, Math.floor(fromY));
+    while (y > 1 && !isSolid(blockAt(x, y, z))) y--;
+    return y;
+  };
+  const cy = floorY(bx, bz, iy);
+  setBlock(bx, cy, bz, STARBLOCK);
+  // Кілька уламків довкола центру — на власній висоті дна кратера
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
+  for (let i = dirs.length - 1; i > 0; i--) {   // перемішати напрямки
+    const j = Math.floor(Math.random() * (i + 1));
+    [dirs[i], dirs[j]] = [dirs[j], dirs[i]];
+  }
+  const extra = METEOR_STARS_MIN - 1 +
+    Math.floor(Math.random() * (METEOR_STARS_MAX - METEOR_STARS_MIN + 1));
+  for (let n = 0; n < extra; n++) {
+    const [dx, dz] = dirs[n];
+    const x = bx + dx, z = bz + dz;
+    const y = floorY(x, z, iy);
+    if (Math.abs(y - cy) <= 2) setBlock(x, y, z, STARBLOCK);
+  }
+  meteorsFallen++;
+  sleepToast('💫 Зоря впала неподалік!');
+  // Холодні іскри над місцем падіння
+  spawnParticles(ix, cy + 1, iz, new THREE.Color(0x9fd4ff), 22,
+    { radius: 1.4, speed: 5, upBias: 2, life: 1.0, size: 0.16, gravity: -2 });
+}
+
+function updateMeteors(dt) {
+  // Відлік до появи: лише поки триває ніч
+  if (meteorDelay > 0 && !meteor) {
+    if (dayNightSun > -0.05) { meteorDelay = 0; }
+    else {
+      meteorDelay -= dt;
+      if (meteorDelay <= 0) { meteorDelay = 0; spawnMeteor(); }
+    }
+  }
+  if (!meteor) return;
+
+  const m = meteor;
+  const prev = m.pos.clone();
+  m.pos.addScaledVector(m.vel, dt);
+  m.group.position.copy(m.pos);
+
+  // Вогняний слід
+  m.trailT -= dt;
+  if (m.trailT <= 0) {
+    m.trailT = 0.05;
+    spawnParticles(m.pos.x, m.pos.y, m.pos.z, new THREE.Color(0xffa040), 3,
+      { radius: 0.35, speed: 1.2, upBias: 0.4, life: 0.5, size: 0.2, gravity: -1 });
+    spawnParticles(m.pos.x, m.pos.y, m.pos.z, new THREE.Color(0x4a4a4a), 2,
+      { radius: 0.4, speed: 0.8, upBias: 1, life: 0.9, size: 0.24, gravity: -2.5 });
+  }
+
+  // Зіткнення з рельєфом (семплюємо відрізок кадру) або падіння в порожнечу
+  const steps = Math.max(1, Math.ceil(m.vel.length() * dt / 0.5));
+  for (let s = 1; s <= steps; s++) {
+    const t = s / steps;
+    const x = prev.x + (m.pos.x - prev.x) * t;
+    const y = prev.y + (m.pos.y - prev.y) * t;
+    const z = prev.z + (m.pos.z - prev.z) * t;
+    if (y < HEIGHT && isSolid(blockAt(Math.floor(x), Math.floor(y), Math.floor(z)))) {
+      disposeMeteor();
+      meteorImpact(x, y, z);
+      return;
+    }
+  }
+  if (m.pos.y < -8) disposeMeteor();   // залетів у прірву/воду — просто згас
+}
+
+// ===== Падаючі зорі: суто небесна окраса в skyScene =====
+const shootTex = makeGlowTexture('rgba(255,255,255,1)', 'rgba(190,220,255,0.6)');
+const shootingStars = [];
+let shootTimer = 6;
+
+function spawnShootingStar() {
+  const az = Math.random() * Math.PI * 2;
+  const el = (35 + Math.random() * 35) * Math.PI / 180;
+  const R = SKY_R * 0.92;
+  const pos = new THREE.Vector3(
+    Math.cos(az) * Math.cos(el) * R, Math.sin(el) * R, Math.sin(az) * Math.cos(el) * R);
+  // Дотичний напрямок із нахилом униз — «черкає» по небосхилу
+  const tangent = new THREE.Vector3().crossVectors(pos, new THREE.Vector3(0, 1, 0)).normalize();
+  if (Math.random() < 0.5) tangent.negate();
+  const dir = tangent.multiplyScalar(1).add(new THREE.Vector3(0, -0.6, 0)).normalize()
+    .multiplyScalar(520 + Math.random() * 260);
+
+  const group = new THREE.Group();
+  const sprites = [];
+  for (let i = 0; i <= SHOOT_STAR_TRAIL; i++) {
+    const spr = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: shootTex, transparent: true, depthTest: false, depthWrite: false,
+      fog: false, blending: THREE.AdditiveBlending, opacity: 0,
+    }));
+    spr.scale.setScalar(i === 0 ? 30 : 26 - i * 3.2);
+    group.add(spr);
+    sprites.push(spr);
+  }
+  skyScene.add(group);
+  shootingStars.push({ pos, dir, group, sprites, t: 0, life: 0.85 + Math.random() * 0.35 });
+}
+
+function updateShootingStars(dt) {
+  // Нові зорі — лише глибокої ночі
+  if (nightVis > 0.5) {
+    shootTimer -= dt;
+    if (shootTimer <= 0) {
+      shootTimer = 7 + Math.random() * 15;
+      if (shootingStars.length < 3) spawnShootingStar();
+    }
+  }
+  for (let i = shootingStars.length - 1; i >= 0; i--) {
+    const s = shootingStars[i];
+    s.t += dt;
+    s.pos.addScaledVector(s.dir, dt);
+    const fade = Math.max(0, 1 - s.t / s.life) * nightVis;
+    for (let n = 0; n < s.sprites.length; n++) {
+      const spr = s.sprites[n];
+      spr.position.copy(s.pos).addScaledVector(s.dir, -n * 0.022);
+      spr.material.opacity = fade * (n === 0 ? 0.95 : 0.55 * (1 - n / (SHOOT_STAR_TRAIL + 1)));
+    }
+    if (s.t >= s.life) {
+      skyScene.remove(s.group);
+      for (const spr of s.sprites) spr.material.dispose();
+      shootingStars.splice(i, 1);
+    }
+  }
 }
 
 // ===== HUD =====
@@ -8512,6 +8832,7 @@ const DEATH_CAUSES = {
   starve: 'Помер від голоду',
   lava: 'Згорів у лаві',
   fire: 'Згорів у багатті',
+  meteor: 'Розчавлений метеоритом',
 };
 
 function showDeathScreen(cause) {
@@ -9300,6 +9621,7 @@ const MM_BLOCK_COLORS = {
   [COAL]: [60, 60, 64], [IRON]: [176, 150, 128], [GOLD]: [222, 188, 70],
   [DIAMOND]: [110, 208, 214], [SNOW]: [232, 238, 244], [CACTUS]: [78, 132, 66],
   [BED]: [196, 60, 60], [GLASS]: [205, 230, 242], [WOOL]: [233, 230, 223],
+  [STARBLOCK]: [150, 216, 255],
 };
 
 // Найвищий ненульовий блок гравцевих змін у кожній колоні (id видно зверху).
@@ -9552,6 +9874,7 @@ const ACHIEVEMENTS = [
   { id: 'cook',        icon: '🍗', title: 'Кухар',              desc: "Засмажити м'ясо на багатті" },
   { id: 'golem',       icon: '⛄', title: 'Снігова варта',      desc: 'Зліпити сніговика-охоронця' },
   { id: 'bloodmoon',   icon: '🌘', title: 'Багряна варта',      desc: 'Пережити криваву ніч' },
+  { id: 'star',        icon: '🌠', title: 'Зоряний ловець',     desc: 'Добути уламок впалої зорі' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -9676,6 +9999,21 @@ window.MCDebug = {
     return MCDebug.bloodInfo;
   },
   endBloodNight: () => { bloodNight = false; return MCDebug.bloodInfo; },
+  // Метеорит просто зараз: ніч + негайний спавн (за замовчуванням — ближче)
+  forceMeteor: (distMin = 14, distVar = 8) => {
+    if (dayNightSun > -0.05) timeOfDay = DAY_LENGTH * 0.75;   // північ
+    meteorDelay = 0;
+    return spawnMeteor(distMin, distVar) ? MCDebug.starInfo : 'нема суходолу поблизу';
+  },
+  shootingStar: () => { spawnShootingStar(); return shootingStars.length; },
+  get starInfo() {
+    return { meteorActive: !!meteor, meteorDelay: +meteorDelay.toFixed(1),
+             meteorsFallen, starCells: starCells.size, shooting: shootingStars.length,
+             meteorPos: meteor
+               ? { x: +meteor.pos.x.toFixed(1), y: +meteor.pos.y.toFixed(1),
+                   z: +meteor.pos.z.toFixed(1) }
+               : null };
+  },
   get bloodInfo() {
     return { bloodNight, nightNo, sinceBlood, bloodK: +bloodK.toFixed(2),
              survived: bloodSurvived, mobs: mobs.length };
@@ -10499,6 +10837,8 @@ function animate() {
     updateTorches(dt);
     updateCampfires(dt);
     updateLavaLights(dt);
+    updateStarLights(dt);
+    updateMeteors(dt);
     updateCrops(dt);
     updateSaplings(dt);
     updateDoors(dt);
@@ -10540,6 +10880,7 @@ function animate() {
   }
   processChunkQueue();
   updateDayNight(dt);
+  updateShootingStars(dt);
 
   // Підсвічування блока, видобуток і анімація кирки
   const hit = gameActive() ? raycastBlock() : null;
