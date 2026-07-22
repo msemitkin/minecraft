@@ -131,6 +131,11 @@ const STARBLOCK = 47;
 // setBlock-правки, тож реєстр наповнюється в setBlock та зі збережених edits.
 const starCells = new Set();
 
+// Скриня скарбів — блок, який закопує у світ мапа з пляшки (рідкісний улов
+// вудки). Викопана скриня-схованка дає нагороду; поставлена гравцем із меню —
+// просто декоративний блок.
+const TREASURE = 48;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -151,6 +156,7 @@ const BLOCK_NAMES = {
   [CAMPFIRE]: 'Багаття',
   [SNOWBALL]: 'Сніжка',
   [STARBLOCK]: 'Зоряний камінь',
+  [TREASURE]: 'Скриня скарбів',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
@@ -159,7 +165,7 @@ const ALL_BLOCKS = [
   WATER, LAVA,
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
-  SNOWBALL, STARBLOCK,
+  SNOWBALL, STARBLOCK, TREASURE,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -193,7 +199,7 @@ const BLOCK_HARDNESS = {
   [LEAVES]: 0.3, [LOG]: 1.0, [PLANK]: 0.9, [STONE]: 1.6,
   [COAL]: 2.2, [IRON]: 2.8, [GOLD]: 2.8, [DIAMOND]: 3.6,
   [SNOW]: 0.4, [CACTUS]: 0.5, [GRAVEL]: 0.7, [GLASS]: 0.35, [WOOL]: 0.45,
-  [STARBLOCK]: 3.0,
+  [STARBLOCK]: 3.0, [TREASURE]: 1.2,
 };
 const DEFAULT_HARDNESS = 0.6;
 
@@ -394,6 +400,8 @@ function saveGame() {
       golems: animals.filter((a) => a.type === 'golem')
         .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
                      +a.health.toFixed(1)]),
+      treasure: treasureHunt.active
+        ? [treasureHunt.x, treasureHunt.y, treasureHunt.z] : null,
       spawn: spawnPoint,
       selectedSlot,
       hotbar: [...hotbar],
@@ -1119,7 +1127,7 @@ function processLavaQueue() {
 // ============================================================
 // Текстурний атлас (малюється на canvas, без зовнішніх файлів)
 // ============================================================
-const TILE = 16, ATLAS_COLS = 4, ATLAS_ROWS = 6;
+const TILE = 16, ATLAS_COLS = 4, ATLAS_ROWS = 7;
 let atlasCanvas;
 
 function makeAtlas() {
@@ -1257,6 +1265,21 @@ function makeAtlas() {
     });                                                                          // 23 зоряний камінь
   }
 
+  // Скриня скарбів: дубові дошки з темною окантовкою, двома золотими
+  // обручами та замком по центру (детерміновано, без зовнішніх ассетів)
+  paint(24, (x, y) => {
+    const edge = x === 0 || y === 0 || x === TILE - 1 || y === TILE - 1;
+    if (edge) return vary(74, 52, 26, 6);                       // темна окантовка
+    if (x >= 6 && x <= 9 && y >= 6 && y <= 10) {
+      return (x >= 7 && x <= 8 && y >= 7 && y <= 8)
+        ? vary(120, 84, 20, 6)                                  // шпарина замка
+        : vary(238, 196, 84, 8);                                // золотий замок
+    }
+    if (y === 3 || y === 12) return vary(216, 174, 62, 8);      // золоті обручі
+    if (y % 4 === 1) return vary(122, 88, 44, 5);               // шви між дошками
+    return vary(158, 116, 62, 8);                               // дубові дошки
+  });                                                                            // 24 скриня скарбів
+
   const tex = new THREE.CanvasTexture(atlasCanvas);
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
@@ -1292,6 +1315,7 @@ const BLOCK_TILES = {
   [GLASS]:   { top: 21, bottom: 21, side: 21 },
   [WOOL]:    { top: 22, bottom: 22, side: 22 },
   [STARBLOCK]: { top: 23, bottom: 23, side: 23 },
+  [TREASURE]: { top: 24, bottom: 24, side: 24 },
 };
 
 function tileUV(tile) {
@@ -4442,13 +4466,18 @@ function reelIn() {
   bobberGroup.visible = false;
   fishingLine.visible = false;
   triggerSwing();
-  if (wasBiting) {                                   // підсічка вдалась — риба в торбу їжі
-    player.food = Math.min(FOOD_MAX, player.food + FISH_FOOD);
-    updateFoodHud();
-    Sound.reelCatch();
-    unlockAch('fisher');
-    spawnParticles(fishing.x, fishing.y, fishing.z, blockColor(WATER), 10,
-      { radius: 0.3, speed: 2.2, upBias: 1, life: 0.5, size: 0.07, gravity: 9 });
+  if (wasBiting) {                                   // підсічка вдалась
+    // Зрідка замість риби клює пляшка з мапою скарбів (як нема активної мапи)
+    if (!treasureHunt.active && Math.random() < BOTTLE_CHANCE) {
+      catchBottle();
+    } else {                                         // риба в торбу їжі
+      player.food = Math.min(FOOD_MAX, player.food + FISH_FOOD);
+      updateFoodHud();
+      Sound.reelCatch();
+      unlockAch('fisher');
+      spawnParticles(fishing.x, fishing.y, fishing.z, blockColor(WATER), 10,
+        { radius: 0.3, speed: 2.2, upBias: 1, life: 0.5, size: 0.07, gravity: 9 });
+    }
   } else if (overWater) {
     Sound.splash();
   }
@@ -4493,6 +4522,101 @@ function updateFishing(dt) {
   arr[0] = tip.x; arr[1] = tip.y; arr[2] = tip.z;
   arr[3] = fishing.x; arr[4] = y; arr[5] = fishing.z;
   fishingLine.geometry.attributes.position.needsUpdate = true;
+}
+
+// ============================================================
+// Скарбна мапа з пляшки: рідкісний улов → закопана скриня скарбів
+// ============================================================
+// Вудка зрідка витягає не рибу, а пляшку з мапою: у 60–140 блоках від гравця
+// під поверхнею закопується скриня скарбів (звичайна воксельна правка, тож
+// вона переживає збереження), а на мінімапі спалахує золотий ✕. Дійти,
+// докопатися й розбити скриню — нагорода: повне відновлення здоров'я та
+// припасів і досягнення. Одночасно живе лише одна мапа; скриня, поставлена
+// гравцем із меню (Tab), — просто декоративний блок без нагороди.
+const BOTTLE_CHANCE = 0.18;        // шанс, що замість риби клюне пляшка
+const TREASURE_DIST_MIN = 60;      // мін. відстань до схованки, блоків
+const TREASURE_DIST_VAR = 80;      // + випадкова добавка
+const TREASURE_DEPTH = 2;          // на скільки блоків під поверхнею скриня
+
+const treasureHunt = { active: false, x: 0, y: 0, z: 0, found: 0, checkT: 0 };
+
+// Назва напрямку по 8 румбах: 0° = Пн (−z), за годинниковою до Сх (+x)
+function compassName(dx, dz) {
+  const names = ['Пн', 'ПнСх', 'Сх', 'ПдСх', 'Пд', 'ПдЗх', 'Зх', 'ПнЗх'];
+  const a = Math.atan2(dx, -dz);
+  return names[((Math.round(a / (Math.PI / 4)) % 8) + 8) % 8];
+}
+
+// Верхній твердий блок колони за фактичним станом світу (з урахуванням правок)
+function surfaceAt(x, z) {
+  let y = HEIGHT - 1;
+  while (y > 2 && !isSolid(blockAt(x, y, z))) y--;
+  return y;
+}
+
+// Улов пляшки: вибрати місце на суходолі, закопати скриню, показати мапу
+function catchBottle() {
+  let tx = 0, tz = 0;
+  for (let i = 0; i < 40; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const d = TREASURE_DIST_MIN + Math.random() * TREASURE_DIST_VAR;
+    tx = Math.floor(player.pos.x + Math.cos(a) * d);
+    tz = Math.floor(player.pos.z + Math.sin(a) * d);
+    // Суходіл без дерева чи кактуса, щоб скриня не опинилась у стовбурі
+    if (heightAt(tx, tz) > SEA + 1 && !treeAt(tx, tz) && !cactusAt(tx, tz)) break;
+    // якщо всі 40 спроб — вода: лишиться остання (схованка на дні — теж скарб)
+  }
+  const sy = surfaceAt(tx, tz);
+  const ty = Math.max(2, sy - TREASURE_DEPTH);
+  setBlock(tx, ty, tz, TREASURE);
+  treasureHunt.active = true;
+  treasureHunt.x = tx; treasureHunt.y = ty; treasureHunt.z = tz;
+  treasureHunt.checkT = 0;
+  const dx = tx + 0.5 - player.pos.x, dz = tz + 0.5 - player.pos.z;
+  sleepToast(`🍾 У пляшці — мапа скарбів! ✕ на мінімапі: ${compassName(dx, dz)}, ~${Math.round(Math.hypot(dx, dz))} м`);
+  Sound.reelCatch();
+  spawnParticles(fishing.x, fishing.y, fishing.z, new THREE.Color(0xbee0ee), 12,
+    { radius: 0.3, speed: 2.2, upBias: 1.2, life: 0.55, size: 0.08, gravity: 9 });
+  return true;
+}
+
+// Викопано скриню: нагорода лише за ту, до якої вела мапа
+function onTreasureMined(x, y, z) {
+  if (!treasureHunt.active ||
+      x !== treasureHunt.x || y !== treasureHunt.y || z !== treasureHunt.z) return;
+  treasureHunt.active = false;
+  treasureHunt.found++;
+  player.health = MAX_HEALTH;
+  player.food = FOOD_MAX;
+  updateFoodHud();
+  sleepToast('🪙 Скарб знайдено! Здоров\'я та припаси відновлено');
+  const wasUnlocked = achUnlocked.has('treasure');
+  unlockAch('treasure');
+  if (wasUnlocked) Sound.achievement();   // фанфару першого разу грає unlockAch
+  spawnParticles(x + 0.5, y + 0.5, z + 0.5, new THREE.Color(0xf3cf47), 30,
+    { radius: 0.5, speed: 4.5, upBias: 2.5, life: 1.0, size: 0.14, gravity: 6 });
+}
+
+// Сторожовий тік: якщо скриню знищив не гравець (вибух динаміту, кріпера чи
+// метеорит), мапа згасає — інакше ✕ вічно вказував би на порожнє місце
+function updateTreasure(dt) {
+  if (!treasureHunt.active) return;
+  treasureHunt.checkT -= dt;
+  if (treasureHunt.checkT > 0) return;
+  treasureHunt.checkT = 1.5;
+  if (blockAt(treasureHunt.x, treasureHunt.y, treasureHunt.z) !== TREASURE) {
+    treasureHunt.active = false;
+    sleepToast('💨 Скарб знищено — мапа згасла');
+  }
+}
+
+// Відновлення активної мапи зі збереження (старі сейви — поле відсутнє)
+if (savedGame && Array.isArray(savedGame.treasure) && savedGame.treasure.length === 3 &&
+    savedGame.treasure.every(Number.isFinite)) {
+  treasureHunt.active = true;
+  treasureHunt.x = savedGame.treasure[0] | 0;
+  treasureHunt.y = savedGame.treasure[1] | 0;
+  treasureHunt.z = savedGame.treasure[2] | 0;
 }
 
 // ============================================================
@@ -6566,6 +6690,7 @@ function updateMining(dt, hit) {
     else if (id === GOLD) unlockAch('gold');
     else if (id === DIAMOND) unlockAch('diamond');
     else if (id === STARBLOCK) unlockAch('star');
+    else if (id === TREASURE) onTreasureMined(x, y, z);
     resetMining();
     return;
   }
@@ -9621,7 +9746,7 @@ const MM_BLOCK_COLORS = {
   [COAL]: [60, 60, 64], [IRON]: [176, 150, 128], [GOLD]: [222, 188, 70],
   [DIAMOND]: [110, 208, 214], [SNOW]: [232, 238, 244], [CACTUS]: [78, 132, 66],
   [BED]: [196, 60, 60], [GLASS]: [205, 230, 242], [WOOL]: [233, 230, 223],
-  [STARBLOCK]: [150, 216, 255],
+  [STARBLOCK]: [150, 216, 255], [TREASURE]: [198, 152, 66],
 };
 
 // Найвищий ненульовий блок гравцевих змін у кожній колоні (id видно зверху).
@@ -9752,6 +9877,28 @@ function drawMinimap() {
     mmDot(mmCtx, m.pos.x - px, m.pos.z - pz, R, '#e8412e', 3);
   }
 
+  // Скарбна мапа: золотий ✕ на схованці; поза оглядом — притиснутий до краю
+  // кільця, щоб завжди вказувати напрямок пошуку.
+  if (treasureHunt.active) {
+    let dx = treasureHunt.x + 0.5 - px, dz = treasureHunt.z + 0.5 - pz;
+    const dist = Math.hypot(dx, dz);
+    const far = dist > R;
+    if (far && dist > 0) { dx *= R / dist; dz *= R / dist; }
+    const sx = MM_CENTER + (dx / R) * (MM_RADIUS_PX - (far ? 7 : 0));
+    const sy = MM_CENTER + (dz / R) * (MM_RADIUS_PX - (far ? 7 : 0));
+    mmCtx.lineWidth = 2.5;
+    mmCtx.strokeStyle = 'rgba(0,0,0,0.75)';
+    const arm = far ? 4 : 5;
+    for (const pass of [0, 1]) {
+      mmCtx.beginPath();
+      mmCtx.moveTo(sx - arm, sy - arm); mmCtx.lineTo(sx + arm, sy + arm);
+      mmCtx.moveTo(sx + arm, sy - arm); mmCtx.lineTo(sx - arm, sy + arm);
+      mmCtx.stroke();
+      mmCtx.lineWidth = 1.5;
+      mmCtx.strokeStyle = '#f3cf47';
+    }
+  }
+
   // Гравець у центрі: трикутник за напрямком погляду (вперед = (−sin,−cos)).
   const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
   const rx = -fz, rz = fx;        // вектор «праворуч»
@@ -9789,6 +9936,17 @@ function drawMinimap() {
   mmCtx.fillText('Пд', MM_CENTER, MM_CENTER + ringR);
   mmCtx.fillText('Зх', MM_CENTER - ringR, MM_CENTER);
   mmCtx.shadowBlur = 0;
+  // Поки активна мапа скарбів — золота відстань до схованки під міткою «Пн»
+  if (treasureHunt.active) {
+    mmCtx.font = 'bold 10px system-ui, sans-serif';
+    mmCtx.fillStyle = '#f3cf47';
+    mmCtx.shadowColor = 'rgba(0,0,0,0.85)';
+    mmCtx.shadowBlur = 2;
+    mmCtx.fillText('✕ ' + Math.round(Math.hypot(
+      treasureHunt.x + 0.5 - px, treasureHunt.z + 0.5 - pz)) + ' м',
+      MM_CENTER, MM_CENTER - ringR + 13);
+    mmCtx.shadowBlur = 0;
+  }
   mmCtx.font = '9px system-ui, sans-serif';
   mmCtx.fillStyle = 'rgba(255,255,255,0.75)';
   mmCtx.fillText('±' + R, MM_CENTER, MM_DISPLAY - 7);
@@ -9875,6 +10033,7 @@ const ACHIEVEMENTS = [
   { id: 'golem',       icon: '⛄', title: 'Снігова варта',      desc: 'Зліпити сніговика-охоронця' },
   { id: 'bloodmoon',   icon: '🌘', title: 'Багряна варта',      desc: 'Пережити криваву ніч' },
   { id: 'star',        icon: '🌠', title: 'Зоряний ловець',     desc: 'Добути уламок впалої зорі' },
+  { id: 'treasure',    icon: '🪙', title: 'Шукач скарбів',      desc: 'Викопати скарб за мапою з пляшки' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -10006,6 +10165,30 @@ window.MCDebug = {
     return spawnMeteor(distMin, distVar) ? MCDebug.starInfo : 'нема суходолу поблизу';
   },
   shootingStar: () => { spawnShootingStar(); return shootingStars.length; },
+  // Пляшка з мапою скарбів просто зараз (для тестів; скасовує активну мапу)
+  forceBottle: () => {
+    treasureHunt.active = false;
+    fishing.x = player.pos.x; fishing.y = player.pos.y; fishing.z = player.pos.z;
+    catchBottle();
+    return MCDebug.treasureInfo;
+  },
+  // Розкрити скриню активної мапи (як від кирки) — для тестів нагороди
+  digTreasure: () => {
+    if (!treasureHunt.active) return 'мапи немає';
+    const { x, y, z } = treasureHunt;
+    setBlock(x, y, z, AIR);
+    onTreasureMined(x, y, z);
+    return MCDebug.treasureInfo;
+  },
+  get treasureInfo() {
+    return { active: treasureHunt.active, found: treasureHunt.found,
+             x: treasureHunt.x, y: treasureHunt.y, z: treasureHunt.z,
+             block: treasureHunt.active
+               ? blockAt(treasureHunt.x, treasureHunt.y, treasureHunt.z) : null,
+             dist: treasureHunt.active
+               ? +Math.hypot(treasureHunt.x + 0.5 - player.pos.x,
+                             treasureHunt.z + 0.5 - player.pos.z).toFixed(1) : null };
+  },
   get starInfo() {
     return { meteorActive: !!meteor, meteorDelay: +meteorDelay.toFixed(1),
              meteorsFallen, starCells: starCells.size, shooting: shootingStars.length,
@@ -10852,6 +11035,7 @@ function animate() {
     updateBoats(dt);
     updateCarts(dt);
     updateFishing(dt);
+    updateTreasure(dt);
     updateParticles(dt);
     updateWeather(dt);
     waterTimer -= dt;
