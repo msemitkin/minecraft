@@ -136,6 +136,15 @@ const starCells = new Set();
 // просто декоративний блок.
 const TREASURE = 48;
 
+// Вулик — окремий предмет-сутність (як багаття, не воксель): дерев'яний
+// бджолиний будиночок, що ставиться ПКМ на тверду поверхню. Удень за ясної
+// погоди довкола в'ються бджоли: вони запилюють посіви поблизу (ростуть
+// помітно швидше) і поволі наповнюють вулик медом — тим швидше, чим більше
+// грядок поряд. ПКМ по повному вулику — зібрати мед 🍯: цілющі ласощі, які
+// F з'їдає передусім, коли бракує здоров'я. ЛКМ — розібрати (розлючені
+// бджоли можуть ужалити).
+const BEEHIVE = 49;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -157,6 +166,7 @@ const BLOCK_NAMES = {
   [SNOWBALL]: 'Сніжка',
   [STARBLOCK]: 'Зоряний камінь',
   [TREASURE]: 'Скриня скарбів',
+  [BEEHIVE]: 'Вулик',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
@@ -165,7 +175,7 @@ const ALL_BLOCKS = [
   WATER, LAVA,
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
-  SNOWBALL, STARBLOCK, TREASURE,
+  SNOWBALL, STARBLOCK, TREASURE, BEEHIVE,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -371,6 +381,7 @@ function saveGame() {
         hunger: player.hunger,
         food: player.food,
         cooked: player.cooked,
+        honey: player.honey,
         eggs: player.eggs,
         flying: player.flying,
       },
@@ -391,6 +402,7 @@ function saveGame() {
       carts: carts.map((c) => [+c.pos.x.toFixed(2), +c.pos.y.toFixed(2), +c.pos.z.toFixed(2)]),
       campfires: [...campfires.values()].map((c) =>
         [c.x, c.y, c.z, c.cooking ? 1 : 0, +c.cookT.toFixed(1)]),
+      beehives: [...beehives.values()].map((h) => [h.x, h.y, h.z, +h.honey.toFixed(1)]),
       wolves: animals.filter((a) => a.type === 'wolf' && a.tamed)
         .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
                      +a.health.toFixed(1), a.sitting ? 1 : 0]),
@@ -756,6 +768,11 @@ const Sound = (() => {
         if (!enabled) return;
         tone({ freq: 1318.5, dur: 0.18, type: 'triangle', gain: 0.1, attack: 0.004 });
       }, 100);
+    },
+    // Гудіння бджіл: два тихі «пилкоподібні» тони з легким биттям частот
+    bee(gain = 0.045) {
+      tone({ freq: 196, dur: 0.5, type: 'sawtooth', gain, slideTo: 214 });
+      tone({ freq: 99, dur: 0.42, type: 'triangle', gain: gain * 0.55, slideTo: 108 });
     },
     // Здобуте досягнення: коротка висхідна мажорна фанфара (C-E-G-C)
     achievement() {
@@ -1771,6 +1788,9 @@ const EGG_MAX = 64;             // максимум курячих яєць у �
 const EAT_AMOUNT = 6;           // скільки голоду відновлює одна порція (3 ніжки)
 const COOKED_MAX = 64;          // максимум смаженого м'яса в торбі
 const COOKED_FOOD = 10;         // скільки голоду відновлює смаженина (5 ніжок)
+const HONEY_MAX = 16;           // максимум меду в торбі
+const HONEY_HEAL = 6;           // скільки здоров'я загоює мед (3 серця)
+const HONEY_HUNGER = 4;         // і трохи вгамовує голод (2 ніжки)
 const EAT_COOLDOWN = 0.9;       // пауза між поїданнями, с
 const HUNGER_PER_EXHAUSTION = 4; // одиниць виснаження на 1 одиницю голоду
 const FALL_SAFE = 3;            // блоки падіння без шкоди
@@ -1796,6 +1816,7 @@ const player = {
   exhaustion: 0,        // накопичене виснаження; на порозі знімає 1 голод
   food: 0,              // зібране сире м'ясо (їжа)
   cooked: 0,            // смажене на багатті м'ясо (ситніше за сире)
+  honey: 0,             // зібраний із вуликів мед (цілющі ласощі)
   eggs: 0,              // зібрані курячі яйця (боєзапас для кидання)
   starveTick: 0,        // таймер шкоди від голоду
   eatTimer: 0,          // перезарядка поїдання
@@ -1840,6 +1861,9 @@ if (savedGame && savedGame.player) {
   }
   if (Number.isFinite(p.eggs)) {
     player.eggs = THREE.MathUtils.clamp(Math.floor(p.eggs), 0, EGG_MAX);
+  }
+  if (Number.isFinite(p.honey)) {
+    player.honey = THREE.MathUtils.clamp(Math.floor(p.honey), 0, HONEY_MAX);
   }
   player.flying = !!p.flying;
 }
@@ -2218,6 +2242,21 @@ let achEnvTimer = 0;
 // Зʼїсти одну порцію сирого м'яса (клавіша F / кнопка 🍖)
 function eatFood() {
   if (player.dead || player.eatTimer > 0) return;
+  // Мед — цілющий: F з'їдає його передусім, коли бракує здоров'я
+  // (щонайменше пів порції, щоб не марнувати зібране)
+  if (player.honey > 0 && player.health <= MAX_HEALTH - HONEY_HEAL / 2) {
+    player.honey -= 1;
+    player.health = Math.min(MAX_HEALTH, player.health + HONEY_HEAL);
+    player.hunger = Math.min(MAX_HUNGER, player.hunger + HONEY_HUNGER);
+    player.eatTimer = EAT_COOLDOWN;
+    Sound.drink();
+    flashItemName('🍯 Мед загоює рани');
+    spawnParticles(player.pos.x, player.pos.y + 1.2, player.pos.z, HONEY_COLOR, 8,
+      { radius: 0.3, speed: 1.2, upBias: 0.8, life: 0.5, size: 0.07, gravity: 2 });
+    unlockAch('eat');
+    updateHoneyHud();
+    return;
+  }
   if ((player.food <= 0 && player.cooked <= 0) || player.hunger >= MAX_HUNGER) return;
   // Смаженина ситніша, тож їмо її при великому голоді (щоб не змарнувати
   // жодної «ніжки») або коли сирого не лишилось; інакше — сире м'ясо/зерно
@@ -4068,12 +4107,17 @@ function startBreakOrAttack() {
   // Зняти смолоскип/драбину/рейку/саджанець або зібрати посів, якщо дивимось на
   // них (клітинка перед блоком)
   if (torches.size > 0 || crops.size > 0 || ladders.size > 0 || saplings.size > 0 ||
-      signs.size > 0 || rails.size > 0 || campfires.size > 0) {
+      signs.size > 0 || rails.size > 0 || campfires.size > 0 || beehives.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
       if (campfires.has(key)) {
         breakCampfire(key);
+        triggerSwing();
+        return;
+      }
+      if (beehives.has(key)) {
+        breakBeehive(key);
         triggerSwing();
         return;
       }
@@ -5157,7 +5201,8 @@ function placeTorch(hit) {
       ladders.has(torchKey(x, y, z)) || doorAtCell(x, y, z) ||
       fences.has(torchKey(x, y, z)) || gates.has(torchKey(x, y, z)) ||
       saplings.has(torchKey(x, y, z)) || signs.has(torchKey(x, y, z)) ||
-      rails.has(torchKey(x, y, z)) || campfires.has(torchKey(x, y, z))) return false;
+      rails.has(torchKey(x, y, z)) || campfires.has(torchKey(x, y, z)) ||
+      beehives.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -5317,7 +5362,7 @@ function placeLadder(hit) {
       doorAtCell(x, y, z) || fences.has(ladderKey(x, y, z)) ||
       gates.has(ladderKey(x, y, z)) || saplings.has(ladderKey(x, y, z)) ||
       signs.has(ladderKey(x, y, z)) || rails.has(ladderKey(x, y, z)) ||
-      campfires.has(ladderKey(x, y, z))) return false;
+      campfires.has(ladderKey(x, y, z)) || beehives.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -5525,7 +5570,8 @@ function placeDoor(hit) {
     const k = doorKey(x, cy, z);
     if (doorAtCell(x, cy, z) || torches.has(k) || crops.has(k) ||
         beds.has(k) || ladders.has(k) || fences.has(k) || gates.has(k) ||
-        saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k)) return false;
+        saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
+        beehives.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -5789,7 +5835,8 @@ function fenceCellFree(x, y, z) {
   const k = fenceKey(x, y, z);
   return !fences.has(k) && !gates.has(k) && !doorAtCell(x, y, z) &&
          !torches.has(k) && !crops.has(k) && !beds.has(k) && !ladders.has(k) &&
-         !saplings.has(k) && !signs.has(k) && !rails.has(k) && !campfires.has(k);
+         !saplings.has(k) && !signs.has(k) && !rails.has(k) && !campfires.has(k) &&
+         !beehives.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -5958,7 +6005,8 @@ function plantCrop(hit) {
       ladders.has(cropKey(x, y, z)) || doorAtCell(x, y, z) ||
       fences.has(cropKey(x, y, z)) || gates.has(cropKey(x, y, z)) ||
       saplings.has(cropKey(x, y, z)) || signs.has(cropKey(x, y, z)) ||
-      rails.has(cropKey(x, y, z)) || campfires.has(cropKey(x, y, z))) return false;
+      rails.has(cropKey(x, y, z)) || campfires.has(cropKey(x, y, z)) ||
+      beehives.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -5996,6 +6044,11 @@ function updateCrops(dt) {
       light = Math.max(light, 0.5);
     }
     if (light <= 0.02) continue;
+    // Бджоли з вулика поблизу запилюють колосся — росте помітно швидше
+    if (beehives.size > 0 && beesActive() &&
+        beehiveNear(c.x + 0.5, c.y + 0.5, c.z + 0.5, POLLINATE_R)) {
+      light *= POLLINATE_BOOST;
+    }
     c.growth += dt * light;
     if (c.growth >= CROP_GROW_TIME) {
       c.growth = 0;
@@ -6111,7 +6164,7 @@ function plantSapling(hit) {
       beds.has(saplingKey(x, y, z)) || doorAtCell(x, y, z) ||
       fences.has(saplingKey(x, y, z)) || gates.has(saplingKey(x, y, z)) ||
       signs.has(saplingKey(x, y, z)) || rails.has(saplingKey(x, y, z)) ||
-      campfires.has(saplingKey(x, y, z))) return false;
+      campfires.has(saplingKey(x, y, z)) || beehives.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -6261,7 +6314,7 @@ function placeBed(hit) {
       doorAtCell(x, y, z) || fences.has(bedKey(x, y, z)) ||
       gates.has(bedKey(x, y, z)) || saplings.has(bedKey(x, y, z)) ||
       signs.has(bedKey(x, y, z)) || rails.has(bedKey(x, y, z)) ||
-      campfires.has(bedKey(x, y, z))) return false;
+      campfires.has(bedKey(x, y, z)) || beehives.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -6489,7 +6542,7 @@ function validateSigns() {
 function signCellFree(x, y, z) {
   const k = signKey(x, y, z);
   return blockAt(x, y, z) === AIR && !signs.has(k) && !torches.has(k) && !rails.has(k) &&
-         !campfires.has(k) &&
+         !campfires.has(k) && !beehives.has(k) &&
          !crops.has(k) && !beds.has(k) && !ladders.has(k) && !doorAtCell(x, y, z) &&
          !fences.has(k) && !gates.has(k) && !saplings.has(k);
 }
@@ -6683,6 +6736,7 @@ function updateMining(dt, hit) {
     validateSaplings(); // ... або грунт під саджанцем
     validateRails();    // ... або опору рейки
     validateCampfires(); // ... або опору багаття
+    validateBeehives();  // ... або опору вулика
     unlockAch('first_block');
     if (id === LOG) unlockAch('chop_wood');
     else if (id === COAL) unlockAch('coal');
@@ -7039,6 +7093,7 @@ function placeRail(hit) {
   if (blockAt(x, y, z) !== AIR || !isSolid(blockAt(x, y - 1, z))) return false;
   if (rails.has(k) || torches.has(k) || crops.has(k) || beds.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
+      beehives.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
   for (const d of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -7538,7 +7593,7 @@ function placeCampfire(hit) {
   if (blockAt(x, y, z) !== AIR || campfires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
-      rails.has(k)) return false;
+      rails.has(k) || beehives.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
   Sound.torch(0.2);
@@ -7670,6 +7725,246 @@ if (savedGame && Array.isArray(savedGame.campfires)) {
   for (const e of savedGame.campfires) {
     if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
       addCampfire(e[0], e[1], e[2], !!e[3], Number.isFinite(e[4]) ? e[4] : 0);
+    }
+  }
+}
+
+// ============================================================
+// Пасіка: вулик, бджоли та мед
+// ============================================================
+// Вулик — сутність у клітинці (як багаття, воксельну сітку не змінює):
+// дерев'яний будиночок із дашком і льотком. Удень за ясної погоди довкола
+// в'ються бджоли: вони запилюють посіви в радіусі POLLINATE_R (ростуть у
+// півтора раза швидше) і поволі наповнюють вулик медом — тим швидше, чим
+// більше грядок поряд. Повний вулик показує золоті краплі під льотком;
+// ПКМ — зібрати мед 🍯 (цілющі ласощі: F з'їдає їх передусім, коли бракує
+// здоров'я). ЛКМ — розібрати; якщо всередині вже чимало меду, розлючені
+// бджоли жалять кривдника.
+const beehives = new Map();            // "x,y,z" -> { x, y, z, group, bees, ... }
+const BEEHIVE_MAX = 32;                // межа, щоб збереження не розросталося
+const HONEY_TIME = 75;                 // секунд роботи бджіл до повного вулика
+const POLLINATE_R = 6;                 // радіус запилення посівів (блоків)
+const POLLINATE_BOOST = 1.5;           // множник росту запилених посівів
+const BEES_PER_HIVE = 3;
+const HIVE_WOOD = 0xc9973f;
+const HIVE_WOOD_DARK = 0x8a5a2b;
+const HIVE_ENTRANCE = 0x3a2a18;
+const HONEY_COLOR = new THREE.Color(0xf2b63c);
+
+const beehiveKey = (x, y, z) => x + ',' + y + ',' + z;
+
+// Бджоли літають лише вдень і за ясної погоди (дощ і сніг заганяють у вулик)
+const beesActive = () => dayNightSun > 0.2 && weatherState === 'clear';
+
+function makeBeehiveModel() {
+  const g = new THREE.Group();
+  // Корпус: світлі дошки з двома темними обручами
+  animalBox(g, 0.62, 0.5, 0.62, HIVE_WOOD, 0, 0.29, 0);
+  animalBox(g, 0.64, 0.07, 0.64, HIVE_WOOD_DARK, 0, 0.16, 0);
+  animalBox(g, 0.64, 0.07, 0.64, HIVE_WOOD_DARK, 0, 0.42, 0);
+  // Дашок із «коньком»
+  animalBox(g, 0.72, 0.1, 0.72, HIVE_WOOD_DARK, 0, 0.59, 0);
+  animalBox(g, 0.5, 0.08, 0.5, HIVE_WOOD, 0, 0.68, 0);
+  // Льоток (темний вхід спереду)
+  animalBox(g, 0.16, 0.09, 0.03, HIVE_ENTRANCE, 0, 0.24, 0.315);
+  // Краплі меду під льотком — видно, коли вулик повний
+  const drip = new THREE.Mesh(
+    new THREE.BoxGeometry(0.1, 0.14, 0.05),
+    new THREE.MeshLambertMaterial({
+      color: 0xf2b63c, emissive: 0x8a5a10, emissiveIntensity: 0.35,
+    })
+  );
+  drip.position.set(0, 0.12, 0.32);
+  drip.visible = false;
+  g.add(drip);
+  // Бджоли: тільце зі смужкою та двома крильцями, орбітують у updateBeehives
+  const bees = [];
+  for (let i = 0; i < BEES_PER_HIVE; i++) {
+    const b = new THREE.Group();
+    animalBox(b, 0.09, 0.08, 0.13, 0xe8b53a, 0, 0, 0);        // тільце
+    animalBox(b, 0.095, 0.085, 0.035, HIVE_ENTRANCE, 0, 0, -0.02); // смужка
+    const wingGeo = new THREE.BoxGeometry(0.09, 0.015, 0.06);
+    const wingMat = new THREE.MeshLambertMaterial({
+      color: 0xeef4ff, transparent: true, opacity: 0.75,
+    });
+    const w1 = new THREE.Mesh(wingGeo, wingMat);
+    w1.position.set(-0.055, 0.05, 0);
+    const w2 = new THREE.Mesh(wingGeo, wingMat);
+    w2.position.set(0.055, 0.05, 0);
+    b.add(w1, w2);
+    b.visible = false;
+    g.add(b);
+    bees.push({
+      g: b, wings: [w1, w2],
+      r: 0.65 + i * 0.4 + Math.random() * 0.3,
+      speed: (1.1 + Math.random() * 0.9) * (i % 2 ? 1 : -1),
+      phase: Math.random() * 6.28,
+      h: 0.4 + Math.random() * 0.45,
+    });
+  }
+  return { group: g, bees, drip };
+}
+
+function addBeehive(x, y, z, honey = 0) {
+  const key = beehiveKey(x, y, z);
+  if (beehives.has(key) || beehives.size >= BEEHIVE_MAX) return false;
+  const m = makeBeehiveModel();
+  m.group.position.set(x + 0.5, y, z + 0.5);
+  scene.add(m.group);
+  beehives.set(key, {
+    x, y, z, group: m.group, bees: m.bees, drip: m.drip,
+    honey: THREE.MathUtils.clamp(Number(honey) || 0, 0, HONEY_TIME),
+    rate: 1, recount: 0, sparkT: Math.random(), buzzT: Math.random() * 2,
+  });
+  return true;
+}
+
+function removeBeehive(key) {
+  const h = beehives.get(key);
+  if (!h) return;
+  scene.remove(h.group);
+  h.group.traverse((o) => {
+    if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
+  });
+  beehives.delete(key);
+}
+
+// Розібрати вулик ударом: бджоли, що вже наносили меду, жалять кривдника
+function breakBeehive(key) {
+  const h = beehives.get(key);
+  if (!h) return;
+  if (h.honey >= HONEY_TIME * 0.25) {
+    damagePlayer(2, 'bees');
+    flashItemName('🐝 Бджоли розлютились!');
+    Sound.bee(0.12);
+  }
+  spawnParticles(h.x + 0.5, h.y + 0.4, h.z + 0.5, blockColor(PLANK), 10,
+    { radius: 0.3, speed: 1.8, upBias: 0.8, life: 0.5, size: 0.09, gravity: 8 });
+  Sound.breakBlock(PLANK);
+  removeBeehive(key);
+}
+
+// Зняти вулики, що втратили опору або клітинку яких зайняв блок
+function validateBeehives() {
+  if (beehives.size === 0) return;
+  for (const [key, h] of beehives) {
+    const occupied = isSolid(blockAt(h.x, h.y, h.z));
+    const supported = isSolid(blockAt(h.x, h.y - 1, h.z));
+    if (occupied || !supported) breakBeehive(key);
+  }
+}
+
+// Чи є вулик у радіусі r від точки (запилення посівів)
+function beehiveNear(x, y, z, r) {
+  const r2 = r * r;
+  for (const h of beehives.values()) {
+    const dx = h.x + 0.5 - x, dy = h.y + 0.5 - y, dz = h.z + 0.5 - z;
+    if (dx * dx + dy * dy + dz * dz < r2) return true;
+  }
+  return false;
+}
+
+// Поставити вулик у клітинку перед прицілом (лише на тверду підлогу)
+function placeBeehive(hit) {
+  const [x, y, z] = hit.prev;
+  const k = beehiveKey(x, y, z);
+  if (blockAt(x, y, z) !== AIR || beehives.has(k) || campfires.has(k) ||
+      torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) ||
+      gates.has(k) || crops.has(k) || beds.has(k) || saplings.has(k) ||
+      signs.has(k) || rails.has(k)) return false;
+  if (!isSolid(blockAt(x, y - 1, z))) return false;
+  if (!addBeehive(x, y, z)) return false;
+  Sound.place(PLANK);
+  spawnParticles(x + 0.5, y + 0.45, z + 0.5, blockColor(PLANK), 7,
+    { radius: 0.3, speed: 1.4, upBias: 0.8, life: 0.45, size: 0.08, gravity: 8 });
+  return true;
+}
+
+// ПКМ по вулику: зібрати мед, якщо вулик повний
+function tryHarvestHive(h) {
+  if (h.honey < HONEY_TIME) {
+    flashItemName(`Вулик наповнюється: мед ${Math.floor((h.honey / HONEY_TIME) * 100)}%`);
+    return true;
+  }
+  h.honey = 0;
+  h.drip.visible = false;
+  player.honey = Math.min(HONEY_MAX, player.honey + 1);
+  updateHoneyHud();
+  Sound.milk();
+  flashItemName('🍯 Зібрано мед!');
+  unlockAch('honey');
+  spawnParticles(h.x + 0.5, h.y + 0.35, h.z + 0.5, HONEY_COLOR, 12,
+    { radius: 0.3, speed: 1.6, upBias: 1.0, life: 0.6, size: 0.08, gravity: 5 });
+  return true;
+}
+
+let hiveClock = 0;
+function updateBeehives(dt) {
+  if (beehives.size === 0) return;
+  hiveClock += dt;
+  const active = beesActive();
+  for (const h of beehives.values()) {
+    // Мед накопичується, поки бджоли літають; грядки поряд прискорюють
+    if (active && h.honey < HONEY_TIME) {
+      h.recount -= dt;
+      if (h.recount <= 0) {
+        h.recount = 2;
+        let n = 0;
+        if (crops.size > 0) {
+          const r2 = POLLINATE_R * POLLINATE_R;
+          for (const c of crops.values()) {
+            const dx = c.x - h.x, dy = c.y - h.y, dz = c.z - h.z;
+            if (dx * dx + dy * dy + dz * dz < r2 && ++n >= 8) break;
+          }
+        }
+        h.rate = 1 + 0.12 * n;   // кожна грядка поряд (до 8) — +12% швидкості
+      }
+      h.honey = Math.min(HONEY_TIME, h.honey + dt * h.rate);
+      if (h.honey >= HONEY_TIME &&
+          h.group.position.distanceToSquared(player.pos) < 400) {
+        flashItemName('🍯 Вулик повний — заберіть мед (ПКМ)');
+      }
+    }
+    h.drip.visible = h.honey >= HONEY_TIME;
+    // Бджоли видно лише в літну погоду; анімуємо тільки поблизу гравця
+    for (const b of h.bees) b.g.visible = active;
+    const d2 = h.group.position.distanceToSquared(player.pos);
+    if (!active || d2 > 45 * 45) continue;
+    for (const b of h.bees) {
+      const a = hiveClock * b.speed + b.phase;
+      b.g.position.set(
+        Math.cos(a) * b.r,
+        b.h + Math.sin(hiveClock * 1.9 + b.phase * 2) * 0.15,
+        Math.sin(a) * b.r
+      );
+      b.g.rotation.y = -a + (b.speed > 0 ? -Math.PI / 2 : Math.PI / 2);
+      const flap = Math.sin(hiveClock * 42 + b.phase) * 0.55;
+      b.wings[0].rotation.z = 0.35 + flap;
+      b.wings[1].rotation.z = -0.35 - flap;
+    }
+    // Тихе гудіння рою поблизу
+    h.buzzT -= dt;
+    if (h.buzzT <= 0) {
+      h.buzzT = 1.6 + Math.random() * 1.8;
+      if (d2 < 90) Sound.bee(0.04);
+    }
+    // Повний вулик зрідка виблискує золотими іскрами
+    if (h.honey >= HONEY_TIME) {
+      h.sparkT -= dt;
+      if (h.sparkT <= 0) {
+        h.sparkT = 1.2 + Math.random() * 1.5;
+        spawnParticles(h.x + 0.5, h.y + 0.3, h.z + 0.5, HONEY_COLOR, 2,
+          { radius: 0.2, speed: 0.5, upBias: 0.4, life: 0.6, size: 0.06, gravity: 2 });
+      }
+    }
+  }
+}
+
+// Відновити збережені вулики (формат: [x, y, z, honey])
+if (savedGame && Array.isArray(savedGame.beehives)) {
+  for (const e of savedGame.beehives) {
+    if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
+      addBeehive(e[0], e[1], e[2], Number.isFinite(e[3]) ? e[3] : 0);
     }
   }
 }
@@ -7846,6 +8141,12 @@ function placeBlock() {
     if (campfires.has(ck)) { tryCookAt(campfires.get(ck)); return; }
   }
 
+  // Вулик у прицілі (ПКМ) → зібрати мед, з будь-яким предметом у руці
+  if (beehives.size > 0) {
+    const hk = beehiveKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    if (beehives.has(hk)) { tryHarvestHive(beehives.get(hk)); return; }
+  }
+
   if (hotbar[selectedSlot] === BOW) return;   // луком не ставлять блок
   if (hotbar[selectedSlot] === ROD) return;   // вудкою теж не ставлять блок
 
@@ -7869,6 +8170,12 @@ function placeBlock() {
   // Багаття — сутність на твердій підлозі, не змінює воксельну сітку
   if (id === CAMPFIRE) {
     placeCampfire(hit);
+    return;
+  }
+
+  // Вулик — сутність на твердій підлозі, не змінює воксельну сітку
+  if (id === BEEHIVE) {
+    placeBeehive(hit);
     return;
   }
 
@@ -7946,6 +8253,7 @@ function placeBlock() {
   validateSaplings(); // ... або клітинку саджанця
   validateRails();    // ... або клітинку рейки
   validateCampfires(); // ... або клітинку багаття
+  validateBeehives();  // ... або клітинку вулика
 
   // Гравій поверх двох блоків снігу — сніговик оживає
   if (id === GRAVEL) tryFormGolem(x, y, z);
@@ -8735,6 +9043,8 @@ const cookedCountEl = document.getElementById('cooked-count');
 const foodCountEl = document.getElementById('food-count');
 const eggBadgeEl = document.getElementById('egg-badge');
 const eggCountEl = document.getElementById('egg-count');
+const honeyBadgeEl = document.getElementById('honey-badge');
+const honeyCountEl = document.getElementById('honey-count');
 const vignetteEl = document.getElementById('damage-vignette');
 const fireVignetteEl = document.getElementById('fire-vignette');
 const deathOverlay = document.getElementById('death-overlay');
@@ -8838,6 +9148,8 @@ function buildSurvivalHud() {
   if (eggIcon) drawEggIcon(eggIcon);
   const cookedIcon = document.getElementById('cooked-icon');
   if (cookedIcon) drawCookedIcon(cookedIcon);
+  const honeyIcon = document.getElementById('honey-icon');
+  if (honeyIcon) drawHoneyIcon(honeyIcon);
 }
 
 let lastHealthDrawn = -1;
@@ -8846,6 +9158,7 @@ let lastHungerDrawn = -1;
 let lastFoodDrawn = -1;
 let lastCookedDrawn = -1;
 let lastEggsDrawn = -1;
+let lastHoneyDrawn = -1;
 
 // Лічильник зібраного м'яса (бейдж 🍖)
 function updateFoodHud() {
@@ -8884,6 +9197,34 @@ function drawCookedIcon(canvas) {
   ctx.fillStyle = '#f6efdf';
   ctx.fillRect(13, 10, 2, 2);
   ctx.fillRect(12, 13, 2, 2);
+}
+
+// Лічильник зібраного меду (бейдж 🍯 над рештою торби)
+function updateHoneyHud() {
+  if (player.honey === lastHoneyDrawn) return;
+  lastHoneyDrawn = player.honey;
+  honeyCountEl.textContent = player.honey;
+  honeyBadgeEl.hidden = player.honey <= 0;
+}
+
+// Піксельна іконка горщика меду (бейдж, без атласу)
+function drawHoneyIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#b0703a';                          // глиняний горщик
+  ctx.beginPath();
+  ctx.ellipse(8, 10, 5.2, 4.6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#8a5a2b';                          // обідок горловини
+  ctx.fillRect(4, 5, 8, 2);
+  ctx.fillStyle = '#f2b63c';                          // мед, що стікає
+  ctx.fillRect(5, 6, 6, 2);
+  ctx.fillRect(6, 8, 2, 3);
+  ctx.fillRect(9, 8, 1, 2);
+  ctx.fillStyle = '#ffd989';                          // відблиск
+  ctx.fillRect(5, 9, 2, 2);
 }
 
 // Лічильник зібраних яєць (бейдж 🥚 над торбою їжі)
@@ -8958,6 +9299,7 @@ const DEATH_CAUSES = {
   lava: 'Згорів у лаві',
   fire: 'Згорів у багатті',
   meteor: 'Розчавлений метеоритом',
+  bees: 'Зажалений розлюченими бджолами',
 };
 
 function showDeathScreen(cause) {
@@ -9001,6 +9343,24 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(5, 7, 6, 3);
     ctx.fillStyle = '#ffd070';                 // ядро полум'я
     ctx.fillRect(7, 6, 2, 3);
+    return;
+  }
+  if (id === BEEHIVE) {
+    // Процедурна іконка вулика: дощаний будиночок, дашок, льоток і бджола
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#c9973f';                 // корпус
+    ctx.fillRect(3, 6, 10, 8);
+    ctx.fillStyle = '#8a5a2b';                 // обручі та дашок
+    ctx.fillRect(3, 8, 10, 1);
+    ctx.fillRect(3, 11, 10, 1);
+    ctx.fillRect(2, 4, 12, 2);
+    ctx.fillStyle = '#3a2a18';                 // льоток
+    ctx.fillRect(6, 12, 4, 2);
+    ctx.fillStyle = '#e8b53a';                 // бджола поряд
+    ctx.fillRect(12, 2, 3, 2);
+    ctx.fillStyle = '#3a2a18';
+    ctx.fillRect(13, 2, 1, 2);
     return;
   }
   if (id === SEEDS) {
@@ -9680,6 +10040,7 @@ updateSurvivalHud();
 updateFoodHud();
 updateCookedHud();
 updateEggHud();
+updateHoneyHud();
 document.getElementById('respawn-btn').addEventListener('click', respawn);
 
 // ===== Вимикач звуку =====
@@ -10034,6 +10395,7 @@ const ACHIEVEMENTS = [
   { id: 'bloodmoon',   icon: '🌘', title: 'Багряна варта',      desc: 'Пережити криваву ніч' },
   { id: 'star',        icon: '🌠', title: 'Зоряний ловець',     desc: 'Добути уламок впалої зорі' },
   { id: 'treasure',    icon: '🪙', title: 'Шукач скарбів',      desc: 'Викопати скарб за мапою з пляшки' },
+  { id: 'honey',       icon: '🍯', title: 'Бортник',            desc: 'Зібрати мед із вулика' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -10387,6 +10749,58 @@ window.MCDebug = {
     if (gy < 0) return null;
     spawnAnimal('sheep', x + 0.5, gy + 1.01, z + 0.5);
     return { x: x + 0.5, y: gy + 1.01, z: z + 0.5 };
+  },
+  // Вулик на поверхню за (dx,dz) блоків від гравця (для тестів пасіки)
+  placeHive: (dx = 2, dz = 0) => {
+    const x = Math.floor(player.pos.x) + dx, z = Math.floor(player.pos.z) + dz;
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0 || blockAt(x, gy + 1, z) !== AIR) return null;
+    return addBeehive(x, gy + 1, z) ? { x, y: gy + 1, z } : null;
+  },
+  // Стан найближчого вулика (для тестів)
+  hiveState: () => {
+    let best = null, bestDist = Infinity;
+    for (const h of beehives.values()) {
+      const dist = Math.hypot(h.x + 0.5 - player.pos.x, h.z + 0.5 - player.pos.z);
+      if (dist < bestDist) { bestDist = dist; best = h; }
+    }
+    return best ? {
+      x: best.x, y: best.y, z: best.z,
+      honey: +best.honey.toFixed(1), full: best.honey >= HONEY_TIME,
+      rate: +best.rate.toFixed(2), beesOut: beesActive(),
+    } : null;
+  },
+  // Миттєво наповнити найближчий вулик медом (для тестів)
+  forceHoney: () => {
+    let best = null, bestDist = Infinity;
+    for (const h of beehives.values()) {
+      const dist = Math.hypot(h.x + 0.5 - player.pos.x, h.z + 0.5 - player.pos.z);
+      if (dist < bestDist) { bestDist = dist; best = h; }
+    }
+    if (!best) return null;
+    best.honey = HONEY_TIME;
+    return MCDebug.hiveState();
+  },
+  // Зібрати мед із найближчого вулика (як ПКМ по ньому)
+  harvestHive: () => {
+    let best = null, bestDist = Infinity;
+    for (const h of beehives.values()) {
+      const dist = Math.hypot(h.x + 0.5 - player.pos.x, h.z + 0.5 - player.pos.z);
+      if (dist < bestDist) { bestDist = dist; best = h; }
+    }
+    if (!best) return null;
+    tryHarvestHive(best);
+    return { honey: player.honey, hive: +best.honey.toFixed(1) };
+  },
+  get honeyCount() { return player.honey; },
+  // Поранитись і з'їсти мед (F) — для тестів лікування
+  hurt: (n = 6) => { damagePlayer(n, 'fall'); return player.health; },
+  eatHoney: () => {
+    eatFood();
+    return { health: player.health, hunger: player.hunger, honey: player.honey };
   },
   // Стан найближчої вівці: вовна на місці чи острижена
   sheepState: () => {
@@ -11019,6 +11433,7 @@ function animate() {
     updateTnt(dt);
     updateTorches(dt);
     updateCampfires(dt);
+    updateBeehives(dt);
     updateLavaLights(dt);
     updateStarLights(dt);
     updateMeteors(dt);
