@@ -145,6 +145,12 @@ const TREASURE = 48;
 // бджоли можуть ужалити).
 const BEEHIVE = 49;
 
+// Кістяне борошно — перший луут із нечисті: скелети лишають по собі кістки,
+// які підбираються в торбу (🦴). ПКМ із борошном у руці посипає посів чи
+// саджанець перед прицілом — рослина миттєво підростає (посів — на цілу
+// стадію, саджанець — стрибком росту). Нічний бій нарешті живить ферму.
+const BONEMEAL = 50;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -167,6 +173,7 @@ const BLOCK_NAMES = {
   [STARBLOCK]: 'Зоряний камінь',
   [TREASURE]: 'Скриня скарбів',
   [BEEHIVE]: 'Вулик',
+  [BONEMEAL]: 'Кістяне борошно',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
@@ -175,7 +182,7 @@ const ALL_BLOCKS = [
   WATER, LAVA,
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
-  SNOWBALL, STARBLOCK, TREASURE, BEEHIVE,
+  SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -383,6 +390,7 @@ function saveGame() {
         cooked: player.cooked,
         honey: player.honey,
         eggs: player.eggs,
+        bones: player.bones,
         flying: player.flying,
       },
       timeOfDay,
@@ -673,6 +681,16 @@ const Sound = (() => {
     },
     // Підняте яйце: короткий м'який висхідний «поп»
     eggPop() { tone({ freq: 520, dur: 0.08, type: 'triangle', gain: 0.11, slideTo: 940 }); },
+    // Підібрана кістка: сухе «цок-цок» із легким дзвоном
+    bonePop() {
+      noise({ dur: 0.06, gain: 0.12, type: 'bandpass', freq: 2100, q: 3, attack: 0.002 });
+      tone({ freq: 660, dur: 0.09, type: 'triangle', gain: 0.09, slideTo: 990 });
+    },
+    // Посипане борошно: м'який пилюжний «пух» із висхідним тоном росту
+    boneMeal() {
+      noise({ dur: 0.16, gain: 0.14, type: 'lowpass', freq: 900, q: 0.7 });
+      tone({ freq: 320, dur: 0.14, type: 'sine', gain: 0.07, slideTo: 560 });
+    },
     // Кидок яйця: легкий свист долоні
     eggThrow() {
       noise({ dur: 0.12, gain: 0.06, type: 'highpass', freq: 1800, q: 0.5 });
@@ -1791,6 +1809,7 @@ const COOKED_FOOD = 10;         // скільки голоду відновлю�
 const HONEY_MAX = 16;           // максимум меду в торбі
 const HONEY_HEAL = 6;           // скільки здоров'я загоює мед (3 серця)
 const HONEY_HUNGER = 4;         // і трохи вгамовує голод (2 ніжки)
+const BONES_MAX = 64;           // максимум кісток у торбі
 const EAT_COOLDOWN = 0.9;       // пауза між поїданнями, с
 const HUNGER_PER_EXHAUSTION = 4; // одиниць виснаження на 1 одиницю голоду
 const FALL_SAFE = 3;            // блоки падіння без шкоди
@@ -1818,6 +1837,7 @@ const player = {
   cooked: 0,            // смажене на багатті м'ясо (ситніше за сире)
   honey: 0,             // зібраний із вуликів мед (цілющі ласощі)
   eggs: 0,              // зібрані курячі яйця (боєзапас для кидання)
+  bones: 0,             // кістки від скелетів (сировина кістяного борошна)
   starveTick: 0,        // таймер шкоди від голоду
   eatTimer: 0,          // перезарядка поїдання
   dead: false,
@@ -1864,6 +1884,9 @@ if (savedGame && savedGame.player) {
   }
   if (Number.isFinite(p.honey)) {
     player.honey = THREE.MathUtils.clamp(Math.floor(p.honey), 0, HONEY_MAX);
+  }
+  if (Number.isFinite(p.bones)) {
+    player.bones = THREE.MathUtils.clamp(Math.floor(p.bones), 0, BONES_MAX);
   }
   player.flying = !!p.flying;
 }
@@ -3393,6 +3416,121 @@ function updateThrownEggs(dt) {
 }
 
 // ============================================================
+// Кістки та кістяне борошно: перший луут із нечисті живить ферму
+// ============================================================
+// Скелет, що загинув (у бою чи догоряючи на світанку), лишає по собі 1–2
+// кістки — маленькі сутності на землі (як яйця), що підбираються впритул у
+// торбу (бейдж 🦴). Предмет «Кістяне борошно» (Tab) ПКМ посипає посів чи
+// саджанець перед прицілом: посів підростає на цілу стадію, саджанець —
+// стрибком росту. Так нічна оборона нарешті винагороджує землероба.
+const BONE_DESPAWN = 120;        // секунд, поки непідібрана кістка зникне
+const BONE_PICKUP_R = 1.25;      // радіус підбирання кістки, бл
+const BONE_SAPLING_BOOST = 0.4;  // частка повного росту саджанця за посипку
+const BONE_COLOR = new THREE.Color(0xe8e4d4);
+
+// Спільні ресурси моделі кістки (одні геометрії/матеріал на всі кістки)
+const BONE_SHAFT_GEO = new THREE.BoxGeometry(0.34, 0.07, 0.07);
+const BONE_KNOB_GEO = new THREE.BoxGeometry(0.09, 0.13, 0.13);
+const BONE_MAT = new THREE.MeshLambertMaterial({ color: 0xe8e4d4 });
+
+const groundBones = [];          // кістки, що лежать на землі
+
+function makeBoneModel() {
+  const g = new THREE.Group();
+  const shaft = new THREE.Mesh(BONE_SHAFT_GEO, BONE_MAT);
+  const k1 = new THREE.Mesh(BONE_KNOB_GEO, BONE_MAT);
+  const k2 = new THREE.Mesh(BONE_KNOB_GEO, BONE_MAT);
+  k1.position.x = -0.19;
+  k2.position.x = 0.19;
+  g.add(shaft, k1, k2);
+  return g;
+}
+
+// Скелет розсипався: лишити на землі 1–2 кістки з невеликим розкидом
+function dropBones(x, y, z) {
+  const n = 1 + (Math.random() < 0.5 ? 1 : 0);
+  for (let i = 0; i < n; i++) {
+    if (groundBones.length >= 64) return;
+    const mesh = makeBoneModel();
+    const bx = x + (Math.random() - 0.5) * 0.6;
+    const bz = z + (Math.random() - 0.5) * 0.6;
+    mesh.position.set(bx, y + 0.16, bz);
+    mesh.rotation.y = Math.random() * Math.PI * 2;
+    scene.add(mesh);
+    groundBones.push({ mesh, x: bx, y, z: bz, life: 0, bob: Math.random() * Math.PI * 2 });
+  }
+}
+
+function removeGroundBone(i) {
+  scene.remove(groundBones[i].mesh);   // спільні геометрії/матеріал — не чіпаємо
+  groundBones.splice(i, 1);
+}
+
+// Кістки на землі: погойдуються, підбираються гравцем упритул, зникають з часом
+function updateGroundBones(dt) {
+  for (let i = groundBones.length - 1; i >= 0; i--) {
+    const b = groundBones[i];
+    b.life += dt;
+    b.bob += dt * 3;
+    b.mesh.position.y = b.y + 0.18 + Math.sin(b.bob) * 0.03;
+    b.mesh.rotation.y += dt * 1.1;
+    if (b.life > BONE_DESPAWN) { removeGroundBone(i); continue; }
+    if (player.dead || player.bones >= BONES_MAX) continue;
+    const dx = b.x - player.pos.x, dz = b.z - player.pos.z;
+    const dy = b.y - player.pos.y;
+    if (dx * dx + dz * dz <= BONE_PICKUP_R * BONE_PICKUP_R && dy > -1.6 && dy < 2) {
+      player.bones = Math.min(BONES_MAX, player.bones + 1);
+      updateBoneHud();
+      spawnParticles(b.x, b.y + 0.2, b.z, BONE_COLOR, 4,
+        { radius: 0.15, speed: 1, upBias: 1.2, life: 0.4, size: 0.07, gravity: -5 });
+      Sound.bonePop();
+      removeGroundBone(i);
+    }
+  }
+}
+
+// Посипати кістяним борошном посів чи саджанець у клітинці перед прицілом (ПКМ)
+function useBonemeal(hit) {
+  if (player.bones <= 0) {
+    flashItemName('Немає кісток — їх лишають скелети');
+    return;
+  }
+  if (!hit || !hit.prev) return;
+  const [x, y, z] = hit.prev;
+  const key = x + ',' + y + ',' + z;
+  const c = crops.get(key);
+  const s = saplings.get(key);
+  if (!c && !s) {
+    flashItemName('Посип борошно на посів чи саджанець');
+    return;
+  }
+  if (c && c.stage >= CROP_STAGES - 1) {
+    flashItemName('Колос уже дозрів — час жати');
+    return;
+  }
+  player.bones--;
+  updateBoneHud();
+  if (c) {
+    c.stage++;
+    c.growth = 0;
+    applyCropStage(c);
+  } else {
+    s.growth = Math.min(SAPLING_GROW_TIME, s.growth + SAPLING_GROW_TIME * BONE_SAPLING_BOOST);
+    applySaplingGrowth(s);
+    if (s.growth >= SAPLING_GROW_TIME && !growSaplingTree(s)) {
+      s.growth = SAPLING_GROW_TIME * 0.8;   // тісно — саджанець спробує сам
+    }
+  }
+  Sound.boneMeal();
+  spawnParticles(x + 0.5, y + 0.35, z + 0.5, BONE_COLOR, 10,
+    { radius: 0.3, speed: 1.6, upBias: 1.2, life: 0.5, size: 0.07, gravity: -2 });
+  spawnParticles(x + 0.5, y + 0.45, z + 0.5, new THREE.Color(0x9cd25a), 6,
+    { radius: 0.25, speed: 1.2, upBias: 1.4, life: 0.55, size: 0.07, gravity: -3 });
+  triggerSwing();
+  unlockAch('bonemeal');
+}
+
+// ============================================================
 // Сніжки: метальний снаряд гравця (безлімітний, ПКМ) і сніговика-охоронця.
 // Нечисть дістає легку шкоду з відкидом, тварин сніжка не ранить.
 // ============================================================
@@ -3988,6 +4126,8 @@ function updateMobs(dt) {
       else if (m.type === 'skeleton') unlockAch('skeleton');
       else if (m.type === 'spider') unlockAch('spider');
       else unlockAch('zombie');
+      // Скелет лишає по собі кістки — сировину кістяного борошна
+      if (m.type === 'skeleton') dropBones(m.pos.x, m.pos.y, m.pos.z);
       removeMob(i);
       continue;
     }
@@ -8207,6 +8347,12 @@ function placeBlock() {
     return;
   }
 
+  // Кістяне борошно — посипати посів чи саджанець перед прицілом
+  if (id === BONEMEAL) {
+    useBonemeal(hit);
+    return;
+  }
+
   // Саджанець — сутність-паросток: садиться на траву/землю й виростає в дерево
   if (id === SAPLING) {
     plantSapling(hit);
@@ -9045,6 +9191,8 @@ const eggBadgeEl = document.getElementById('egg-badge');
 const eggCountEl = document.getElementById('egg-count');
 const honeyBadgeEl = document.getElementById('honey-badge');
 const honeyCountEl = document.getElementById('honey-count');
+const boneBadgeEl = document.getElementById('bone-badge');
+const boneCountEl = document.getElementById('bone-count');
 const vignetteEl = document.getElementById('damage-vignette');
 const fireVignetteEl = document.getElementById('fire-vignette');
 const deathOverlay = document.getElementById('death-overlay');
@@ -9150,6 +9298,8 @@ function buildSurvivalHud() {
   if (cookedIcon) drawCookedIcon(cookedIcon);
   const honeyIcon = document.getElementById('honey-icon');
   if (honeyIcon) drawHoneyIcon(honeyIcon);
+  const boneIcon = document.getElementById('bone-icon');
+  if (boneIcon) drawBoneIcon(boneIcon);
 }
 
 let lastHealthDrawn = -1;
@@ -9159,6 +9309,7 @@ let lastFoodDrawn = -1;
 let lastCookedDrawn = -1;
 let lastEggsDrawn = -1;
 let lastHoneyDrawn = -1;
+let lastBonesDrawn = -1;
 
 // Лічильник зібраного м'яса (бейдж 🍖)
 function updateFoodHud() {
@@ -9225,6 +9376,36 @@ function drawHoneyIcon(canvas) {
   ctx.fillRect(9, 8, 1, 2);
   ctx.fillStyle = '#ffd989';                          // відблиск
   ctx.fillRect(5, 9, 2, 2);
+}
+
+// Лічильник зібраних кісток (бейдж 🦴 над рештою торби)
+function updateBoneHud() {
+  if (player.bones === lastBonesDrawn) return;
+  lastBonesDrawn = player.bones;
+  boneCountEl.textContent = player.bones;
+  boneBadgeEl.hidden = player.bones <= 0;
+}
+
+// Піксельна іконка кістки (бейдж, без атласу)
+function drawBoneIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.save();
+  ctx.translate(8, 8);
+  ctx.rotate(-Math.PI / 4);
+  ctx.fillStyle = '#e8e4d4';                          // стрижень
+  ctx.fillRect(-5, -1.5, 10, 3);
+  ctx.beginPath();                                    // потовщення на кінцях
+  ctx.arc(-5, -1.6, 2, 0, Math.PI * 2);
+  ctx.arc(-5, 1.6, 2, 0, Math.PI * 2);
+  ctx.arc(5, -1.6, 2, 0, Math.PI * 2);
+  ctx.arc(5, 1.6, 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#f7f4e8';                          // відблиск
+  ctx.fillRect(-3, -1, 4, 1);
+  ctx.restore();
 }
 
 // Лічильник зібраних яєць (бейдж 🥚 над торбою їжі)
@@ -9565,6 +9746,28 @@ function drawBlockIcon(canvas, id) {
   }
   if (id === EGG) {
     drawEggIcon(canvas);
+    return;
+  }
+  if (id === BONEMEAL) {
+    // Процедурна іконка кістяного борошна: купка пилу з кісточкою поверх
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#ded9c6';                          // купка борошна
+    ctx.beginPath(); ctx.ellipse(8, 12, 6, 3, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#efeadb';
+    ctx.beginPath(); ctx.ellipse(8, 11, 4.4, 2.4, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.save();                                         // кісточка поверх купки
+    ctx.translate(8, 6);
+    ctx.rotate(-0.5);
+    ctx.fillStyle = '#f4f0e2';
+    ctx.fillRect(-4, -1, 8, 2);
+    ctx.beginPath();
+    ctx.arc(-4, -1.2, 1.6, 0, Math.PI * 2);
+    ctx.arc(-4, 1.2, 1.6, 0, Math.PI * 2);
+    ctx.arc(4, -1.2, 1.6, 0, Math.PI * 2);
+    ctx.arc(4, 1.2, 1.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
     return;
   }
   if (id === SNOWBALL) {
@@ -10041,6 +10244,7 @@ updateFoodHud();
 updateCookedHud();
 updateEggHud();
 updateHoneyHud();
+updateBoneHud();
 document.getElementById('respawn-btn').addEventListener('click', respawn);
 
 // ===== Вимикач звуку =====
@@ -10396,6 +10600,7 @@ const ACHIEVEMENTS = [
   { id: 'star',        icon: '🌠', title: 'Зоряний ловець',     desc: 'Добути уламок впалої зорі' },
   { id: 'treasure',    icon: '🪙', title: 'Шукач скарбів',      desc: 'Викопати скарб за мапою з пляшки' },
   { id: 'honey',       icon: '🍯', title: 'Бортник',            desc: 'Зібрати мед із вулика' },
+  { id: 'bonemeal',    icon: '🦴', title: 'Агроном',            desc: 'Прискорити ріст кістяним борошном' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -11266,6 +11471,31 @@ window.MCDebug = {
       chicks: animals.filter((a) => a.baby).length,
     };
   },
+  // Кістки та кістяне борошно (для тестів)
+  giveBones: (n = 8) => {
+    player.bones = Math.min(BONES_MAX, player.bones + n);
+    updateBoneHud();
+    assignBlockToSlot(BONEMEAL);
+    return { bones: player.bones, held: BLOCK_NAMES[hotbar[selectedSlot]] };
+  },
+  dropBonesNear: (dx = 1, dz = 0) => {
+    dropBones(player.pos.x + dx, player.pos.y, player.pos.z + dz);
+    return { ground: groundBones.length };
+  },
+  sprinkle: () => { useBonemeal(raycastBlock()); return { bones: player.bones }; },
+  // Посипати найближчий до гравця посів чи саджанець (для тестів, без прицілу)
+  sprinkleNearest: () => {
+    let best = null, bestD = Infinity;
+    for (const e of [...crops.values(), ...saplings.values()]) {
+      const d = (e.x + 0.5 - player.pos.x) ** 2 + (e.z + 0.5 - player.pos.z) ** 2;
+      if (d < bestD) { bestD = d; best = e; }
+    }
+    if (!best) return 'немає посівів чи саджанців поряд';
+    useBonemeal({ prev: [best.x, best.y, best.z] });
+    return { bones: player.bones, stage: best.stage, growth: best.growth };
+  },
+  get boneCount() { return player.bones; },
+  get bonesOnGround() { return groundBones.length; },
   // Сніжки та сніговик-охоронець (для тестів)
   giveSnowball: () => { assignBlockToSlot(SNOWBALL); return BLOCK_NAMES[SNOWBALL]; },
   throwSnowball: () => { throwSnowball(); return { flying: snowballs.length }; },
@@ -11445,6 +11675,7 @@ function animate() {
     updateArrows(dt);
     updateGroundEggs(dt);
     updateThrownEggs(dt);
+    updateGroundBones(dt);
     updateSnowballs(dt);
     updateFallingBlocks(dt);
     updateBoats(dt);
