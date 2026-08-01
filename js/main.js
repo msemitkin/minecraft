@@ -2314,6 +2314,19 @@ const EGG_LAY_MIN = 25;
 const EGG_LAY_VAR = 25;
 const CHICK_SCALE = 0.45;
 const CHICK_GROW_TIME = 60;
+// Розведення: ПКМ із їжею в торбі (🍖) годує свійську тварину — та входить
+// «у настрій» на LOVE_TIME секунд і шукає таку саму погодовану пару; коли
+// двоє сходяться впритул — з'являється маля (росте, як пташеня з яйця).
+// Після приплоду батьки перепочивають BREED_COOLDOWN секунд. Годування маляти
+// підганяє його ріст. М'яка межа BREED_ANIMAL_CAP не дає загону розростись
+// безмежно: тваринам «затісно» — і приплоду не буде.
+const BREED_TYPES = new Set(['pig', 'cow', 'sheep', 'chicken']);
+const LOVE_TIME = 30;
+const BREED_COOLDOWN = 90;
+const BREED_RANGE = 2.0;        // упритул — маля
+const BREED_SEEK_RANGE = 12;    // звідки пара бачить одне одного
+const BREED_ANIMAL_CAP = 20;
+const BABY_FEED_BOOST = 15;     // секунд росту за порцію їжі маляті
 const animals = [];
 
 function animalBox(parent, w, h, d, color, x, y, z) {
@@ -2547,6 +2560,9 @@ function spawnAnimal(type, x, y, z, opts = {}) {
     eggTimer: EGG_LAY_MIN + Math.random() * EGG_LAY_VAR,
     // Корова: перезарядка доїння (нова корова надоєна одразу)
     milkTimer: 0,
+    // Розведення: «настрій» після годування та перепочинок після приплоду
+    love: 0,
+    breedCd: 0,
     hurt: 0,       // спалах при ударі (0..1)
     panic: 0,      // тікає від гравця після удару
     // Вовна (лише вівці): меші руна, стан «нестрижена», таймер відростання
@@ -2636,16 +2652,31 @@ function updateAnimal(a, dt) {
     // Дивиться геть від гравця: «до гравця» — atan2(a−p); напрям утечі — протилежний
     a.targetYaw = Math.atan2(player.pos.x - a.pos.x, player.pos.z - a.pos.z);
   } else {
-    // Зміна стану: блукає / стоїть
-    a.stateTimer -= dt;
-    if (a.stateTimer <= 0) {
-      if (a.state === 'walk') {
+    // «У настрої» після годування: крокує до найближчої такої самої
+    // погодованої тварини; зійшлися впритул — приплід
+    const mate = a.love > 0 ? findMate(a) : null;
+    if (mate) {
+      const dx = mate.pos.x - a.pos.x, dz = mate.pos.z - a.pos.z;
+      if (dx * dx + dz * dz <= BREED_RANGE * BREED_RANGE) {
         a.state = 'idle';
-        a.stateTimer = 1 + Math.random() * 3;
+        breedPair(a, mate);
       } else {
         a.state = 'walk';
-        a.stateTimer = 2 + Math.random() * 4;
-        a.targetYaw = Math.random() * Math.PI * 2;
+        a.stateTimer = 0.5;
+        a.targetYaw = Math.atan2(a.pos.x - mate.pos.x, a.pos.z - mate.pos.z);
+      }
+    } else {
+      // Зміна стану: блукає / стоїть
+      a.stateTimer -= dt;
+      if (a.stateTimer <= 0) {
+        if (a.state === 'walk') {
+          a.state = 'idle';
+          a.stateTimer = 1 + Math.random() * 3;
+        } else {
+          a.state = 'walk';
+          a.stateTimer = 2 + Math.random() * 4;
+          a.targetYaw = Math.random() * Math.PI * 2;
+        }
       }
     }
   }
@@ -2708,6 +2739,17 @@ function updateAnimal(a, dt) {
       for (const m of a.woolMeshes) m.visible = true;
     }
   }
+
+  // «Настрій» тане з часом; поки тримається — над твариною зрідка сердечка.
+  // Після приплоду батьки перепочивають, перш ніж їх можна годувати знову.
+  if (a.love > 0) {
+    a.love -= dt;
+    if (Math.random() < dt * 1.6) {
+      spawnParticles(a.pos.x, a.pos.y + a.height + 0.25, a.pos.z, HEART_COLOR, 1,
+        { radius: 0.2, speed: 0.5, upBias: 1.2, life: 0.7, size: 0.11, gravity: -2 });
+    }
+  }
+  if (a.breedCd > 0) a.breedCd -= dt;
 
   // Пташеня росте: модель і габарити плавно збільшуються до дорослих
   if (a.baby) {
@@ -2943,6 +2985,92 @@ function tryInteractWolf() {
     return true;
   }
   return false;
+}
+
+// ============================================================
+// Розведення: погодована пара свійських тварин дає маля
+// ============================================================
+
+// Найближча «в настрої» тварина того самого виду (доросла, не сама a)
+function findMate(a) {
+  let best = null, bestDist = BREED_SEEK_RANGE;
+  for (const b of animals) {
+    if (b === a || b.type !== a.type || b.baby || b.love <= 0) continue;
+    const d = b.pos.distanceTo(a.pos);
+    if (d < bestDist) { bestDist = d; best = b; }
+  }
+  return best;
+}
+
+// Пара зійшлася: маля між батьками, феєрверк сердечок, обом — перепочинок
+function breedPair(a, b) {
+  a.love = 0; b.love = 0;
+  a.breedCd = BREED_COOLDOWN; b.breedCd = BREED_COOLDOWN;
+  const x = (a.pos.x + b.pos.x) / 2;
+  const y = Math.max(a.pos.y, b.pos.y) + 0.05;
+  const z = (a.pos.z + b.pos.z) / 2;
+  spawnAnimal(a.type, x, y, z, { baby: true });
+  for (const p of [a, b]) {
+    spawnParticles(p.pos.x, p.pos.y + p.height + 0.3, p.pos.z, HEART_COLOR, 8,
+      { radius: 0.35, speed: 1.1, upBias: 1.5, life: 0.9, size: 0.12, gravity: -2 });
+  }
+  Sound.peep();
+  sleepToast('💞 У загоні приплід!');
+  unlockAch('breed');
+}
+
+// Свійська тварина в конусі погляду (той самий конус, що й animalInSight)
+const _feedDir = new THREE.Vector3();
+function breedableInSight(reach = 3.2) {
+  camera.getWorldDirection(_feedDir);
+  const ox = camera.position.x, oy = camera.position.y, oz = camera.position.z;
+  let best = null, bestDist = Infinity;
+  for (const a of animals) {
+    if (!BREED_TYPES.has(a.type)) continue;
+    const tx = a.pos.x - ox;
+    const ty = a.pos.y + a.height * 0.5 - oy;
+    const tz = a.pos.z - oz;
+    const dist = Math.hypot(tx, ty, tz);
+    if (dist > reach) continue;
+    const dot = (tx * _feedDir.x + ty * _feedDir.y + tz * _feedDir.z) / (dist || 1);
+    if (dot < 0.55) continue;
+    if (dist < bestDist) { bestDist = dist; best = a; }
+  }
+  return best;
+}
+
+// ПКМ по свійській тварині з їжею в торбі (🍖) — погодувати: доросла входить
+// «у настрій» і шукає пару, маля росте швидше. З відром у руці не годуємо —
+// відро лишається доїнню корів. Повертає true, якщо клік оброблено.
+function tryFeedFarmAnimal() {
+  if (isBucket(hotbar[selectedSlot])) return false;
+  const a = breedableInSight();
+  if (!a || player.food <= 0) return false;
+  if (a.baby) {
+    player.food--;
+    updateFoodHud();
+    a.growth += BABY_FEED_BOOST;
+    spawnParticles(a.pos.x, a.pos.y + a.height + 0.2, a.pos.z, HEART_COLOR, 4,
+      { radius: 0.2, speed: 0.8, upBias: 1.4, life: 0.7, size: 0.1, gravity: -2 });
+    Sound.peep();
+    triggerSwing();
+    return true;
+  }
+  if (a.love > 0 || a.breedCd > 0) return false;   // сита чи перепочиває
+  if (animals.length >= BREED_ANIMAL_CAP) {
+    flashItemName('🐮 Тваринам затісно — приплоду не буде');
+    return true;
+  }
+  player.food--;
+  updateFoodHud();
+  a.love = LOVE_TIME;
+  a.panic = 0;
+  spawnParticles(a.pos.x, a.pos.y + a.height + 0.25, a.pos.z, HEART_COLOR, 7,
+    { radius: 0.35, speed: 1.2, upBias: 1.6, life: 0.8, size: 0.12, gravity: -2 });
+  Sound.eat();
+  triggerSwing();
+  if (!findMate(a)) flashItemName('💞 Тварина в настрої — погодуй їй пару!');
+  return true;
 }
 
 // Відновлення приручених вовків зі збереження (формат [x, y, z, health, sitting])
@@ -8241,6 +8369,9 @@ function placeBlock() {
   // Кінь у прицілі (ПКМ) → погодувати/приручити їжею або сісти верхи
   if (animals.length > 0 && tryInteractHorse()) return;
 
+  // Свійська тварина в прицілі (ПКМ) → погодувати з торби: пара дає приплід
+  if (animals.length > 0 && tryFeedFarmAnimal()) return;
+
   // Двері в прицілі (ПКМ) → відчинити/зачинити, з будь-яким предметом у руці.
   // До raycast, бо двері не в воксельній сітці й промінь їх не бачить.
   if (doors.size > 0) {
@@ -10601,6 +10732,7 @@ const ACHIEVEMENTS = [
   { id: 'treasure',    icon: '🪙', title: 'Шукач скарбів',      desc: 'Викопати скарб за мапою з пляшки' },
   { id: 'honey',       icon: '🍯', title: 'Бортник',            desc: 'Зібрати мед із вулика' },
   { id: 'bonemeal',    icon: '🦴', title: 'Агроном',            desc: 'Прискорити ріст кістяним борошном' },
+  { id: 'breed',       icon: '💞', title: 'Селекціонер',        desc: 'Дочекатися приплоду, погодувавши пару тварин' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -11496,6 +11628,49 @@ window.MCDebug = {
   },
   get boneCount() { return player.bones; },
   get bonesOnGround() { return groundBones.length; },
+  // Розведення тварин (для тестів)
+  // Пара дорослих тварин заданого виду обабіч точки за 3 блоки перед гравцем
+  spawnBreedPair: (type = 'pig', apart = 6) => {
+    if (!BREED_TYPES.has(type)) return `не свійський вид: ${type}`;
+    const cx = Math.floor(player.pos.x) + 3, cz = Math.floor(player.pos.z);
+    const spots = [];
+    for (const dz of [-apart / 2, apart / 2]) {
+      const x = cx, z = Math.round(cz + dz);
+      let gy = -1;
+      for (let y = HEIGHT - 1; y > 0; y--) {
+        if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+      }
+      if (gy < 0) return null;
+      spawnAnimal(type, x + 0.5, gy + 1.01, z + 0.5);
+      spots.push({ x: x + 0.5, y: gy + 1.01, z: z + 0.5 });
+    }
+    return spots;
+  },
+  // Погодувати тварину в прицілі тим самим шляхом, що й ПКМ (для тестів)
+  feedInSight: () => {
+    const a = breedableInSight();
+    const fed = tryFeedFarmAnimal();
+    return a
+      ? { fed, type: a.type, baby: a.baby, love: +a.love.toFixed(1),
+          breedCd: +a.breedCd.toFixed(1), food: player.food }
+      : { fed, food: player.food };
+  },
+  // Дати «настрій» двом найближчим дорослим тваринам виду — без витрати їжі
+  loveNearest: (type = 'pig') => {
+    const near = animals
+      .filter((a) => a.type === type && !a.baby)
+      .sort((a, b) => a.pos.distanceTo(player.pos) - b.pos.distanceTo(player.pos))
+      .slice(0, 2);
+    for (const a of near) { a.love = LOVE_TIME; a.breedCd = 0; }
+    return near.length;
+  },
+  // Стан розведення: хто в настрої, хто перепочиває, скільки малят
+  breedState: () => ({
+    total: animals.length,
+    inLove: animals.filter((a) => a.love > 0).map((a) => a.type),
+    cooling: animals.filter((a) => a.breedCd > 0).map((a) => a.type),
+    babies: animals.filter((a) => a.baby).map((a) => ({ type: a.type, growth: +a.growth.toFixed(1) })),
+  }),
   // Сніжки та сніговик-охоронець (для тестів)
   giveSnowball: () => { assignBlockToSlot(SNOWBALL); return BLOCK_NAMES[SNOWBALL]; },
   throwSnowball: () => { throwSnowball(); return { flying: snowballs.length }; },
