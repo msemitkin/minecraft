@@ -2563,6 +2563,7 @@ function spawnAnimal(type, x, y, z, opts = {}) {
     // Розведення: «настрій» після годування та перепочинок після приплоду
     love: 0,
     breedCd: 0,
+    pursuing: false,   // цієї миті крокує до пари (настрій тане повільніше)
     hurt: 0,       // спалах при ударі (0..1)
     panic: 0,      // тікає від гравця після удару
     // Вовна (лише вівці): меші руна, стан «нестрижена», таймер відростання
@@ -2649,12 +2650,14 @@ function updateAnimal(a, dt) {
     else a.state = 'idle';
   } else if (panicking) {
     a.panic -= dt;
+    a.pursuing = false;
     // Дивиться геть від гравця: «до гравця» — atan2(a−p); напрям утечі — протилежний
     a.targetYaw = Math.atan2(player.pos.x - a.pos.x, player.pos.z - a.pos.z);
   } else {
     // «У настрої» після годування: крокує до найближчої такої самої
     // погодованої тварини; зійшлися впритул — приплід
     const mate = a.love > 0 ? findMate(a) : null;
+    a.pursuing = !!mate;
     if (mate) {
       const dx = mate.pos.x - a.pos.x, dz = mate.pos.z - a.pos.z;
       if (dx * dx + dz * dz <= BREED_RANGE * BREED_RANGE) {
@@ -2687,7 +2690,10 @@ function updateAnimal(a, dt) {
   a.yaw += dyaw * Math.min(1, dt * (panicking || a.tamed ? 8 : 3));
 
   const moving = panicking || a.state === 'walk';
-  const sp = moving ? a.speed * (panicking ? 2.2 : a.tamed ? a.runBoost : 1) : 0;
+  // До пари тварина трохи наддає ходи
+  const sp = moving
+    ? a.speed * (panicking ? 2.2 : a.tamed ? a.runBoost : a.pursuing ? 1.3 : 1)
+    : 0;
   a.vel.x = -Math.sin(a.yaw) * sp;
   a.vel.z = -Math.cos(a.yaw) * sp;
 
@@ -2740,10 +2746,11 @@ function updateAnimal(a, dt) {
     }
   }
 
-  // «Настрій» тане з часом; поки тримається — над твариною зрідка сердечка.
+  // «Настрій» тане з часом (удвічі повільніше, поки тварина крокує до пари —
+  // щоб горбиста місцевість не з'їла настрій дорогою); зрідка — сердечка.
   // Після приплоду батьки перепочивають, перш ніж їх можна годувати знову.
   if (a.love > 0) {
-    a.love -= dt;
+    a.love -= dt * (a.pursuing ? 0.5 : 1);
     if (Math.random() < dt * 1.6) {
       spawnParticles(a.pos.x, a.pos.y + a.height + 0.25, a.pos.z, HEART_COLOR, 1,
         { radius: 0.2, speed: 0.5, upBias: 1.2, life: 0.7, size: 0.11, gravity: -2 });
@@ -11664,6 +11671,12 @@ window.MCDebug = {
     for (const a of near) { a.love = LOVE_TIME; a.breedCd = 0; }
     return near.length;
   },
+  // Позиції свійських тварин із «настроєм» — для діагностики розведення
+  breedPositions: () => animals
+    .filter((a) => BREED_TYPES.has(a.type))
+    .map((a) => ({ type: a.type, baby: a.baby, love: +a.love.toFixed(1),
+                   pursuing: a.pursuing, x: +a.pos.x.toFixed(1),
+                   y: +a.pos.y.toFixed(1), z: +a.pos.z.toFixed(1) })),
   // Стан розведення: хто в настрої, хто перепочиває, скільки малят
   breedState: () => ({
     total: animals.length,
