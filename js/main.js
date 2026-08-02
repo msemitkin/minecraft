@@ -8466,7 +8466,12 @@ function removeCrow(i) {
   crows.splice(i, 1);
 }
 
-// Наліт: зграйка з 2–3 ворон летить до випадкових підрослих посівів поблизу
+// Чи вже цілиться на цей посів інша ворона (щоб зграя не товклась на одному)
+const crowTargetTaken = (key, self) =>
+  crows.some((c) => c !== self && c.state !== 'flee' && c.targetKey === key);
+
+// Наліт: зграйка з 2–3 ворон летить до випадкових підрослих посівів поблизу —
+// кожна до свого, поки посівів вистачає
 function startCrowRaid() {
   const px = player.pos.x, pz = player.pos.z;
   const eligible = [];
@@ -8477,8 +8482,12 @@ function startCrowRaid() {
   }
   if (eligible.length < CROW_MIN_CROPS) return false;
   const n = Math.min(CROW_MAX, 2 + (Math.random() < 0.5 ? 1 : 0));
+  const pool = eligible.slice();
   for (let i = 0; i < n; i++) {
-    spawnCrowAt(eligible[Math.floor(Math.random() * eligible.length)]);
+    const pick = pool.length
+      ? pool.splice(Math.floor(Math.random() * pool.length), 1)[0]
+      : eligible[Math.floor(Math.random() * eligible.length)];
+    spawnCrowAt(pick);
   }
   crowHintShown = false;
   crowRepelHinted = false;
@@ -8496,16 +8505,21 @@ function crowFlee(cr, fromX, fromZ) {
   Sound.caw(0.06);
 }
 
-// Випадковий посів зі станом хоч трохи підрослим у радіусі maxDist від точки
-function findCrowCrop(x, z, maxDist) {
+// Випадковий посів зі станом хоч трохи підрослим у радіусі maxDist від точки;
+// вільні від чужого дзьоба посіви мають пріоритет
+function findCrowCrop(x, z, maxDist, self) {
   const r2 = maxDist * maxDist;
-  const near = [];
+  const near = [], free = [];
   for (const c of crops.values()) {
     if (c.stage < 1) continue;
     const dx = c.x + 0.5 - x, dz = c.z + 0.5 - z;
-    if (dx * dx + dz * dz < r2) near.push(c);
+    if (dx * dx + dz * dz < r2) {
+      near.push(c);
+      if (!crowTargetTaken(cropKey(c.x, c.y, c.z), self)) free.push(c);
+    }
   }
-  return near.length ? near[Math.floor(Math.random() * near.length)] : null;
+  const pool = free.length ? free : near;
+  return pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
 }
 
 function updateCrows(dt) {
@@ -8557,7 +8571,7 @@ function updateCrows(dt) {
       const c = crops.get(cr.targetKey);
       if (!c || c.stage < 1) {
         // Ціль зникла (зібрана чи видзьобана) — шукаємо іншу поблизу
-        const next = findCrowCrop(cr.pos.x, cr.pos.z, 12);
+        const next = findCrowCrop(cr.pos.x, cr.pos.z, 12, cr);
         if (next) cr.targetKey = cropKey(next.x, next.y, next.z);
         else crowFlee(cr, player.pos.x, player.pos.z);
       } else {
@@ -8590,7 +8604,7 @@ function updateCrows(dt) {
     } else if (cr.state === 'peck') {
       const c = crops.get(cr.targetKey);
       if (!c || c.stage < 1) {
-        const next = findCrowCrop(cr.pos.x, cr.pos.z, 10);
+        const next = findCrowCrop(cr.pos.x, cr.pos.z, 10, cr);
         if (next) { cr.targetKey = cropKey(next.x, next.y, next.z); cr.state = 'fly'; }
         else crowFlee(cr, player.pos.x, player.pos.z);
       } else {
@@ -8613,7 +8627,7 @@ function updateCrows(dt) {
           if (cr.eaten >= CROW_EAT_MAX) {
             crowFlee(cr, c.x + 0.5, c.z + 0.5);   // наїлася — летить геть
           } else if (c.stage < 1) {
-            const next = findCrowCrop(cr.pos.x, cr.pos.z, 10);
+            const next = findCrowCrop(cr.pos.x, cr.pos.z, 10, cr);
             if (next) { cr.targetKey = cropKey(next.x, next.y, next.z); cr.state = 'fly'; }
             else crowFlee(cr, c.x + 0.5, c.z + 0.5);
           }
