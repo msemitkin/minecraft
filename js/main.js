@@ -151,6 +151,13 @@ const BEEHIVE = 49;
 // стадію, саджанець — стрибком росту). Нічний бій нарешті живить ферму.
 const BONEMEAL = 50;
 
+// Опудало — окремий предмет-сутність (як вулик, не воксель): жердина з
+// перекладиною, солом'яним тулубом і капелюхом, ставиться ПКМ на тверду
+// землю. Відлякує ворон у радіусі кількох блоків: зграя, що прилетіла
+// дзьобати підрослі посіви, шарахається від опудала й забирається геть.
+// ЛКМ — розібрати.
+const SCARECROW = 51;
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -174,6 +181,7 @@ const BLOCK_NAMES = {
   [TREASURE]: 'Скриня скарбів',
   [BEEHIVE]: 'Вулик',
   [BONEMEAL]: 'Кістяне борошно',
+  [SCARECROW]: 'Опудало',
 };
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
@@ -182,7 +190,7 @@ const ALL_BLOCKS = [
   WATER, LAVA,
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
-  SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL,
+  SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -411,6 +419,7 @@ function saveGame() {
       campfires: [...campfires.values()].map((c) =>
         [c.x, c.y, c.z, c.cooking ? 1 : 0, +c.cookT.toFixed(1)]),
       beehives: [...beehives.values()].map((h) => [h.x, h.y, h.z, +h.honey.toFixed(1)]),
+      scarecrows: [...scarecrows.values()].map((s) => [s.x, s.y, s.z]),
       wolves: animals.filter((a) => a.type === 'wolf' && a.tamed)
         .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
                      +a.health.toFixed(1), a.sitting ? 1 : 0]),
@@ -632,6 +641,16 @@ const Sound = (() => {
         if (!enabled) return;
         tone({ freq: 320, dur: 0.11, type: 'square', gain: 0.11, slideTo: 160 });
       }, 110);
+    },
+    // Ворона: хрипке «кар-кар» — два різкі низхідні скрипи з шумом
+    caw(gain = 0.08) {
+      tone({ freq: 740, dur: 0.13, type: 'sawtooth', gain, slideTo: 430 });
+      noise({ dur: 0.11, gain: gain * 0.7, type: 'bandpass', freq: 1300, q: 1.6 });
+      setTimeout(() => {
+        if (!enabled) return;
+        tone({ freq: 680, dur: 0.15, type: 'sawtooth', gain: gain * 0.9, slideTo: 380 });
+        noise({ dur: 0.12, gain: gain * 0.6, type: 'bandpass', freq: 1200, q: 1.6 });
+      }, 150);
     },
     // Кінь: коротке іржання — два низхідні тремтливі тони
     neigh() {
@@ -4382,7 +4401,8 @@ function startBreakOrAttack() {
   // Зняти смолоскип/драбину/рейку/саджанець або зібрати посів, якщо дивимось на
   // них (клітинка перед блоком)
   if (torches.size > 0 || crops.size > 0 || ladders.size > 0 || saplings.size > 0 ||
-      signs.size > 0 || rails.size > 0 || campfires.size > 0 || beehives.size > 0) {
+      signs.size > 0 || rails.size > 0 || campfires.size > 0 || beehives.size > 0 ||
+      scarecrows.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -4393,6 +4413,11 @@ function startBreakOrAttack() {
       }
       if (beehives.has(key)) {
         breakBeehive(key);
+        triggerSwing();
+        return;
+      }
+      if (scarecrows.has(key)) {
+        breakScarecrow(key);
         triggerSwing();
         return;
       }
@@ -5000,6 +5025,8 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateSaplings(); // ... і опору/клітинки саджанців
   validateRails();    // ... і опору рейок
   validateCampfires(); // ... і опору багать
+  validateBeehives();  // ... і опору вуликів
+  validateScarecrows(); // ... і опору опудал
   Sound.explosion();
   knockback(player, cx, cy, cz);
   for (const a of animals) knockback(a, cx, cy, cz);
@@ -5140,6 +5167,8 @@ function updateFallingBlocks(dt) {
       validateSaplings();
       validateRails();
       validateCampfires();
+      validateBeehives();
+      validateScarecrows();
       // Гравій, що впав просто на колону з двох блоків снігу, теж оживає
       if (f.id === GRAVEL) tryFormGolem(f.x, landY, f.z);
     }
@@ -5477,7 +5506,8 @@ function placeTorch(hit) {
       fences.has(torchKey(x, y, z)) || gates.has(torchKey(x, y, z)) ||
       saplings.has(torchKey(x, y, z)) || signs.has(torchKey(x, y, z)) ||
       rails.has(torchKey(x, y, z)) || campfires.has(torchKey(x, y, z)) ||
-      beehives.has(torchKey(x, y, z))) return false;
+      beehives.has(torchKey(x, y, z)) ||
+      scarecrows.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -5637,7 +5667,8 @@ function placeLadder(hit) {
       doorAtCell(x, y, z) || fences.has(ladderKey(x, y, z)) ||
       gates.has(ladderKey(x, y, z)) || saplings.has(ladderKey(x, y, z)) ||
       signs.has(ladderKey(x, y, z)) || rails.has(ladderKey(x, y, z)) ||
-      campfires.has(ladderKey(x, y, z)) || beehives.has(ladderKey(x, y, z))) return false;
+      campfires.has(ladderKey(x, y, z)) || beehives.has(ladderKey(x, y, z)) ||
+      scarecrows.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -5846,7 +5877,7 @@ function placeDoor(hit) {
     if (doorAtCell(x, cy, z) || torches.has(k) || crops.has(k) ||
         beds.has(k) || ladders.has(k) || fences.has(k) || gates.has(k) ||
         saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
-        beehives.has(k)) return false;
+        beehives.has(k) || scarecrows.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -6111,7 +6142,7 @@ function fenceCellFree(x, y, z) {
   return !fences.has(k) && !gates.has(k) && !doorAtCell(x, y, z) &&
          !torches.has(k) && !crops.has(k) && !beds.has(k) && !ladders.has(k) &&
          !saplings.has(k) && !signs.has(k) && !rails.has(k) && !campfires.has(k) &&
-         !beehives.has(k);
+         !beehives.has(k) && !scarecrows.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -6281,7 +6312,7 @@ function plantCrop(hit) {
       fences.has(cropKey(x, y, z)) || gates.has(cropKey(x, y, z)) ||
       saplings.has(cropKey(x, y, z)) || signs.has(cropKey(x, y, z)) ||
       rails.has(cropKey(x, y, z)) || campfires.has(cropKey(x, y, z)) ||
-      beehives.has(cropKey(x, y, z))) return false;
+      beehives.has(cropKey(x, y, z)) || scarecrows.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -6439,7 +6470,8 @@ function plantSapling(hit) {
       beds.has(saplingKey(x, y, z)) || doorAtCell(x, y, z) ||
       fences.has(saplingKey(x, y, z)) || gates.has(saplingKey(x, y, z)) ||
       signs.has(saplingKey(x, y, z)) || rails.has(saplingKey(x, y, z)) ||
-      campfires.has(saplingKey(x, y, z)) || beehives.has(saplingKey(x, y, z))) return false;
+      campfires.has(saplingKey(x, y, z)) || beehives.has(saplingKey(x, y, z)) ||
+      scarecrows.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -6490,6 +6522,8 @@ function growSaplingTree(s) {
   validateSaplings();
   validateRails();
   validateCampfires();
+  validateBeehives();
+  validateScarecrows();
   unlockAch('grow_tree');
   return true;
 }
@@ -6589,7 +6623,8 @@ function placeBed(hit) {
       doorAtCell(x, y, z) || fences.has(bedKey(x, y, z)) ||
       gates.has(bedKey(x, y, z)) || saplings.has(bedKey(x, y, z)) ||
       signs.has(bedKey(x, y, z)) || rails.has(bedKey(x, y, z)) ||
-      campfires.has(bedKey(x, y, z)) || beehives.has(bedKey(x, y, z))) return false;
+      campfires.has(bedKey(x, y, z)) || beehives.has(bedKey(x, y, z)) ||
+      scarecrows.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -6817,7 +6852,7 @@ function validateSigns() {
 function signCellFree(x, y, z) {
   const k = signKey(x, y, z);
   return blockAt(x, y, z) === AIR && !signs.has(k) && !torches.has(k) && !rails.has(k) &&
-         !campfires.has(k) && !beehives.has(k) &&
+         !campfires.has(k) && !beehives.has(k) && !scarecrows.has(k) &&
          !crops.has(k) && !beds.has(k) && !ladders.has(k) && !doorAtCell(x, y, z) &&
          !fences.has(k) && !gates.has(k) && !saplings.has(k);
 }
@@ -7012,6 +7047,7 @@ function updateMining(dt, hit) {
     validateRails();    // ... або опору рейки
     validateCampfires(); // ... або опору багаття
     validateBeehives();  // ... або опору вулика
+    validateScarecrows(); // ... або опору опудала
     unlockAch('first_block');
     if (id === LOG) unlockAch('chop_wood');
     else if (id === COAL) unlockAch('coal');
@@ -7368,7 +7404,7 @@ function placeRail(hit) {
   if (blockAt(x, y, z) !== AIR || !isSolid(blockAt(x, y - 1, z))) return false;
   if (rails.has(k) || torches.has(k) || crops.has(k) || beds.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
-      beehives.has(k) ||
+      beehives.has(k) || scarecrows.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
   for (const d of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -7868,7 +7904,7 @@ function placeCampfire(hit) {
   if (blockAt(x, y, z) !== AIR || campfires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
-      rails.has(k) || beehives.has(k)) return false;
+      rails.has(k) || beehives.has(k) || scarecrows.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
   Sound.torch(0.2);
@@ -8146,7 +8182,7 @@ function placeBeehive(hit) {
   if (blockAt(x, y, z) !== AIR || beehives.has(k) || campfires.has(k) ||
       torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) ||
       gates.has(k) || crops.has(k) || beds.has(k) || saplings.has(k) ||
-      signs.has(k) || rails.has(k)) return false;
+      signs.has(k) || rails.has(k) || scarecrows.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addBeehive(x, y, z)) return false;
   Sound.place(PLANK);
@@ -8241,6 +8277,360 @@ if (savedGame && Array.isArray(savedGame.beehives)) {
     if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
       addBeehive(e[0], e[1], e[2], Number.isFinite(e[3]) ? e[3] : 0);
     }
+  }
+}
+
+// ============================================================
+// Ворони та опудало: перша загроза врожаю та захист від неї
+// ============================================================
+// Удень за ясної погоди на грядки з підрослими посівами час від часу
+// налітає зграйка ворон: чорні птахи сідають на колосся і дзьобають його,
+// відкочуючи ріст на стадію за раз. Ворону не вполювати — вона хитра й
+// шарахається від гравця поблизу. Справжній захист — опудало (предмет із
+// меню Tab): солом'яний вартовий на жердині, від якого ворони забираються
+// геть. Нуль зовнішніх ассетів — моделі, іконка та «кар-кар» процедурні.
+const scarecrows = new Map();          // "x,y,z" -> { x, y, z, group, phase }
+const SCARECROW_MAX = 32;              // межа, щоб збереження не розросталося
+const SCARECROW_R = 8;                 // радіус, у якому опудало відлякує ворон
+const SCARECROW_POLE = 0x6b4a2b;
+const SCARECROW_STRAW = 0xd9c178;
+const SCARECROW_STRAW_DARK = 0xb89a55;
+const scarecrowKey = (x, y, z) => x + ',' + y + ',' + z;
+
+function makeScarecrowModel() {
+  const g = new THREE.Group();
+  animalBox(g, 0.08, 1.55, 0.08, SCARECROW_POLE, 0, 0.78, 0);   // жердина
+  animalBox(g, 0.96, 0.07, 0.07, SCARECROW_POLE, 0, 1.18, 0);   // перекладина
+  animalBox(g, 0.34, 0.52, 0.2, SCARECROW_STRAW, 0, 0.98, 0);   // солом'яний тулуб
+  animalBox(g, 0.16, 0.18, 0.14, SCARECROW_STRAW_DARK, -0.44, 1.18, 0); // рукави-снопики
+  animalBox(g, 0.16, 0.18, 0.14, SCARECROW_STRAW_DARK, 0.44, 1.18, 0);
+  animalBox(g, 0.26, 0.26, 0.24, 0xc9a86a, 0, 1.42, 0);         // голова-мішок
+  animalBox(g, 0.05, 0.05, 0.03, 0x2b2b2b, -0.06, 1.46, -0.12); // очі
+  animalBox(g, 0.05, 0.05, 0.03, 0x2b2b2b, 0.06, 1.46, -0.12);
+  animalBox(g, 0.46, 0.05, 0.46, SCARECROW_STRAW_DARK, 0, 1.58, 0); // криси капелюха
+  animalBox(g, 0.24, 0.14, 0.24, SCARECROW_STRAW, 0, 1.66, 0);      // наголовок
+  return g;
+}
+
+function addScarecrow(x, y, z) {
+  const key = scarecrowKey(x, y, z);
+  if (scarecrows.has(key) || scarecrows.size >= SCARECROW_MAX) return false;
+  const group = makeScarecrowModel();
+  group.position.set(x + 0.5, y, z + 0.5);
+  scene.add(group);
+  scarecrows.set(key, { x, y, z, group, phase: Math.random() * 6.28 });
+  return true;
+}
+
+function removeScarecrow(key) {
+  const s = scarecrows.get(key);
+  if (!s) return;
+  scene.remove(s.group);
+  s.group.traverse((o) => {
+    if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
+  });
+  scarecrows.delete(key);
+}
+
+// Розібрати опудало ударом (чи втратою опори): солома й дерев'яний стук
+function breakScarecrow(key) {
+  const s = scarecrows.get(key);
+  if (!s) return;
+  spawnParticles(s.x + 0.5, s.y + 0.9, s.z + 0.5, new THREE.Color(SCARECROW_STRAW), 10,
+    { radius: 0.3, speed: 1.8, upBias: 0.8, life: 0.5, size: 0.09, gravity: 8 });
+  Sound.breakBlock(PLANK);
+  removeScarecrow(key);
+}
+
+// Зняти опудала, що втратили опору або клітинку яких зайняв блок
+function validateScarecrows() {
+  if (scarecrows.size === 0) return;
+  for (const [key, s] of scarecrows) {
+    const occupied = isSolid(blockAt(s.x, s.y, s.z));
+    const supported = isSolid(blockAt(s.x, s.y - 1, s.z));
+    if (occupied || !supported) breakScarecrow(key);
+  }
+}
+
+// Найближче опудало в горизонтальному радіусі r від точки (ворони бояться його)
+function scarecrowNearXZ(x, z, r) {
+  const r2 = r * r;
+  for (const s of scarecrows.values()) {
+    const dx = s.x + 0.5 - x, dz = s.z + 0.5 - z;
+    if (dx * dx + dz * dz < r2) return s;
+  }
+  return null;
+}
+
+// Поставити опудало в клітинку перед прицілом (лише на тверду підлогу)
+function placeScarecrow(hit) {
+  const [x, y, z] = hit.prev;
+  const k = scarecrowKey(x, y, z);
+  if (blockAt(x, y, z) !== AIR || scarecrows.has(k) || beehives.has(k) ||
+      campfires.has(k) || torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) ||
+      fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
+      saplings.has(k) || signs.has(k) || rails.has(k)) return false;
+  if (!isSolid(blockAt(x, y - 1, z))) return false;
+  if (!addScarecrow(x, y, z)) return false;
+  Sound.place(PLANK);
+  spawnParticles(x + 0.5, y + 0.6, z + 0.5, new THREE.Color(SCARECROW_STRAW), 7,
+    { radius: 0.3, speed: 1.4, upBias: 0.8, life: 0.45, size: 0.08, gravity: 8 });
+  return true;
+}
+
+// Опудала неподалік легенько похитуються на «вітрі»
+let scarecrowClock = 0;
+function updateScarecrows(dt) {
+  if (scarecrows.size === 0) return;
+  scarecrowClock += dt;
+  for (const s of scarecrows.values()) {
+    if (s.group.position.distanceToSquared(player.pos) > 60 * 60) continue;
+    s.group.rotation.z = Math.sin(scarecrowClock * 1.3 + s.phase) * 0.04;
+  }
+}
+
+// Відновити збережені опудала (формат: [x, y, z])
+if (savedGame && Array.isArray(savedGame.scarecrows)) {
+  for (const e of savedGame.scarecrows) {
+    if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
+      addScarecrow(e[0], e[1], e[2]);
+    }
+  }
+}
+
+// ===== Ворони: зграйка, що налітає дзьобати підрослі посіви =====
+const crows = [];                      // зграя тимчасова — зі світом не зберігається
+const CROW_MAX = 3;                    // ворон у зграї водночас
+const CROW_SPEED = 6;                  // швидкість польоту, бл/с
+const CROW_PECK_TIME = 5;              // секунд дзьобання до з'їденої стадії
+const CROW_EAT_MAX = 2;                // стадій, які ворона з'їдає за наліт
+const CROW_SCARE_R = 5;                // гравець ближче — ворона тікає
+const CROW_RAID_MIN = 90;              // пауза між нальотами, с
+const CROW_RAID_VAR = 60;
+const CROW_MIN_CROPS = 3;              // ворон цікавлять грядки від трьох підрослих посівів
+const CROW_TARGET_STAGE = 2;           // «підрослий» — від цієї стадії
+const CROW_FEATHER = new THREE.Color(0x23262c);
+let crowRaidTimer = 45;                // перший наліт — не раніше як за хвилину
+let crowHintShown = false;             // підказки — раз на наліт
+let crowRepelHinted = false;
+
+// Ворони промишляють лише вдень за ясної погоди (як бджоли)
+const crowsWeatherOk = () => dayNightSun > 0.25 && weatherState === 'clear';
+
+function makeCrowModel() {
+  const g = new THREE.Group();
+  const dark = 0x15171b;
+  animalBox(g, 0.16, 0.15, 0.32, 0x23262c, 0, 0.1, 0.02);   // тулуб
+  animalBox(g, 0.13, 0.13, 0.13, dark, 0, 0.22, -0.17);     // голова
+  animalBox(g, 0.05, 0.04, 0.1, 0xd8a03c, 0, 0.2, -0.28);   // дзьоб
+  animalBox(g, 0.11, 0.03, 0.18, dark, 0, 0.14, 0.24);      // хвіст
+  // Крила з пивотом при тулубі — махають у польоті
+  const wingGR = new THREE.BoxGeometry(0.3, 0.02, 0.2);
+  wingGR.translate(0.15, 0, 0.02);
+  const wingGL = wingGR.clone();
+  wingGL.translate(-0.3, 0, 0);
+  const wr = new THREE.Mesh(wingGR, new THREE.MeshLambertMaterial({ color: CROW_FEATHER }));
+  wr.position.set(0.07, 0.18, 0);
+  const wl = new THREE.Mesh(wingGL, new THREE.MeshLambertMaterial({ color: CROW_FEATHER }));
+  wl.position.set(-0.07, 0.18, 0);
+  g.add(wr, wl);
+  return { group: g, wings: [wr, wl] };
+}
+
+function spawnCrowAt(c) {
+  const ang = Math.random() * Math.PI * 2;
+  const dist = 18 + Math.random() * 8;
+  const m = makeCrowModel();
+  const pos = new THREE.Vector3(
+    c.x + 0.5 + Math.cos(ang) * dist,
+    c.y + 13 + Math.random() * 5,
+    c.z + 0.5 + Math.sin(ang) * dist
+  );
+  m.group.position.copy(pos);
+  scene.add(m.group);
+  crows.push({
+    group: m.group, wings: m.wings, pos,
+    state: 'fly', targetKey: cropKey(c.x, c.y, c.z),
+    peckT: 0, eaten: 0, yaw: 0,
+    fleeDir: new THREE.Vector3(), fleeT: 0,
+    flapPhase: Math.random() * 6.28,
+  });
+}
+
+function removeCrow(i) {
+  const cr = crows[i];
+  scene.remove(cr.group);
+  cr.group.traverse((o) => {
+    if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
+  });
+  crows.splice(i, 1);
+}
+
+// Наліт: зграйка з 2–3 ворон летить до випадкових підрослих посівів поблизу
+function startCrowRaid() {
+  const px = player.pos.x, pz = player.pos.z;
+  const eligible = [];
+  for (const c of crops.values()) {
+    if (c.stage < CROW_TARGET_STAGE) continue;
+    const dx = c.x + 0.5 - px, dz = c.z + 0.5 - pz;
+    if (dx * dx + dz * dz < 80 * 80) eligible.push(c);
+  }
+  if (eligible.length < CROW_MIN_CROPS) return false;
+  const n = Math.min(CROW_MAX, 2 + (Math.random() < 0.5 ? 1 : 0));
+  for (let i = 0; i < n; i++) {
+    spawnCrowAt(eligible[Math.floor(Math.random() * eligible.length)]);
+  }
+  crowHintShown = false;
+  crowRepelHinted = false;
+  Sound.caw();     // «кар-кар» здалеку — застереження фермерові
+  return true;
+}
+
+function crowFlee(cr, fromX, fromZ) {
+  if (cr.state === 'flee') return;
+  cr.state = 'flee';
+  cr.fleeT = 0;
+  const dx = cr.pos.x - fromX, dz = cr.pos.z - fromZ;
+  const len = Math.hypot(dx, dz) || 1;
+  cr.fleeDir.set(dx / len, 0.45, dz / len).normalize();
+  Sound.caw(0.06);
+}
+
+// Випадковий посів зі станом хоч трохи підрослим у радіусі maxDist від точки
+function findCrowCrop(x, z, maxDist) {
+  const r2 = maxDist * maxDist;
+  const near = [];
+  for (const c of crops.values()) {
+    if (c.stage < 1) continue;
+    const dx = c.x + 0.5 - x, dz = c.z + 0.5 - z;
+    if (dx * dx + dz * dz < r2) near.push(c);
+  }
+  return near.length ? near[Math.floor(Math.random() * near.length)] : null;
+}
+
+function updateCrows(dt) {
+  // Наліт визріває, лише поки ворон немає: вдень, за ясної погоди, коли є грядки
+  if (crows.length === 0) {
+    if (crowsWeatherOk() && crops.size >= CROW_MIN_CROPS) {
+      crowRaidTimer -= dt;
+      if (crowRaidTimer <= 0) {
+        crowRaidTimer = CROW_RAID_MIN + Math.random() * CROW_RAID_VAR;
+        startCrowRaid();
+      }
+    }
+    return;
+  }
+  for (let i = crows.length - 1; i >= 0; i--) {
+    const cr = crows[i];
+    // Крила: у польоті махають, на посіві — складені
+    cr.flapPhase += dt * 21;
+    const flap = cr.state === 'peck' ? 0.1 : Math.sin(cr.flapPhase) * 0.75;
+    cr.wings[0].rotation.z = flap;
+    cr.wings[1].rotation.z = -flap;
+
+    if (cr.state !== 'flee') {
+      if (!crowsWeatherOk()) {
+        // Ніч чи негода закінчують наліт
+        crowFlee(cr, player.pos.x, player.pos.z);
+      } else {
+        const pdx = cr.pos.x - player.pos.x, pdz = cr.pos.z - player.pos.z;
+        if (pdx * pdx + pdz * pdz < CROW_SCARE_R * CROW_SCARE_R &&
+            cr.pos.y < player.pos.y + 6) {
+          // Гравець упритул — ворона шарахається
+          crowFlee(cr, player.pos.x, player.pos.z);
+        } else {
+          // Опудало поблизу — ворона не наважується підлетіти
+          const s = scarecrowNearXZ(cr.pos.x, cr.pos.z, SCARECROW_R);
+          if (s && cr.pos.y < s.y + 10) {
+            crowFlee(cr, s.x + 0.5, s.z + 0.5);
+            unlockAch('scarecrow');
+            if (!crowRepelHinted) {
+              crowRepelHinted = true;
+              flashItemName('🪶 Опудало відлякало ворон!');
+            }
+          }
+        }
+      }
+    }
+
+    if (cr.state === 'fly') {
+      const c = crops.get(cr.targetKey);
+      if (!c || c.stage < 1) {
+        // Ціль зникла (зібрана чи видзьобана) — шукаємо іншу поблизу
+        const next = findCrowCrop(cr.pos.x, cr.pos.z, 12);
+        if (next) cr.targetKey = cropKey(next.x, next.y, next.z);
+        else crowFlee(cr, player.pos.x, player.pos.z);
+      } else {
+        const tx = c.x + 0.5, ty = c.y + 0.2, tz = c.z + 0.5;
+        const dx = tx - cr.pos.x, dz = tz - cr.pos.z;
+        const horiz = Math.hypot(dx, dz);
+        // Здалеку летить високо (не «пірнає» в пагорби), знижується поблизу
+        const ground = heightAt(Math.floor(cr.pos.x), Math.floor(cr.pos.z));
+        const wantY = horiz > 6 ? Math.max(ty + 7, ground + 4) : ty;
+        const vy = THREE.MathUtils.clamp((wantY - cr.pos.y) * 2.2, -4.5, 3.5);
+        if (horiz > 1e-4) {
+          const k = Math.min(CROW_SPEED, horiz / dt) / horiz;  // не перелітати ціль
+          cr.pos.x += dx * k * dt;
+          cr.pos.z += dz * k * dt;
+          if (horiz > 0.25) cr.yaw = Math.atan2(-dx, -dz);
+        }
+        cr.pos.y += vy * dt;
+        if (horiz < 0.3 && Math.abs(ty - cr.pos.y) < 0.25) {
+          cr.pos.set(tx, ty, tz);
+          cr.state = 'peck';
+          cr.peckT = 0;
+          if (!crowHintShown) {
+            crowHintShown = true;
+            flashItemName(scarecrows.size > 0
+              ? '🐦 Ворони дзьобають посіви!'
+              : '🐦 Ворони дзьобають посіви — постав опудало!');
+          }
+        }
+      }
+    } else if (cr.state === 'peck') {
+      const c = crops.get(cr.targetKey);
+      if (!c || c.stage < 1) {
+        const next = findCrowCrop(cr.pos.x, cr.pos.z, 10);
+        if (next) { cr.targetKey = cropKey(next.x, next.y, next.z); cr.state = 'fly'; }
+        else crowFlee(cr, player.pos.x, player.pos.z);
+      } else {
+        cr.peckT += dt;
+        // Клювання: пташка кланяється до колоса, летять остюки
+        cr.group.rotation.x = 0.25 + Math.max(0, Math.sin(cr.peckT * 9)) * 0.5;
+        if (Math.random() < dt * 2.5) {
+          spawnParticles(c.x + 0.5, c.y + 0.35, c.z + 0.5, new THREE.Color(0xc8b25a), 1,
+            { radius: 0.15, speed: 0.8, upBias: 0.6, life: 0.4, size: 0.06, gravity: 7 });
+        }
+        if (cr.peckT >= CROW_PECK_TIME) {
+          cr.peckT = 0;
+          c.stage--;
+          c.growth = 0;
+          applyCropStage(c);
+          Sound.breakBlock(LEAVES);
+          spawnParticles(c.x + 0.5, c.y + 0.4, c.z + 0.5, new THREE.Color(0x9a8a3e), 8,
+            { radius: 0.25, speed: 1.8, upBias: 0.9, life: 0.5, size: 0.08, gravity: 7 });
+          cr.eaten++;
+          if (cr.eaten >= CROW_EAT_MAX) {
+            crowFlee(cr, c.x + 0.5, c.z + 0.5);   // наїлася — летить геть
+          } else if (c.stage < 1) {
+            const next = findCrowCrop(cr.pos.x, cr.pos.z, 10);
+            if (next) { cr.targetKey = cropKey(next.x, next.y, next.z); cr.state = 'fly'; }
+            else crowFlee(cr, c.x + 0.5, c.z + 0.5);
+          }
+        }
+      }
+    } else {
+      // Втеча: угору й геть, поки не зникне вдалині
+      cr.fleeT += dt;
+      cr.pos.addScaledVector(cr.fleeDir, CROW_SPEED * 1.3 * dt);
+      cr.yaw = Math.atan2(-cr.fleeDir.x, -cr.fleeDir.z);
+      cr.group.rotation.x = -0.15;
+      const pdx = cr.pos.x - player.pos.x, pdz = cr.pos.z - player.pos.z;
+      if (cr.fleeT > 12 || pdx * pdx + pdz * pdz > 90 * 90) { removeCrow(i); continue; }
+    }
+    if (cr.state === 'fly') cr.group.rotation.x = 0;
+    cr.group.position.copy(cr.pos);
+    cr.group.rotation.y = cr.yaw;
   }
 }
 
@@ -8457,6 +8847,12 @@ function placeBlock() {
     return;
   }
 
+  // Опудало — сутність на твердій підлозі, відлякує ворон від посівів
+  if (id === SCARECROW) {
+    placeScarecrow(hit);
+    return;
+  }
+
   // Рейки — сутність на твердій опорі, сама з'єднується із сусідніми рейками
   if (id === RAIL) {
     placeRail(hit);
@@ -8538,6 +8934,7 @@ function placeBlock() {
   validateRails();    // ... або клітинку рейки
   validateCampfires(); // ... або клітинку багаття
   validateBeehives();  // ... або клітинку вулика
+  validateScarecrows(); // ... або клітинку опудала
 
   // Гравій поверх двох блоків снігу — сніговик оживає
   if (id === GRAVEL) tryFormGolem(x, y, z);
@@ -9682,6 +10079,25 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(13, 2, 1, 2);
     return;
   }
+  if (id === SCARECROW) {
+    // Процедурна іконка опудала: жердина, перекладина, солом'яний тулуб і капелюх
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#6b4a2b';
+    ctx.fillRect(7, 5, 2, 10);         // жердина
+    ctx.fillRect(2, 7, 12, 1);         // перекладина
+    ctx.fillStyle = '#d9c178';
+    ctx.fillRect(5, 8, 6, 5);          // солом'яний тулуб
+    ctx.fillStyle = '#c9a86a';
+    ctx.fillRect(6, 3, 4, 3);          // голова-мішок
+    ctx.fillStyle = '#2b2b2b';
+    ctx.fillRect(6, 4, 1, 1);          // очі
+    ctx.fillRect(9, 4, 1, 1);
+    ctx.fillStyle = '#b89a55';
+    ctx.fillRect(4, 2, 8, 1);          // криси капелюха
+    ctx.fillRect(6, 1, 4, 1);          // наголовок
+    return;
+  }
   if (id === SEEDS) {
     // Процедурна іконка насіння: смужка грунту + паростки й зерна
     const ctx = canvas.getContext('2d');
@@ -10740,6 +11156,7 @@ const ACHIEVEMENTS = [
   { id: 'honey',       icon: '🍯', title: 'Бортник',            desc: 'Зібрати мед із вулика' },
   { id: 'bonemeal',    icon: '🦴', title: 'Агроном',            desc: 'Прискорити ріст кістяним борошном' },
   { id: 'breed',       icon: '💞', title: 'Селекціонер',        desc: 'Дочекатися приплоду, погодувавши пару тварин' },
+  { id: 'scarecrow',   icon: '🪶', title: 'Опудало на варті',   desc: 'Опудало відлякало ворону від посівів' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -11773,6 +12190,37 @@ window.MCDebug = {
   },
   mountNearCart: () => { const c = nearestCart(6); return c ? mountCart(c) : false; },
   dismountCart: () => { dismountCart(); return !!ridingCart; },
+  // Ворони та опудало (для тестів)
+  giveScarecrow: () => { assignBlockToSlot(SCARECROW); return BLOCK_NAMES[SCARECROW]; },
+  scarecrowNear: (dx = 2, dz = 0) => {
+    const x = Math.floor(player.pos.x) + dx, z = Math.floor(player.pos.z) + dz;
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0 || isSolid(blockAt(x, gy + 1, z))) return null;
+    return addScarecrow(x, gy + 1, z) ? { x, y: gy + 1, z } : null;
+  },
+  forceCrowRaid: () => {
+    crowRaidTimer = CROW_RAID_MIN + Math.random() * CROW_RAID_VAR;
+    return startCrowRaid();
+  },
+  cropNear: (dx = 2, dz = 0, stage = CROP_STAGES - 1) => {
+    const x = Math.floor(player.pos.x) + dx, z = Math.floor(player.pos.z) + dz;
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0 || isSolid(blockAt(x, gy + 1, z))) return null;
+    if (!cropSupportable(blockAt(x, gy, z))) setBlock(x, gy, z, GRASS);
+    return addCrop(x, gy + 1, z, stage) ? { x, y: gy + 1, z } : null;
+  },
+  cropState: () => [...crops.values()].map((c) => [c.x, c.y, c.z, c.stage]),
+  crowState: () => crows.map((c) => ({
+    state: c.state, eaten: c.eaten, target: c.targetKey,
+    x: +c.pos.x.toFixed(1), y: +c.pos.y.toFixed(1), z: +c.pos.z.toFixed(1),
+  })),
+  get scarecrowCount() { return scarecrows.size; },
   // Багаття та смаженина (для тестів)
   giveCampfire: () => { assignBlockToSlot(CAMPFIRE); return BLOCK_NAMES[CAMPFIRE]; },
   giveFood: (n = 8) => {
@@ -11852,6 +12300,8 @@ function animate() {
     updateTorches(dt);
     updateCampfires(dt);
     updateBeehives(dt);
+    updateScarecrows(dt);
+    updateCrows(dt);
     updateLavaLights(dt);
     updateStarLights(dt);
     updateMeteors(dt);
