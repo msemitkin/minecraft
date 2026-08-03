@@ -433,7 +433,8 @@ function saveGame() {
          c.cookItem === 'mush' ? 1 : 0]),
       beehives: [...beehives.values()].map((h) => [h.x, h.y, h.z, +h.honey.toFixed(1)]),
       scarecrows: [...scarecrows.values()].map((s) => [s.x, s.y, s.z]),
-      mushrooms: [...mushrooms.values()].map((m) => [m.x, m.y, m.z, m.kind]),
+      mushrooms: [...mushrooms.values()].map((m) =>
+        [m.x, m.y, m.z, m.kind, m.farmed ? 1 : 0]),
       wolves: animals.filter((a) => a.type === 'wolf' && a.tamed)
         .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
                      +a.health.toFixed(1), a.sitting ? 1 : 0]),
@@ -8510,13 +8511,15 @@ if (savedGame && Array.isArray(savedGame.scarecrows)) {
 // торбу (🍄); на багатті гриб печеться в ситну страву (🍢). Кістяне борошно,
 // посипане на гриб, розсіює довкола нові — так вирощують грибну грядку.
 const mushrooms = new Map();           // "x,y,z" -> { x, y, z, kind, group }
-const MUSHROOM_WORLD_MAX = 48;         // межа грибів у світі
+const MUSHROOM_WORLD_MAX = 160;        // глобальний запобіжник (розмір збереження)
+const MUSH_LOCAL_MAX = 12;             // стеля диких грибів довкола гравця
 const MUSH_SPROUT_INTERVAL = 2.5;      // секунд між спробами проростання
 const MUSH_SPROUT_TRIES = 6;           // колонок-кандидатів за спробу
 const MUSH_SPROUT_MIN_R = 5;           // проростає не впритул до гравця...
 const MUSH_SPROUT_MAX_R = 24;          // ...і не далі за це
 const MUSH_MIN_GAP = 5;                // природні гриби не туляться купою
 const MUSH_LIGHT_R = 7;                // радіус світла, де гриби не ростуть
+const MUSH_RECYCLE_DIST = 64;          // дальші дикі гриби «пересіваються» до гравця
 const MUSH_CAP_RED = new THREE.Color(0xc0392b);
 const MUSH_CAP_BROWN = new THREE.Color(0x9a6b3f);
 const MUSH_STEM_COLOR = 0xe9e2d0;
@@ -8543,14 +8546,14 @@ function makeMushroomModel(kind) {
   return g;
 }
 
-function addMushroom(x, y, z, kind = 0) {
+function addMushroom(x, y, z, kind = 0, farmed = false) {
   const key = mushroomKey(x, y, z);
   if (mushrooms.has(key) || mushrooms.size >= MUSHROOM_WORLD_MAX) return false;
   kind = kind === 1 ? 1 : 0;
   const group = makeMushroomModel(kind);
   group.position.set(x + 0.5, y, z + 0.5);
   scene.add(group);
-  mushrooms.set(key, { x, y, z, kind, group });
+  mushrooms.set(key, { x, y, z, kind, farmed: !!farmed, group });
   return true;
 }
 
@@ -8602,8 +8605,38 @@ function mushTooClose(x, y, z) {
 
 // Одна спроба проростання: випадкова колонка довкола гравця, у ній —
 // випадкова придатна печерна клітинка
+// Диких грибів довкола гравця (у радіусі проростання)
+function wildMushroomsNearPlayer() {
+  const r2 = MUSH_SPROUT_MAX_R * MUSH_SPROUT_MAX_R;
+  let n = 0;
+  for (const m of mushrooms.values()) {
+    if (m.farmed) continue;
+    const dx = m.x + 0.5 - player.pos.x, dz = m.z + 0.5 - player.pos.z;
+    if (dx * dx + dz * dz <= r2) n++;
+  }
+  return n;
+}
+
+// Глобальна стеля — лише запобіжник розміру збереження: щоб далекі печери
+// не лишалися голими після довгої гри вдома, найдальший дикий гриб поза
+// очима (далі за MUSH_RECYCLE_DIST) тихо «пересівається» — звільняє місце
+// новому біля гравця. Вирощені борошном (грядки) недоторканні.
+function recycleFarMushroom() {
+  let farKey = null, farD2 = MUSH_RECYCLE_DIST * MUSH_RECYCLE_DIST;
+  for (const [key, m] of mushrooms) {
+    if (m.farmed) continue;
+    const dx = m.x + 0.5 - player.pos.x, dz = m.z + 0.5 - player.pos.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 > farD2) { farD2 = d2; farKey = key; }
+  }
+  if (!farKey) return false;
+  removeMushroom(farKey);
+  return true;
+}
+
 function trySproutMushroom() {
-  if (mushrooms.size >= MUSHROOM_WORLD_MAX) return false;
+  if (wildMushroomsNearPlayer() >= MUSH_LOCAL_MAX) return false;
+  if (mushrooms.size >= MUSHROOM_WORLD_MAX && !recycleFarMushroom()) return false;
   for (let attempt = 0; attempt < MUSH_SPROUT_TRIES; attempt++) {
     const ang = Math.random() * Math.PI * 2;
     const dist = MUSH_SPROUT_MIN_R +
@@ -8668,7 +8701,7 @@ function spreadMushrooms(m, count = 2) {
     for (let y = m.y + 2; y >= m.y - 3; y--) {
       if (!mushCellFree(x, y, z)) continue;
       if (!mushHasRoof(x, y, z)) break;
-      addMushroom(x, y, z, Math.random() < 0.5 ? m.kind : (m.kind ? 0 : 1));
+      addMushroom(x, y, z, Math.random() < 0.5 ? m.kind : (m.kind ? 0 : 1), true);
       spawnParticles(x + 0.5, y + 0.25, z + 0.5, MUSH_CAP_BROWN, 5,
         { radius: 0.2, speed: 1, upBias: 1, life: 0.5, size: 0.07, gravity: -2 });
       grown++;
@@ -8697,7 +8730,7 @@ function validateMushrooms() {
 if (savedGame && Array.isArray(savedGame.mushrooms)) {
   for (const e of savedGame.mushrooms) {
     if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
-      addMushroom(e[0], e[1], e[2], e[3] === 1 ? 1 : 0);
+      addMushroom(e[0], e[1], e[2], e[3] === 1 ? 1 : 0, e[4] === 1);
     }
   }
 }
@@ -12641,7 +12674,8 @@ window.MCDebug = {
     return [...mushrooms.values()].filter((m) => !before.has(mushroomKey(m.x, m.y, m.z)))
       .map((m) => ({ x: m.x, y: m.y, z: m.z, kind: m.kind }));
   },
-  mushState: () => [...mushrooms.values()].map((m) => ({ x: m.x, y: m.y, z: m.z, kind: m.kind })),
+  mushState: () => [...mushrooms.values()].map((m) =>
+    ({ x: m.x, y: m.y, z: m.z, kind: m.kind, farmed: !!m.farmed })),
   // Зібрати найближчий до гравця гриб (в обхід прицілювання)
   pickNearestMushroom: () => {
     let best = null, bestD = Infinity;
