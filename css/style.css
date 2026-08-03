@@ -278,7 +278,9 @@ kbd {
 #egg-badge,
 #cooked-badge,
 #honey-badge,
-#bone-badge {
+#bone-badge,
+#mush-badge,
+#roast-badge {
   position: fixed;
   right: 16px;
   bottom: 90px;
@@ -308,13 +310,23 @@ kbd {
   bottom: 266px;
 }
 
+#mush-badge {
+  bottom: 310px;
+}
+
+#roast-badge {
+  bottom: 354px;
+}
+
 /* display: flex перекриває атрибут hidden (UA-правило display: none програє
    авторському) — порожні бейджі мусять зникати явно */
 #food-badge[hidden],
 #egg-badge[hidden],
 #cooked-badge[hidden],
 #honey-badge[hidden],
-#bone-badge[hidden] {
+#bone-badge[hidden],
+#mush-badge[hidden],
+#roast-badge[hidden] {
   display: none;
 }
 
@@ -326,7 +338,9 @@ kbd {
   #egg-badge,
   #cooked-badge,
   #honey-badge,
-  #bone-badge {
+  #bone-badge,
+  #mush-badge,
+  #roast-badge {
     right: 96px;
   }
 }
@@ -335,7 +349,9 @@ kbd {
 #egg-icon,
 #cooked-icon,
 #honey-icon,
-#bone-icon {
+#bone-icon,
+#mush-icon,
+#roast-icon {
   width: 26px;
   height: 26px;
   image-rendering: pixelated;
@@ -345,7 +361,9 @@ kbd {
 #food-count,
 #egg-count,
 #honey-count,
-#bone-count {
+#bone-count,
+#mush-count,
+#roast-count {
   font: bold 18px/1 system-ui, sans-serif;
   color: #fff;
   text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.7);

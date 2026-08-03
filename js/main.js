@@ -158,6 +158,16 @@ const BONEMEAL = 50;
 // ЛКМ — розібрати.
 const SCARECROW = 51;
 
+// Гриби — печерна здобич: проростають у темряві під поверхнею (подалі від
+// смолоскипів та багать), збираються ЛКМ у торбу (🍄) і смажаться на багатті
+// в печений гриб (🍢) — ситну вегетаріанську страву. Кістяне борошно,
+// посипане на гриб, розсіює поруч нові — темна грибна грядка. Гриби не
+// ставляться з меню: їх дарує лише печера.
+const MUSH_MAX = 64;            // максимум сирих грибів у торбі
+const MUSH_FOOD = 3;            // скільки голоду відновлює сирий гриб
+const ROAST_MAX = 64;           // максимум печених грибів у торбі
+const ROAST_FOOD = 8;           // скільки голоду відновлює печений гриб (4 ніжки)
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -399,6 +409,8 @@ function saveGame() {
         honey: player.honey,
         eggs: player.eggs,
         bones: player.bones,
+        mush: player.mush,
+        roast: player.roast,
         flying: player.flying,
       },
       timeOfDay,
@@ -417,9 +429,11 @@ function saveGame() {
       rails: [...rails.values()].map((r) => [r.x, r.y, r.z, r.a[0], r.a[1], r.b[0], r.b[1]]),
       carts: carts.map((c) => [+c.pos.x.toFixed(2), +c.pos.y.toFixed(2), +c.pos.z.toFixed(2)]),
       campfires: [...campfires.values()].map((c) =>
-        [c.x, c.y, c.z, c.cooking ? 1 : 0, +c.cookT.toFixed(1)]),
+        [c.x, c.y, c.z, c.cooking ? 1 : 0, +c.cookT.toFixed(1),
+         c.cookItem === 'mush' ? 1 : 0]),
       beehives: [...beehives.values()].map((h) => [h.x, h.y, h.z, +h.honey.toFixed(1)]),
       scarecrows: [...scarecrows.values()].map((s) => [s.x, s.y, s.z]),
+      mushrooms: [...mushrooms.values()].map((m) => [m.x, m.y, m.z, m.kind]),
       wolves: animals.filter((a) => a.type === 'wolf' && a.tamed)
         .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
                      +a.health.toFixed(1), a.sitting ? 1 : 0]),
@@ -1857,6 +1871,8 @@ const player = {
   honey: 0,             // зібраний із вуликів мед (цілющі ласощі)
   eggs: 0,              // зібрані курячі яйця (боєзапас для кидання)
   bones: 0,             // кістки від скелетів (сировина кістяного борошна)
+  mush: 0,              // зібрані в печерах сирі гриби
+  roast: 0,             // печені на багатті гриби (ситна страва)
   starveTick: 0,        // таймер шкоди від голоду
   eatTimer: 0,          // перезарядка поїдання
   dead: false,
@@ -1906,6 +1922,12 @@ if (savedGame && savedGame.player) {
   }
   if (Number.isFinite(p.bones)) {
     player.bones = THREE.MathUtils.clamp(Math.floor(p.bones), 0, BONES_MAX);
+  }
+  if (Number.isFinite(p.mush)) {
+    player.mush = THREE.MathUtils.clamp(Math.floor(p.mush), 0, MUSH_MAX);
+  }
+  if (Number.isFinite(p.roast)) {
+    player.roast = THREE.MathUtils.clamp(Math.floor(p.roast), 0, ROAST_MAX);
   }
   player.flying = !!p.flying;
 }
@@ -2299,23 +2321,38 @@ function eatFood() {
     updateHoneyHud();
     return;
   }
-  if ((player.food <= 0 && player.cooked <= 0) || player.hunger >= MAX_HUNGER) return;
+  const rawAny = player.food > 0 || player.mush > 0;
+  const cookedAny = player.cooked > 0 || player.roast > 0;
+  if ((!rawAny && !cookedAny) || player.hunger >= MAX_HUNGER) return;
   // Смаженина ситніша, тож їмо її при великому голоді (щоб не змарнувати
-  // жодної «ніжки») або коли сирого не лишилось; інакше — сире м'ясо/зерно
+  // жодної «ніжки») або коли сирого не лишилось; інакше — сире м'ясо/зерно.
+  // У кожній парі м'ясо йде першим, гриби — запасним: печений гриб трохи
+  // менш ситний за смаженину, сирий — за сире м'ясо
   const deficit = MAX_HUNGER - player.hunger;
-  const useCooked = player.cooked > 0 && (deficit >= COOKED_FOOD || player.food <= 0);
+  const cookedBest = player.cooked > 0 ? COOKED_FOOD : ROAST_FOOD;
+  const useCooked = cookedAny && (deficit >= cookedBest || !rawAny);
   if (useCooked) {
-    player.cooked -= 1;
-    player.hunger = Math.min(MAX_HUNGER, player.hunger + COOKED_FOOD);
-  } else {
+    if (player.cooked > 0) {
+      player.cooked -= 1;
+      player.hunger = Math.min(MAX_HUNGER, player.hunger + COOKED_FOOD);
+    } else {
+      player.roast -= 1;
+      player.hunger = Math.min(MAX_HUNGER, player.hunger + ROAST_FOOD);
+    }
+  } else if (player.food > 0) {
     player.food -= 1;
     player.hunger = Math.min(MAX_HUNGER, player.hunger + EAT_AMOUNT);
+  } else {
+    player.mush -= 1;
+    player.hunger = Math.min(MAX_HUNGER, player.hunger + MUSH_FOOD);
   }
   player.eatTimer = EAT_COOLDOWN;
   Sound.eat();
   unlockAch('eat');
   updateFoodHud();
   updateCookedHud();
+  updateMushHud();
+  updateRoastHud();
 }
 
 // ============================================================
@@ -3654,12 +3691,29 @@ function useBonemeal(hit) {
   const key = x + ',' + y + ',' + z;
   const c = crops.get(key);
   const s = saplings.get(key);
-  if (!c && !s) {
-    flashItemName('Посип борошно на посів чи саджанець');
+  const m = mushrooms.get(key);
+  if (!c && !s && !m) {
+    flashItemName('Посип борошно на посів, саджанець чи гриб');
     return;
   }
   if (c && c.stage >= CROP_STAGES - 1) {
     flashItemName('Колос уже дозрів — час жати');
+    return;
+  }
+  // Гриб не росте сам — борошно розсіює довкола нього нові
+  if (m) {
+    const grown = spreadMushrooms(m, 1 + Math.floor(Math.random() * 2));
+    if (grown === 0) {
+      flashItemName('Грибу тісно — потрібна темна печера довкола');
+      return;
+    }
+    player.bones--;
+    updateBoneHud();
+    Sound.boneMeal();
+    spawnParticles(x + 0.5, y + 0.35, z + 0.5, BONE_COLOR, 10,
+      { radius: 0.3, speed: 1.6, upBias: 1.2, life: 0.5, size: 0.07, gravity: -2 });
+    triggerSwing();
+    unlockAch('bonemeal');
     return;
   }
   player.bones--;
@@ -4402,10 +4456,15 @@ function startBreakOrAttack() {
   // них (клітинка перед блоком)
   if (torches.size > 0 || crops.size > 0 || ladders.size > 0 || saplings.size > 0 ||
       signs.size > 0 || rails.size > 0 || campfires.size > 0 || beehives.size > 0 ||
-      scarecrows.size > 0) {
+      scarecrows.size > 0 || mushrooms.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+      if (mushrooms.has(key)) {
+        pickMushroom(key);
+        triggerSwing();
+        return;
+      }
       if (campfires.has(key)) {
         breakCampfire(key);
         triggerSwing();
@@ -5027,6 +5086,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateCampfires(); // ... і опору багать
   validateBeehives();  // ... і опору вуликів
   validateScarecrows(); // ... і опору опудал
+  validateMushrooms(); // ... і ґрунт грибів
   Sound.explosion();
   knockback(player, cx, cy, cz);
   for (const a of animals) knockback(a, cx, cy, cz);
@@ -5169,6 +5229,7 @@ function updateFallingBlocks(dt) {
       validateCampfires();
       validateBeehives();
       validateScarecrows();
+      validateMushrooms();
       // Гравій, що впав просто на колону з двох блоків снігу, теж оживає
       if (f.id === GRAVEL) tryFormGolem(f.x, landY, f.z);
     }
@@ -5507,7 +5568,8 @@ function placeTorch(hit) {
       saplings.has(torchKey(x, y, z)) || signs.has(torchKey(x, y, z)) ||
       rails.has(torchKey(x, y, z)) || campfires.has(torchKey(x, y, z)) ||
       beehives.has(torchKey(x, y, z)) ||
-      scarecrows.has(torchKey(x, y, z))) return false;
+      scarecrows.has(torchKey(x, y, z)) ||
+      mushrooms.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -5668,7 +5730,8 @@ function placeLadder(hit) {
       gates.has(ladderKey(x, y, z)) || saplings.has(ladderKey(x, y, z)) ||
       signs.has(ladderKey(x, y, z)) || rails.has(ladderKey(x, y, z)) ||
       campfires.has(ladderKey(x, y, z)) || beehives.has(ladderKey(x, y, z)) ||
-      scarecrows.has(ladderKey(x, y, z))) return false;
+      scarecrows.has(ladderKey(x, y, z)) ||
+      mushrooms.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -5877,7 +5940,7 @@ function placeDoor(hit) {
     if (doorAtCell(x, cy, z) || torches.has(k) || crops.has(k) ||
         beds.has(k) || ladders.has(k) || fences.has(k) || gates.has(k) ||
         saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
-        beehives.has(k) || scarecrows.has(k)) return false;
+        beehives.has(k) || scarecrows.has(k) || mushrooms.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -6142,7 +6205,7 @@ function fenceCellFree(x, y, z) {
   return !fences.has(k) && !gates.has(k) && !doorAtCell(x, y, z) &&
          !torches.has(k) && !crops.has(k) && !beds.has(k) && !ladders.has(k) &&
          !saplings.has(k) && !signs.has(k) && !rails.has(k) && !campfires.has(k) &&
-         !beehives.has(k) && !scarecrows.has(k);
+         !beehives.has(k) && !scarecrows.has(k) && !mushrooms.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -6312,7 +6375,8 @@ function plantCrop(hit) {
       fences.has(cropKey(x, y, z)) || gates.has(cropKey(x, y, z)) ||
       saplings.has(cropKey(x, y, z)) || signs.has(cropKey(x, y, z)) ||
       rails.has(cropKey(x, y, z)) || campfires.has(cropKey(x, y, z)) ||
-      beehives.has(cropKey(x, y, z)) || scarecrows.has(cropKey(x, y, z))) return false;
+      beehives.has(cropKey(x, y, z)) || scarecrows.has(cropKey(x, y, z)) ||
+      mushrooms.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -6471,7 +6535,8 @@ function plantSapling(hit) {
       fences.has(saplingKey(x, y, z)) || gates.has(saplingKey(x, y, z)) ||
       signs.has(saplingKey(x, y, z)) || rails.has(saplingKey(x, y, z)) ||
       campfires.has(saplingKey(x, y, z)) || beehives.has(saplingKey(x, y, z)) ||
-      scarecrows.has(saplingKey(x, y, z))) return false;
+      scarecrows.has(saplingKey(x, y, z)) ||
+      mushrooms.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -6524,6 +6589,7 @@ function growSaplingTree(s) {
   validateCampfires();
   validateBeehives();
   validateScarecrows();
+  validateMushrooms();
   unlockAch('grow_tree');
   return true;
 }
@@ -6624,7 +6690,8 @@ function placeBed(hit) {
       gates.has(bedKey(x, y, z)) || saplings.has(bedKey(x, y, z)) ||
       signs.has(bedKey(x, y, z)) || rails.has(bedKey(x, y, z)) ||
       campfires.has(bedKey(x, y, z)) || beehives.has(bedKey(x, y, z)) ||
-      scarecrows.has(bedKey(x, y, z))) return false;
+      scarecrows.has(bedKey(x, y, z)) ||
+      mushrooms.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -6854,7 +6921,7 @@ function signCellFree(x, y, z) {
   return blockAt(x, y, z) === AIR && !signs.has(k) && !torches.has(k) && !rails.has(k) &&
          !campfires.has(k) && !beehives.has(k) && !scarecrows.has(k) &&
          !crops.has(k) && !beds.has(k) && !ladders.has(k) && !doorAtCell(x, y, z) &&
-         !fences.has(k) && !gates.has(k) && !saplings.has(k);
+         !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k);
 }
 
 // ===== Редактор напису (створюється в JS — без правок HTML) =====
@@ -7048,6 +7115,7 @@ function updateMining(dt, hit) {
     validateCampfires(); // ... або опору багаття
     validateBeehives();  // ... або опору вулика
     validateScarecrows(); // ... або опору опудала
+    validateMushrooms(); // ... або ґрунт гриба
     unlockAch('first_block');
     if (id === LOG) unlockAch('chop_wood');
     else if (id === COAL) unlockAch('coal');
@@ -7404,7 +7472,7 @@ function placeRail(hit) {
   if (blockAt(x, y, z) !== AIR || !isSolid(blockAt(x, y - 1, z))) return false;
   if (rails.has(k) || torches.has(k) || crops.has(k) || beds.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
-      beehives.has(k) || scarecrows.has(k) ||
+      beehives.has(k) || scarecrows.has(k) || mushrooms.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
   for (const d of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -7772,6 +7840,8 @@ const CAMPFIRE_LOG = 0x6b4a2b;
 const CAMPFIRE_LOG_DARK = 0x54381f;
 const MEAT_RAW_COLOR = new THREE.Color(0xc0392b);
 const MEAT_DONE_COLOR = new THREE.Color(0x7a4a1f);
+const MUSH_RAW_COLOR = new THREE.Color(0xb0402e);   // сирий гриб на рожні
+const MUSH_DONE_COLOR = new THREE.Color(0x8a5a2b);  // печений — брунатний
 
 const campfireLights = [];
 for (let i = 0; i < CAMPFIRE_LIGHT_POOL; i++) {
@@ -7835,7 +7905,7 @@ function makeCampfireModel() {
   return { group: g, ember, flames, glow, glowMat, meat, meatMat };
 }
 
-function addCampfire(x, y, z, cooking = false, cookT = 0) {
+function addCampfire(x, y, z, cooking = false, cookT = 0, cookItem = 'meat') {
   const key = campfireKey(x, y, z);
   if (campfires.has(key) || campfires.size >= CAMPFIRE_MAX) return false;
   const m = makeCampfireModel();
@@ -7846,8 +7916,12 @@ function addCampfire(x, y, z, cooking = false, cookT = 0) {
     glow: m.glow, glowMat: m.glowMat, meat: m.meat, meatMat: m.meatMat,
     flick: Math.random() * 6.28, spark: Math.random(), smoke: Math.random() * 0.8,
     sizzleT: 0, cooking: !!cooking, cookT: cooking ? cookT : 0,
+    cookItem: cookItem === 'mush' ? 'mush' : 'meat',
   });
-  if (cooking) m.meat.visible = true;
+  if (cooking) {
+    m.meat.visible = true;
+    m.meatMat.color.copy(cookItem === 'mush' ? MUSH_RAW_COLOR : MEAT_RAW_COLOR);
+  }
   return true;
 }
 
@@ -7862,13 +7936,18 @@ function removeCampfire(key) {
   campfires.delete(key);
 }
 
-// Розібрати багаття ударом: недосмажена порція повертається сирим м'ясом
+// Розібрати багаття ударом: недосмажена порція повертається сирою
 function breakCampfire(key) {
   const c = campfires.get(key);
   if (!c) return;
   if (c.cooking) {
-    player.food = Math.min(FOOD_MAX, player.food + 1);
-    updateFoodHud();
+    if (c.cookItem === 'mush') {
+      player.mush = Math.min(MUSH_MAX, player.mush + 1);
+      updateMushHud();
+    } else {
+      player.food = Math.min(FOOD_MAX, player.food + 1);
+      updateFoodHud();
+    }
   }
   spawnParticles(c.x + 0.5, c.y + 0.35, c.z + 0.5, torchEmber, 10,
     { radius: 0.3, speed: 1.6, upBias: 0.8, life: 0.55, size: 0.08, gravity: 6 });
@@ -7904,7 +7983,8 @@ function placeCampfire(hit) {
   if (blockAt(x, y, z) !== AIR || campfires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
-      rails.has(k) || beehives.has(k) || scarecrows.has(k)) return false;
+      rails.has(k) || beehives.has(k) || scarecrows.has(k) ||
+      mushrooms.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
   Sound.torch(0.2);
@@ -7913,24 +7993,33 @@ function placeCampfire(hit) {
   return true;
 }
 
-// ПКМ по багатті: насадити порцію сирого м'яса на рожен
+// ПКМ по багатті: насадити на рожен порцію сирого м'яса, а як його нема —
+// зібраний у печері гриб
 function tryCookAt(c) {
   if (c.cooking) {
     flashItemName('На багатті вже смажиться порція');
     return true;
   }
-  if (player.food <= 0) {
-    flashItemName("Немає сирого м'яса — вполюйте здобич");
+  if (player.food <= 0 && player.mush <= 0) {
+    flashItemName("Немає що смажити — вполюйте здобич чи назбирайте грибів");
     return true;
   }
-  player.food -= 1;
-  updateFoodHud();
+  if (player.food > 0) {
+    player.food -= 1;
+    updateFoodHud();
+    c.cookItem = 'meat';
+  } else {
+    player.mush -= 1;
+    updateMushHud();
+    c.cookItem = 'mush';
+  }
+  const rawColor = c.cookItem === 'mush' ? MUSH_RAW_COLOR : MEAT_RAW_COLOR;
   c.cooking = true;
   c.cookT = 0;
   c.meat.visible = true;
-  c.meatMat.color.copy(MEAT_RAW_COLOR);
+  c.meatMat.color.copy(rawColor);
   Sound.sizzle(0.09);
-  spawnParticles(c.x + 0.5, c.y + 0.62, c.z + 0.5, MEAT_RAW_COLOR, 5,
+  spawnParticles(c.x + 0.5, c.y + 0.62, c.z + 0.5, rawColor, 5,
     { radius: 0.12, speed: 0.8, upBias: 0.6, life: 0.4, size: 0.06, gravity: 4 });
   return true;
 }
@@ -7974,7 +8063,9 @@ function updateCampfires(dt) {
     if (c.cooking) {
       c.cookT += dt;
       const t = Math.min(1, c.cookT / COOK_TIME);
-      c.meatMat.color.copy(MEAT_RAW_COLOR).lerp(MEAT_DONE_COLOR, t);
+      const mush = c.cookItem === 'mush';
+      c.meatMat.color.copy(mush ? MUSH_RAW_COLOR : MEAT_RAW_COLOR)
+        .lerp(mush ? MUSH_DONE_COLOR : MEAT_DONE_COLOR, t);
       c.sizzleT -= dt;
       if (c.sizzleT <= 0) {
         c.sizzleT = 0.8 + Math.random() * 0.8;
@@ -7986,13 +8077,22 @@ function updateCampfires(dt) {
       if (c.cookT >= COOK_TIME) {
         c.cooking = false;
         c.meat.visible = false;
-        player.cooked = Math.min(COOKED_MAX, player.cooked + 1);
-        updateCookedHud();
-        Sound.cookDone();
-        flashItemName("🍗 М'ясо готове!");
-        unlockAch('cook');
-        spawnParticles(c.x + 0.5, c.y + 0.62, c.z + 0.5, MEAT_DONE_COLOR, 8,
-          { radius: 0.15, speed: 1.4, upBias: 1, life: 0.5, size: 0.07, gravity: 5 });
+        if (c.cookItem === 'mush') {
+          player.roast = Math.min(ROAST_MAX, player.roast + 1);
+          updateRoastHud();
+          Sound.cookDone();
+          flashItemName('🍢 Печений гриб готовий!');
+          spawnParticles(c.x + 0.5, c.y + 0.62, c.z + 0.5, MUSH_DONE_COLOR, 8,
+            { radius: 0.15, speed: 1.4, upBias: 1, life: 0.5, size: 0.07, gravity: 5 });
+        } else {
+          player.cooked = Math.min(COOKED_MAX, player.cooked + 1);
+          updateCookedHud();
+          Sound.cookDone();
+          flashItemName("🍗 М'ясо готове!");
+          unlockAch('cook');
+          spawnParticles(c.x + 0.5, c.y + 0.62, c.z + 0.5, MEAT_DONE_COLOR, 8,
+            { radius: 0.15, speed: 1.4, upBias: 1, life: 0.5, size: 0.07, gravity: 5 });
+        }
       }
     }
     // Стати у вогнище — обпектися (вогонь догорає, як після лави)
@@ -8035,7 +8135,8 @@ function updateCampfires(dt) {
 if (savedGame && Array.isArray(savedGame.campfires)) {
   for (const e of savedGame.campfires) {
     if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
-      addCampfire(e[0], e[1], e[2], !!e[3], Number.isFinite(e[4]) ? e[4] : 0);
+      addCampfire(e[0], e[1], e[2], !!e[3], Number.isFinite(e[4]) ? e[4] : 0,
+        e[5] ? 'mush' : 'meat');
     }
   }
 }
@@ -8182,7 +8283,8 @@ function placeBeehive(hit) {
   if (blockAt(x, y, z) !== AIR || beehives.has(k) || campfires.has(k) ||
       torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) ||
       gates.has(k) || crops.has(k) || beds.has(k) || saplings.has(k) ||
-      signs.has(k) || rails.has(k) || scarecrows.has(k)) return false;
+      signs.has(k) || rails.has(k) || scarecrows.has(k) ||
+      mushrooms.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addBeehive(x, y, z)) return false;
   Sound.place(PLANK);
@@ -8369,7 +8471,8 @@ function placeScarecrow(hit) {
   if (blockAt(x, y, z) !== AIR || scarecrows.has(k) || beehives.has(k) ||
       campfires.has(k) || torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) ||
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
-      saplings.has(k) || signs.has(k) || rails.has(k)) return false;
+      saplings.has(k) || signs.has(k) || rails.has(k) ||
+      mushrooms.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addScarecrow(x, y, z)) return false;
   Sound.place(PLANK);
@@ -8396,6 +8499,212 @@ if (savedGame && Array.isArray(savedGame.scarecrows)) {
       addScarecrow(e[0], e[1], e[2]);
     }
   }
+}
+
+// ============================================================
+// Гриби: печерна здобич, що проростає в темряві під поверхнею
+// ============================================================
+// Гриб — сутність-паросток (як посів, не воксель): час від часу проростає
+// в темній печері неподалік гравця — там, де над клітинкою є кам'яне
+// склепіння й куди не сягає світло смолоскипів та багать. ЛКМ — зібрати в
+// торбу (🍄); на багатті гриб печеться в ситну страву (🍢). Кістяне борошно,
+// посипане на гриб, розсіює довкола нові — так вирощують грибну грядку.
+const mushrooms = new Map();           // "x,y,z" -> { x, y, z, kind, group }
+const MUSHROOM_WORLD_MAX = 48;         // межа грибів у світі
+const MUSH_SPROUT_INTERVAL = 2.5;      // секунд між спробами проростання
+const MUSH_SPROUT_TRIES = 6;           // колонок-кандидатів за спробу
+const MUSH_SPROUT_MIN_R = 5;           // проростає не впритул до гравця...
+const MUSH_SPROUT_MAX_R = 24;          // ...і не далі за це
+const MUSH_MIN_GAP = 5;                // природні гриби не туляться купою
+const MUSH_LIGHT_R = 7;                // радіус світла, де гриби не ростуть
+const MUSH_CAP_RED = new THREE.Color(0xc0392b);
+const MUSH_CAP_BROWN = new THREE.Color(0x9a6b3f);
+const MUSH_STEM_COLOR = 0xe9e2d0;
+let mushClock = 0;
+let mushHintShown = false;
+
+const mushroomKey = (x, y, z) => x + ',' + y + ',' + z;
+const mushSupportable = (id) => id === STONE || id === DIRT || id === GRAVEL;
+
+function makeMushroomModel(kind) {
+  const g = new THREE.Group();
+  const cap = kind === 1 ? 0x9a6b3f : 0xc0392b;
+  animalBox(g, 0.14, 0.26, 0.14, MUSH_STEM_COLOR, 0, 0.13, 0);  // ніжка
+  animalBox(g, 0.42, 0.14, 0.42, cap, 0, 0.31, 0);              // криси шапинки
+  animalBox(g, 0.28, 0.08, 0.28, cap, 0, 0.42, 0);              // маківка
+  if (kind === 0) {                                             // білі цятки на червоній
+    animalBox(g, 0.08, 0.02, 0.08, 0xf2ece0, 0.09, 0.385, 0.07);
+    animalBox(g, 0.07, 0.02, 0.07, 0xf2ece0, -0.1, 0.385, -0.05);
+    animalBox(g, 0.06, 0.02, 0.06, 0xf2ece0, 0.02, 0.465, -0.08);
+  }
+  g.rotation.y = Math.random() * Math.PI * 2;
+  const s = 0.85 + Math.random() * 0.3;
+  g.scale.setScalar(s);
+  return g;
+}
+
+function addMushroom(x, y, z, kind = 0) {
+  const key = mushroomKey(x, y, z);
+  if (mushrooms.has(key) || mushrooms.size >= MUSHROOM_WORLD_MAX) return false;
+  kind = kind === 1 ? 1 : 0;
+  const group = makeMushroomModel(kind);
+  group.position.set(x + 0.5, y, z + 0.5);
+  scene.add(group);
+  mushrooms.set(key, { x, y, z, kind, group });
+  return true;
+}
+
+function removeMushroom(key) {
+  const m = mushrooms.get(key);
+  if (!m) return;
+  scene.remove(m.group);
+  m.group.traverse((o) => {
+    if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
+  });
+  mushrooms.delete(key);
+}
+
+// Клітинка вільна для гриба: повітря на твердому ґрунті печери, без інших
+// сутностей
+function mushCellFree(x, y, z) {
+  const k = mushroomKey(x, y, z);
+  if (mushrooms.has(k) || torches.has(k) || crops.has(k) || ladders.has(k) ||
+      saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
+      beehives.has(k) || scarecrows.has(k) || beds.has(k) || fences.has(k) ||
+      gates.has(k) || doorAtCell(x, y, z)) return false;
+  if (blockAt(x, y, z) !== AIR) return false;
+  return mushSupportable(blockAt(x, y - 1, z));
+}
+
+// Над клітинкою має бути склепіння (гриби живуть лише під землею)
+function mushHasRoof(x, y, z) {
+  const top = Math.min(HEIGHT - 1, heightAt(x, z) + 2);
+  for (let yy = y + 1; yy <= top; yy++) {
+    if (isSolid(blockAt(x, yy, z))) return true;
+  }
+  return false;
+}
+
+// Темрява: жодного смолоскипа чи багаття поблизу
+function mushDarkAt(x, y, z) {
+  return !torchNear(x + 0.5, y + 0.5, z + 0.5, MUSH_LIGHT_R) &&
+         !campfireNear(x + 0.5, y + 0.5, z + 0.5, MUSH_LIGHT_R);
+}
+
+function mushTooClose(x, y, z) {
+  const gap2 = MUSH_MIN_GAP * MUSH_MIN_GAP;
+  for (const m of mushrooms.values()) {
+    const dx = m.x - x, dy = m.y - y, dz = m.z - z;
+    if (dx * dx + dy * dy + dz * dz < gap2) return true;
+  }
+  return false;
+}
+
+// Одна спроба проростання: випадкова колонка довкола гравця, у ній —
+// випадкова придатна печерна клітинка
+function trySproutMushroom() {
+  if (mushrooms.size >= MUSHROOM_WORLD_MAX) return false;
+  for (let attempt = 0; attempt < MUSH_SPROUT_TRIES; attempt++) {
+    const ang = Math.random() * Math.PI * 2;
+    const dist = MUSH_SPROUT_MIN_R +
+      Math.random() * (MUSH_SPROUT_MAX_R - MUSH_SPROUT_MIN_R);
+    const x = Math.floor(player.pos.x + Math.cos(ang) * dist);
+    const z = Math.floor(player.pos.z + Math.sin(ang) * dist);
+    const h = heightAt(x, z);
+    const candidates = [];
+    for (let y = 2; y <= h - 3; y++) {
+      if (mushCellFree(x, y, z)) candidates.push(y);
+    }
+    while (candidates.length > 0) {
+      const i = Math.floor(Math.random() * candidates.length);
+      const y = candidates.splice(i, 1)[0];
+      if (!mushHasRoof(x, y, z) || !mushDarkAt(x, y, z) ||
+          mushTooClose(x, y, z)) continue;
+      addMushroom(x, y, z, Math.random() < 0.5 ? 1 : 0);
+      return true;
+    }
+  }
+  return false;
+}
+
+function updateMushrooms(dt) {
+  mushClock += dt;
+  if (mushClock < MUSH_SPROUT_INTERVAL) return;
+  mushClock = 0;
+  trySproutMushroom();
+}
+
+// Зібрати гриб у торбу (ЛКМ)
+function pickMushroom(key) {
+  const m = mushrooms.get(key);
+  if (!m) return false;
+  if (player.mush >= MUSH_MAX) {
+    flashItemName('Торба грибів повна — засмажте їх на багатті');
+    return true;
+  }
+  player.mush += 1;
+  updateMushHud();
+  spawnParticles(m.x + 0.5, m.y + 0.3, m.z + 0.5,
+    m.kind === 1 ? MUSH_CAP_BROWN : MUSH_CAP_RED, 7,
+    { radius: 0.25, speed: 1.5, upBias: 0.7, life: 0.45, size: 0.08, gravity: 8 });
+  Sound.breakBlock(LEAVES);
+  removeMushroom(key);
+  unlockAch('mushroom');
+  if (!mushHintShown) {
+    mushHintShown = true;
+    flashItemName('🍄 Гриб у торбі — засмажте його на багатті!');
+  }
+  return true;
+}
+
+// Кістяне борошно розсіює довкола гриба нові (грибна грядка); повертає
+// кількість пророслих
+function spreadMushrooms(m, count = 2) {
+  let grown = 0;
+  for (let attempt = 0; attempt < 14 && grown < count; attempt++) {
+    const x = m.x + Math.floor(Math.random() * 7) - 3;
+    const z = m.z + Math.floor(Math.random() * 7) - 3;
+    if (x === m.x && z === m.z) continue;
+    for (let y = m.y + 2; y >= m.y - 3; y--) {
+      if (!mushCellFree(x, y, z)) continue;
+      if (!mushHasRoof(x, y, z)) break;
+      addMushroom(x, y, z, Math.random() < 0.5 ? m.kind : (m.kind ? 0 : 1));
+      spawnParticles(x + 0.5, y + 0.25, z + 0.5, MUSH_CAP_BROWN, 5,
+        { radius: 0.2, speed: 1, upBias: 1, life: 0.5, size: 0.07, gravity: -2 });
+      grown++;
+      break;
+    }
+  }
+  return grown;
+}
+
+// Зняти гриби, чию клітинку зайняв блок або чия опора зникла
+function validateMushrooms() {
+  if (mushrooms.size === 0) return;
+  for (const [key, m] of mushrooms) {
+    const occupied = blockAt(m.x, m.y, m.z) !== AIR;
+    const supported = mushSupportable(blockAt(m.x, m.y - 1, m.z));
+    if (occupied || !supported) {
+      spawnParticles(m.x + 0.5, m.y + 0.25, m.z + 0.5,
+        m.kind === 1 ? MUSH_CAP_BROWN : MUSH_CAP_RED, 6,
+        { radius: 0.2, speed: 1.3, upBias: 0.6, life: 0.4, size: 0.07, gravity: 8 });
+      removeMushroom(key);
+    }
+  }
+}
+
+// Відновити збережені гриби (формат: [x, y, z, kind])
+if (savedGame && Array.isArray(savedGame.mushrooms)) {
+  for (const e of savedGame.mushrooms) {
+    if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
+      addMushroom(e[0], e[1], e[2], e[3] === 1 ? 1 : 0);
+    }
+  }
+}
+// Новий світ (чи давній сейв без грибів): одразу засіяти печери довкола
+// спавну, щоб перший спуск уже щось знайшов
+if (mushrooms.size === 0) {
+  for (let i = 0; i < 24 && mushrooms.size < 10; i++) trySproutMushroom();
 }
 
 // ===== Ворони: зграйка, що налітає дзьобати підрослі посіви =====
@@ -8949,6 +9258,7 @@ function placeBlock() {
   validateCampfires(); // ... або клітинку багаття
   validateBeehives();  // ... або клітинку вулика
   validateScarecrows(); // ... або клітинку опудала
+  validateMushrooms(); // ... або клітинку гриба
 
   // Гравій поверх двох блоків снігу — сніговик оживає
   if (id === GRAVEL) tryFormGolem(x, y, z);
@@ -9742,6 +10052,10 @@ const honeyBadgeEl = document.getElementById('honey-badge');
 const honeyCountEl = document.getElementById('honey-count');
 const boneBadgeEl = document.getElementById('bone-badge');
 const boneCountEl = document.getElementById('bone-count');
+const mushBadgeEl = document.getElementById('mush-badge');
+const mushCountEl = document.getElementById('mush-count');
+const roastBadgeEl = document.getElementById('roast-badge');
+const roastCountEl = document.getElementById('roast-count');
 const vignetteEl = document.getElementById('damage-vignette');
 const fireVignetteEl = document.getElementById('fire-vignette');
 const deathOverlay = document.getElementById('death-overlay');
@@ -9849,6 +10163,10 @@ function buildSurvivalHud() {
   if (honeyIcon) drawHoneyIcon(honeyIcon);
   const boneIcon = document.getElementById('bone-icon');
   if (boneIcon) drawBoneIcon(boneIcon);
+  const mushIcon = document.getElementById('mush-icon');
+  if (mushIcon) drawMushIcon(mushIcon);
+  const roastIcon = document.getElementById('roast-icon');
+  if (roastIcon) drawRoastIcon(roastIcon);
 }
 
 let lastHealthDrawn = -1;
@@ -9859,6 +10177,8 @@ let lastCookedDrawn = -1;
 let lastEggsDrawn = -1;
 let lastHoneyDrawn = -1;
 let lastBonesDrawn = -1;
+let lastMushDrawn = -1;
+let lastRoastDrawn = -1;
 
 // Лічильник зібраного м'яса (бейдж 🍖)
 function updateFoodHud() {
@@ -9954,6 +10274,63 @@ function drawBoneIcon(canvas) {
   ctx.fill();
   ctx.fillStyle = '#f7f4e8';                          // відблиск
   ctx.fillRect(-3, -1, 4, 1);
+  ctx.restore();
+}
+
+// Лічильник зібраних грибів (бейдж 🍄 над рештою торби)
+function updateMushHud() {
+  if (player.mush === lastMushDrawn) return;
+  lastMushDrawn = player.mush;
+  mushCountEl.textContent = player.mush;
+  mushBadgeEl.hidden = player.mush <= 0;
+}
+
+// Піксельна іконка гриба (бейдж, без атласу)
+function drawMushIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#e9e2d0';                          // ніжка
+  ctx.fillRect(6, 8, 4, 6);
+  ctx.fillStyle = '#c0392b';                          // шапинка
+  ctx.beginPath();
+  ctx.ellipse(8, 7, 6.2, 4.6, 0, Math.PI, 0);
+  ctx.fill();
+  ctx.fillRect(2, 6.5, 12, 2);
+  ctx.fillStyle = '#f2ece0';                          // білі цятки
+  ctx.fillRect(5, 4, 2, 2);
+  ctx.fillRect(9, 3, 2, 2);
+  ctx.fillRect(11, 6, 2, 1);
+}
+
+// Лічильник печених грибів (бейдж 🍢 над сирими)
+function updateRoastHud() {
+  if (player.roast === lastRoastDrawn) return;
+  lastRoastDrawn = player.roast;
+  roastCountEl.textContent = player.roast;
+  roastBadgeEl.hidden = player.roast <= 0;
+}
+
+// Піксельна іконка печеного гриба на шпажці (бейдж, без атласу)
+function drawRoastIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.save();
+  ctx.translate(8, 8);
+  ctx.rotate(Math.PI / 4);
+  ctx.fillStyle = '#b48a52';                          // шпажка
+  ctx.fillRect(-7, -0.75, 14, 1.5);
+  ctx.fillStyle = '#8a5a2b';                          // два печені капелюшки
+  ctx.beginPath();
+  ctx.ellipse(-2.5, 0, 2.6, 3, 0, 0, Math.PI * 2);
+  ctx.ellipse(3.5, 0, 2.6, 3, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#a4713a';                          // підпечені боки
+  ctx.fillRect(-4, -2, 3, 1.5);
+  ctx.fillRect(2, -2, 3, 1.5);
   ctx.restore();
 }
 
@@ -10813,6 +11190,8 @@ updateCookedHud();
 updateEggHud();
 updateHoneyHud();
 updateBoneHud();
+updateMushHud();
+updateRoastHud();
 document.getElementById('respawn-btn').addEventListener('click', respawn);
 
 // ===== Вимикач звуку =====
@@ -11171,6 +11550,7 @@ const ACHIEVEMENTS = [
   { id: 'bonemeal',    icon: '🦴', title: 'Агроном',            desc: 'Прискорити ріст кістяним борошном' },
   { id: 'breed',       icon: '💞', title: 'Селекціонер',        desc: 'Дочекатися приплоду, погодувавши пару тварин' },
   { id: 'scarecrow',   icon: '🪶', title: 'Опудало на варті',   desc: 'Опудало відлякало ворону від посівів' },
+  { id: 'mushroom',    icon: '🍄', title: 'Грибник',            desc: 'Зібрати гриб у темній печері' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -12053,16 +12433,17 @@ window.MCDebug = {
     return { ground: groundBones.length };
   },
   sprinkle: () => { useBonemeal(raycastBlock()); return { bones: player.bones }; },
-  // Посипати найближчий до гравця посів чи саджанець (для тестів, без прицілу)
+  // Посипати найближчий до гравця посів, саджанець чи гриб (для тестів, без прицілу)
   sprinkleNearest: () => {
     let best = null, bestD = Infinity;
-    for (const e of [...crops.values(), ...saplings.values()]) {
+    for (const e of [...crops.values(), ...saplings.values(), ...mushrooms.values()]) {
       const d = (e.x + 0.5 - player.pos.x) ** 2 + (e.z + 0.5 - player.pos.z) ** 2;
       if (d < bestD) { bestD = d; best = e; }
     }
-    if (!best) return 'немає посівів чи саджанців поряд';
+    if (!best) return 'немає посівів, саджанців чи грибів поряд';
     useBonemeal({ prev: [best.x, best.y, best.z] });
-    return { bones: player.bones, stage: best.stage, growth: best.growth };
+    return { bones: player.bones, stage: best.stage, growth: best.growth,
+             mushrooms: mushrooms.size };
   },
   get boneCount() { return player.bones; },
   get bonesOnGround() { return groundBones.length; },
@@ -12235,6 +12616,45 @@ window.MCDebug = {
     x: +c.pos.x.toFixed(1), y: +c.pos.y.toFixed(1), z: +c.pos.z.toFixed(1),
   })),
   get scarecrowCount() { return scarecrows.size; },
+  // Гриби (для тестів)
+  giveMush: (n = 4) => {
+    player.mush = Math.min(MUSH_MAX, player.mush + n);
+    updateMushHud();
+    return player.mush;
+  },
+  // Виростити гриб на поверхні поруч із гравцем (в обхід вимоги темряви —
+  // для ручного тесту збирання та борошна)
+  mushroomNear: (dx = 2, dz = 0, kind = 0) => {
+    const x = Math.floor(player.pos.x) + dx, z = Math.floor(player.pos.z) + dz;
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0 || isSolid(blockAt(x, gy + 1, z))) return null;
+    if (!mushSupportable(blockAt(x, gy, z))) setBlock(x, gy, z, DIRT);
+    return addMushroom(x, gy + 1, z, kind) ? { x, y: gy + 1, z } : null;
+  },
+  // Кілька спроб природного проростання поспіль (повертає нові координати)
+  sproutMushrooms: (tries = 20) => {
+    const before = new Set(mushrooms.keys());
+    for (let i = 0; i < tries; i++) trySproutMushroom();
+    return [...mushrooms.values()].filter((m) => !before.has(mushroomKey(m.x, m.y, m.z)))
+      .map((m) => ({ x: m.x, y: m.y, z: m.z, kind: m.kind }));
+  },
+  mushState: () => [...mushrooms.values()].map((m) => ({ x: m.x, y: m.y, z: m.z, kind: m.kind })),
+  // Зібрати найближчий до гравця гриб (в обхід прицілювання)
+  pickNearestMushroom: () => {
+    let best = null, bestD = Infinity;
+    for (const m of mushrooms.values()) {
+      const d = Math.hypot(m.x + 0.5 - player.pos.x, m.z + 0.5 - player.pos.z);
+      if (d < bestD) { bestD = d; best = m; }
+    }
+    if (!best) return null;
+    pickMushroom(mushroomKey(best.x, best.y, best.z));
+    return { mush: player.mush, left: mushrooms.size };
+  },
+  get mushroomCount() { return mushrooms.size; },
+  get mushBag() { return { mush: player.mush, roast: player.roast }; },
   // Багаття та смаженина (для тестів)
   giveCampfire: () => { assignBlockToSlot(CAMPFIRE); return BLOCK_NAMES[CAMPFIRE]; },
   giveFood: (n = 8) => {
@@ -12321,6 +12741,7 @@ function animate() {
     updateMeteors(dt);
     updateCrops(dt);
     updateSaplings(dt);
+    updateMushrooms(dt);
     updateDoors(dt);
     updateGates(dt);
     if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
