@@ -13045,7 +13045,10 @@ window.MCDebug = {
   // Мандрівний торговець (для тестів)
   forceTrader: () => {
     if (!trader) {
-      if (dayNightSun <= 0.15) MCDebug.day();
+      // Перемкнути на ранок і одразу синхронізувати dayNightSun: інакше
+      // updateTrader наступного кадру ще бачить «ніч» (updateDayNight
+      // перерахує сонце пізніше) і миттєво проводжає щойно покликаного гостя
+      if (dayNightSun <= 0.15) { MCDebug.day(); dayNightSun = 1; }
       traderTimer = TRADER_PERIOD_MIN + Math.random() * TRADER_PERIOD_VAR;
       spawnTrader(true);
     }
