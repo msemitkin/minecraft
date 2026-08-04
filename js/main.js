@@ -411,6 +411,7 @@ function saveGame() {
         bones: player.bones,
         mush: player.mush,
         roast: player.roast,
+        gapple: player.gapple,
         flying: player.flying,
       },
       timeOfDay,
@@ -446,6 +447,13 @@ function saveGame() {
                      +a.health.toFixed(1)]),
       treasure: treasureHunt.active
         ? [treasureHunt.x, treasureHunt.y, treasureHunt.z] : null,
+      traderAt: trader
+        ? [+trader.pos.x.toFixed(1), +trader.pos.y.toFixed(1), +trader.pos.z.toFixed(1)]
+        : null,
+      traderOffers: trader
+        ? trader.offers.map((o) => [o.give, o.giveN, o.get, o.getN, o.stock])
+        : null,
+      traderTimer: +traderTimer.toFixed(1),
       spawn: spawnPoint,
       selectedSlot,
       hotbar: [...hotbar],
@@ -827,6 +835,15 @@ const Sound = (() => {
       tone({ freq: 99, dur: 0.42, type: 'triangle', gain: gain * 0.55, slideTo: 108 });
     },
     // Здобуте досягнення: коротка висхідна мажорна фанфара (C-E-G-C)
+    // Дзвінкий «брязкіт монет» — вітання та обмін у мандрівного торговця
+    trade() {
+      if (!ctx || !enabled) return;
+      tone({ freq: 1180, dur: 0.07, type: 'triangle', gain: 0.12, slideTo: 1560 });
+      setTimeout(() => {
+        if (!enabled) return;
+        tone({ freq: 1560, dur: 0.1, type: 'triangle', gain: 0.1, slideTo: 1240 });
+      }, 75);
+    },
     achievement() {
       if (!ctx || !enabled) return;
       const notes = [523.25, 659.25, 783.99, 1046.5];
@@ -1844,6 +1861,9 @@ const HONEY_MAX = 16;           // максимум меду в торбі
 const HONEY_HEAL = 6;           // скільки здоров'я загоює мед (3 серця)
 const HONEY_HUNGER = 4;         // і трохи вгамовує голод (2 ніжки)
 const BONES_MAX = 64;           // максимум кісток у торбі
+const GAPPLE_MAX = 8;           // максимум золотих яблук у торбі
+const GAPPLE_HEAL = 8;          // золоте яблуко загоює 4 серця...
+const GAPPLE_FOOD = 20;         // ...і наїдає досхочу (всі 10 «ніжок»)
 const EAT_COOLDOWN = 0.9;       // пауза між поїданнями, с
 const HUNGER_PER_EXHAUSTION = 4; // одиниць виснаження на 1 одиницю голоду
 const FALL_SAFE = 3;            // блоки падіння без шкоди
@@ -1874,6 +1894,7 @@ const player = {
   bones: 0,             // кістки від скелетів (сировина кістяного борошна)
   mush: 0,              // зібрані в печерах сирі гриби
   roast: 0,             // печені на багатті гриби (ситна страва)
+  gapple: 0,            // золоті яблука від торговця (запас на чорну годину)
   starveTick: 0,        // таймер шкоди від голоду
   eatTimer: 0,          // перезарядка поїдання
   dead: false,
@@ -1929,6 +1950,9 @@ if (savedGame && savedGame.player) {
   }
   if (Number.isFinite(p.roast)) {
     player.roast = THREE.MathUtils.clamp(Math.floor(p.roast), 0, ROAST_MAX);
+  }
+  if (Number.isFinite(p.gapple)) {
+    player.gapple = THREE.MathUtils.clamp(Math.floor(p.gapple), 0, GAPPLE_MAX);
   }
   player.flying = !!p.flying;
 }
@@ -2304,9 +2328,33 @@ function updateSurvival(dt) {
 }
 let achEnvTimer = 0;
 
+// З'їсти золоте яблуко: цілком угамовує голод і добряче загоює рани.
+// Окремим кроком, бо його беруть із двох місць eatFood (аварійний запас
+// і «більше нічого не лишилось»)
+function eatGapple() {
+  player.gapple -= 1;
+  player.health = Math.min(MAX_HEALTH, player.health + GAPPLE_HEAL);
+  player.hunger = Math.min(MAX_HUNGER, player.hunger + GAPPLE_FOOD);
+  player.eatTimer = EAT_COOLDOWN;
+  Sound.eat();
+  flashItemName('🍏 Золоте яблуко відновлює сили');
+  spawnParticles(player.pos.x, player.pos.y + 1.2, player.pos.z, GAPPLE_COLOR, 10,
+    { radius: 0.3, speed: 1.3, upBias: 0.9, life: 0.6, size: 0.08, gravity: 2 });
+  unlockAch('eat');
+  unlockAch('gapple');
+  updateGappleHud();
+}
+
 // Зʼїсти одну порцію сирого м'яса (клавіша F / кнопка 🍖)
 function eatFood() {
   if (player.dead || player.eatTimer > 0) return;
+  // Золоте яблуко — запас на чорну годину: F бере його лише коли скрутно
+  // і зі здоров'ям, і з голодом (інакше — мед чи звичайна їжа)
+  if (player.gapple > 0 && player.health <= MAX_HEALTH - GAPPLE_HEAL &&
+      player.hunger <= MAX_HUNGER * 0.5) {
+    eatGapple();
+    return;
+  }
   // Мед — цілющий: F з'їдає його передусім, коли бракує здоров'я
   // (щонайменше пів порції, щоб не марнувати зібране)
   if (player.honey > 0 && player.health <= MAX_HEALTH - HONEY_HEAL / 2) {
@@ -2324,7 +2372,13 @@ function eatFood() {
   }
   const rawAny = player.food > 0 || player.mush > 0;
   const cookedAny = player.cooked > 0 || player.roast > 0;
-  if ((!rawAny && !cookedAny) || player.hunger >= MAX_HUNGER) return;
+  if (player.hunger >= MAX_HUNGER) return;
+  if (!rawAny && !cookedAny) {
+    // Іншої їжі немає: голодному золоте яблуко рятує й без ран
+    // (але не на дрібний перекус — щоб не змарнувати рідкісний харч)
+    if (player.gapple > 0 && player.hunger <= MAX_HUNGER - 8) eatGapple();
+    return;
+  }
   // Смаженина ситніша, тож їмо її при великому голоді (щоб не змарнувати
   // жодної «ніжки») або коли сирого не лишилось; інакше — сире м'ясо/зерно.
   // У кожній парі м'ясо йде першим, гриби — запасним: печений гриб трохи
@@ -2578,6 +2632,31 @@ const ANIMAL_TYPES = {
       return [];   // ніг немає — сніговик ковзає, як і личить сніговику
     },
   },
+  // Мандрівний торговець: не водиться сам собою — приходить у гості вдень
+  // (updateTrader), торгує надлишками з торби (ПКМ) і зникає в сутінках
+  trader: {
+    speed: 1.0, halfW: 0.3, height: 1.9, hp: 20, food: 0,
+    build(g) {
+      const robe = 0x3a5a9c, trim = 0x2a4070, skin = 0xc9976f,
+        dark = 0x2b2b2b, sack = 0xa8433a, stick = 0x6b4a2b;
+      animalBox(g, 0.52, 0.5, 0.36, trim, 0, 0.55, 0);      // поділ хламиди
+      animalBox(g, 0.48, 0.6, 0.32, robe, 0, 1.1, 0);       // тулуб-хламида
+      animalBox(g, 0.14, 0.5, 0.14, robe, -0.31, 1.15, 0);  // руки
+      animalBox(g, 0.14, 0.5, 0.14, robe, 0.31, 1.15, 0);
+      animalBox(g, 0.38, 0.38, 0.36, skin, 0, 1.6, 0);      // голова
+      animalBox(g, 0.09, 0.2, 0.09, skin, 0, 1.52, -0.21);  // показний ніс
+      animalBox(g, 0.3, 0.05, 0.03, dark, 0, 1.7, -0.185);  // густа брова
+      animalBox(g, 0.42, 0.12, 0.4, trim, 0, 1.83, 0);      // каптур
+      // Клунок на палиці за плечем — усе добро мандрівника
+      const pole = animalBox(g, 0.05, 0.05, 0.62, stick, 0.18, 1.5, 0.22);
+      pole.rotation.x = -0.7;
+      animalBox(g, 0.26, 0.26, 0.26, sack, 0.18, 1.32, 0.46); // клунок
+      return [
+        animalLeg(g, 0.14, 0.34, dark, -0.12, 0.34, 0),
+        animalLeg(g, 0.14, 0.34, dark, 0.12, 0.34, 0),
+      ];
+    },
+  },
 };
 
 // Час відростання вовни після стрижки, с
@@ -2667,7 +2746,7 @@ function trySpawnAnimal() {
     type = 'horse';   // коні пасуться на відкритих рівнинах
   } else {
     const types = Object.keys(ANIMAL_TYPES)
-      .filter((t) => t !== 'wolf' && t !== 'horse' && t !== 'golem');
+      .filter((t) => t !== 'wolf' && t !== 'horse' && t !== 'golem' && t !== 'trader');
     type = types[Math.floor(Math.random() * types.length)];
   }
   spawnAnimal(type, x + 0.5, h + 1.01, z + 0.5);
@@ -2710,6 +2789,11 @@ function updateAnimal(a, dt) {
     a.pursuing = false;
     // Дивиться геть від гравця: «до гравця» — atan2(a−p); напрям утечі — протилежний
     a.targetYaw = Math.atan2(player.pos.x - a.pos.x, player.pos.z - a.pos.z);
+  } else if (a === trader && tradeOpen) {
+    // Поки відкрита ятка — торговець стоїть, обернувшись до покупця
+    a.state = 'idle';
+    a.stateTimer = 1;
+    a.targetYaw = Math.atan2(-(player.pos.x - a.pos.x), -(player.pos.z - a.pos.z));
   } else {
     // «У настрої» після годування: крокує до найближчої такої самої
     // погодованої тварини; зійшлися впритул — приплід
@@ -2868,7 +2952,15 @@ function updateAnimals(dt) {
       updateAnimal(a, dt);
       continue;
     }
-    if (!a.tamed && (a.pos.distanceTo(player.pos) > ANIMAL_DESPAWN_DIST || a.pos.y < -10)) {
+    // Торговець не деспавниться на відстані (гість, а не дика звірина);
+    // випав за межі світу — повертається до гравця, як приручений вовк
+    if (a.type === 'trader' && a.pos.y < -10) {
+      wolfWarpToPlayer(a);
+      updateAnimal(a, dt);
+      continue;
+    }
+    if (!a.tamed && a.type !== 'trader' &&
+        (a.pos.distanceTo(player.pos) > ANIMAL_DESPAWN_DIST || a.pos.y < -10)) {
       removeAnimal(i);
     } else {
       // Кінь під вершником: фізику й анімацію веде driveHorse (з updatePlayer),
@@ -3440,6 +3532,218 @@ if (savedGame && Array.isArray(savedGame.horses)) {
     h.tamed = true;
     if (h.saddle) h.saddle.visible = true;
     if (Number.isFinite(e[3])) h.health = Math.max(1, Math.min(h.maxHealth, e[3]));
+  }
+}
+
+// ============================================================
+// Мандрівний торговець: денний гість, що міняє надлишки торби на рідкісний
+// крам. Приходить зранку неподалік гравця, блукає світом, а в сутінках іде
+// далі своєю дорогою. ПКМ по ньому відкриває ятку з трьома пропозиціями дня.
+// ============================================================
+const TRADER_FIRST_DELAY = 60;              // перший візит — невдовзі після старту
+const TRADER_PERIOD_MIN = DAY_LENGTH;       // пауза між візитами після відходу...
+const TRADER_PERIOD_VAR = DAY_LENGTH;       // ...+ випадкова добавка
+const TRADER_RETRY = 6;                     // ніч чи нема місця — спробувати згодом
+const TRADER_STOCK = 3;                     // скільки разів діє одна пропозиція за візит
+const GAPPLE_COLOR = new THREE.Color(0xf1d24a);
+
+// Товари ятки: ключ — лічильник у player, ікона та назва — для рядків ятки
+const TRADE_GOODS = {
+  food:   { icon: '🍖', name: "сире м'ясо" },
+  eggs:   { icon: '🥚', name: 'яйця' },
+  mush:   { icon: '🍄', name: 'гриби' },
+  honey:  { icon: '🍯', name: 'мед' },
+  bones:  { icon: '🦴', name: 'кістки' },
+  gapple: { icon: '🍏', name: 'золоте яблуко' },
+};
+const GOODS_MAX = {
+  food: FOOD_MAX, eggs: EGG_MAX, mush: MUSH_MAX,
+  honey: HONEY_MAX, bones: BONES_MAX, gapple: GAPPLE_MAX,
+};
+// Пул пропозицій: [віддати, скільки, отримати, скільки]. Головний приз —
+// золоте яблуко; кістки — запасний крам для тих, хто не б'ється зі скелетами
+const TRADE_POOL = [
+  ['food', 6, 'gapple', 1],
+  ['eggs', 8, 'gapple', 1],
+  ['mush', 5, 'gapple', 1],
+  ['honey', 3, 'gapple', 1],
+  ['mush', 6, 'bones', 3],
+  ['eggs', 5, 'bones', 2],
+];
+
+let trader = null;                          // сутність торговця серед animals (або null)
+let traderTimer = TRADER_FIRST_DELAY;       // до наступного візиту, с
+
+// 3 різні пропозиції на візит; щонайменше одна — із золотим яблуком
+function rollTraderOffers() {
+  const idx = TRADE_POOL.map((_, i) => i);
+  for (let i = idx.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [idx[i], idx[j]] = [idx[j], idx[i]];
+  }
+  const pick = idx.slice(0, 3);
+  if (!pick.some((i) => TRADE_POOL[i][2] === 'gapple')) {
+    pick[0] = idx.find((i) => TRADE_POOL[i][2] === 'gapple');
+  }
+  return pick.map((i) => {
+    const [give, giveN, get, getN] = TRADE_POOL[i];
+    return { give, giveN, get, getN, stock: TRADER_STOCK };
+  });
+}
+
+// Спроба висадити торговця на суходолі неподалік гравця
+function spawnTrader(near = false) {
+  if (trader) return false;
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = near ? 4 + Math.random() * 3 : 14 + Math.random() * 12;
+    const x = Math.floor(player.pos.x + Math.cos(angle) * dist);
+    const z = Math.floor(player.pos.z + Math.sin(angle) * dist);
+    const h = heightAt(x, z);
+    if (h <= SEA + 1) continue;                  // не у воді й не на пляжі
+    if (!isSolid(blockAt(x, h, z))) continue;
+    if (isSolid(blockAt(x, h + 1, z)) || isSolid(blockAt(x, h + 2, z))) continue;
+    spawnAnimal('trader', x + 0.5, h + 1.01, z + 0.5);
+    trader = animals[animals.length - 1];
+    trader.offers = rollTraderOffers();
+    sleepToast('🧳 Мандрівний торговець завітав у ці краї! ПКМ по ньому — торгувати');
+    Sound.trade();
+    return true;
+  }
+  return false;
+}
+
+// Торговець іде геть (сутінки чи загибель): прибрати й призначити наступний візит
+function traderLeave(farewell) {
+  if (trader) {
+    const i = animals.indexOf(trader);
+    if (i >= 0) {
+      spawnParticles(trader.pos.x, trader.pos.y + 1.2, trader.pos.z, SMOKE_COLOR, 12,
+        { radius: 0.4, speed: 1.6, upBias: 1.2, life: 0.7, size: 0.13, gravity: -3 });
+      removeAnimal(i);
+    }
+  }
+  trader = null;
+  traderTimer = TRADER_PERIOD_MIN + Math.random() * TRADER_PERIOD_VAR;
+  closeTradePanel();
+  if (farewell) sleepToast('🧳 Торговець пішов далі своєю дорогою');
+}
+
+function updateTrader(dt) {
+  if (trader) {
+    // Гравець міг убити торговця — updateAnimals уже прибрав сутність
+    if (!animals.includes(trader)) { traderLeave(false); return; }
+    // Смеркає — гість прощається
+    if (dayNightSun <= 0) traderLeave(true);
+    return;
+  }
+  traderTimer -= dt;
+  if (traderTimer > 0) return;
+  // Торговець мандрує лише вдень; уночі та без місця — пробує ще раз згодом
+  if (dayNightSun <= 0.15 || !spawnTrader()) traderTimer = TRADER_RETRY;
+}
+
+// Здійснити обмін за пропозицією ятки. Повертає true, якщо обмін відбувся.
+function doTrade(offer) {
+  if (!trader || !offer || offer.stock <= 0) return false;
+  if ((player[offer.give] || 0) < offer.giveN) return false;
+  if ((player[offer.get] || 0) >= GOODS_MAX[offer.get]) {
+    flashItemName('Торба повна — нікуди класти');
+    return false;
+  }
+  player[offer.give] -= offer.giveN;
+  player[offer.get] = Math.min(GOODS_MAX[offer.get], player[offer.get] + offer.getN);
+  offer.stock -= 1;
+  Sound.trade();
+  spawnParticles(trader.pos.x, trader.pos.y + 1.4, trader.pos.z, GAPPLE_COLOR, 8,
+    { radius: 0.35, speed: 1.2, upBias: 1.4, life: 0.7, size: 0.1, gravity: -2 });
+  unlockAch('trade');
+  updateFoodHud();
+  updateEggHud();
+  updateHoneyHud();
+  updateBoneHud();
+  updateMushHud();
+  updateGappleHud();
+  renderTradePanel();
+  saveGame();
+  return true;
+}
+
+// ===== Ятка (панель обміну) =====
+const tradePanelEl = document.getElementById('trade-panel');
+const tradeListEl = document.getElementById('trade-list');
+const tradeBagEl = document.getElementById('trade-bag');
+let tradeOpen = false;
+
+function renderTradePanel() {
+  if (!trader || !tradeListEl) return;
+  tradeListEl.innerHTML = '';
+  for (const o of trader.offers) {
+    const row = document.createElement('div');
+    row.className = 'trade-row' + (o.stock <= 0 ? ' soldout' : '');
+    const goods = document.createElement('div');
+    goods.className = 'trade-goods';
+    const g = TRADE_GOODS[o.give], r = TRADE_GOODS[o.get];
+    const line = document.createElement('div');
+    line.textContent = `${g.icon} ${o.giveN} × ${g.name} → ${r.icon} ${o.getN} × ${r.name}`;
+    const stock = document.createElement('div');
+    stock.className = 'trade-stock';
+    stock.textContent = o.stock > 0 ? `запас: ${o.stock}` : 'розпродано';
+    goods.append(line, stock);
+    const btn = document.createElement('button');
+    btn.className = 'trade-btn';
+    btn.textContent = 'Обміняти';
+    btn.disabled = o.stock <= 0 || (player[o.give] || 0) < o.giveN;
+    btn.addEventListener('click', () => doTrade(o));
+    row.append(goods, btn);
+    tradeListEl.appendChild(row);
+  }
+  tradeBagEl.textContent = 'У торбі: ' +
+    ['food', 'eggs', 'mush', 'honey', 'bones', 'gapple']
+      .map((k) => `${TRADE_GOODS[k].icon} ${player[k] || 0}`).join('  ');
+}
+
+function openTradePanel() {
+  if (tradeOpen || !trader) return;
+  if (blockMenuOpen) closeBlockMenu();
+  if (achPanelOpen) closeAchPanel();
+  tradeOpen = true;
+  mining = false;
+  cancelBowDraw();
+  renderTradePanel();
+  tradePanelEl.hidden = false;
+  if (isLocked()) document.exitPointerLock();   // звільнити курсор для кліків
+}
+
+function closeTradePanel() {
+  if (!tradeOpen) return;
+  tradeOpen = false;
+  tradePanelEl.hidden = true;
+  if (!IS_TOUCH && !mobilePlaying && renderer.domElement.requestPointerLock) {
+    renderer.domElement.requestPointerLock();
+  }
+}
+
+document.getElementById('trade-close').addEventListener('click', closeTradePanel);
+tradePanelEl.addEventListener('click', (e) => { if (e.target === tradePanelEl) closeTradePanel(); });
+
+// Відновлення візиту торговця зі збереження (позиція, пропозиції, таймер)
+if (savedGame) {
+  if (Number.isFinite(savedGame.traderTimer)) {
+    traderTimer = Math.max(1, savedGame.traderTimer);
+  }
+  const at = savedGame.traderAt;
+  if (Array.isArray(at) && at.length >= 3 && at.every(Number.isFinite)) {
+    spawnAnimal('trader', at[0], at[1], at[2]);
+    trader = animals[animals.length - 1];
+    const offers = Array.isArray(savedGame.traderOffers)
+      ? savedGame.traderOffers
+        .filter((o) => Array.isArray(o) && TRADE_GOODS[o[0]] && TRADE_GOODS[o[2]] &&
+          Number.isFinite(o[1]) && Number.isFinite(o[3]) && Number.isFinite(o[4]))
+        .map((o) => ({ give: o[0], giveN: o[1], get: o[2], getN: o[3],
+                       stock: Math.max(0, Math.min(TRADER_STOCK, o[4])) }))
+      : [];
+    trader.offers = offers.length === 3 ? offers : rollTraderOffers();
   }
 }
 
@@ -4419,7 +4723,8 @@ function damageEntity(entity, isAnimal, dmg, kx, kz, kup) {
       const idx = animals.indexOf(entity);
       if (idx >= 0) removeAnimal(idx);
       updateFoodHud();
-      unlockAch('hunt');
+      // Убитий торговець — не «полювання», і м'яса з нього нема
+      if (entity.type !== 'trader') unlockAch('hunt');
     } else {
       Sound.mobHit();
     }
@@ -9122,6 +9427,9 @@ function placeBlock() {
   // Кінь у прицілі (ПКМ) → погодувати/приручити їжею або сісти верхи
   if (animals.length > 0 && tryInteractHorse()) return;
 
+  // Торговець у прицілі (ПКМ) → відкрити ятку з пропозиціями дня
+  if (trader && animalInSight('trader')) { openTradePanel(); return; }
+
   // Свійська тварина в прицілі (ПКМ) → погодувати з торби: пара дає приплід
   if (animals.length > 0 && tryFeedFarmAnimal()) return;
 
@@ -10089,6 +10397,8 @@ const mushBadgeEl = document.getElementById('mush-badge');
 const mushCountEl = document.getElementById('mush-count');
 const roastBadgeEl = document.getElementById('roast-badge');
 const roastCountEl = document.getElementById('roast-count');
+const gappleBadgeEl = document.getElementById('gapple-badge');
+const gappleCountEl = document.getElementById('gapple-count');
 const vignetteEl = document.getElementById('damage-vignette');
 const fireVignetteEl = document.getElementById('fire-vignette');
 const deathOverlay = document.getElementById('death-overlay');
@@ -10200,6 +10510,8 @@ function buildSurvivalHud() {
   if (mushIcon) drawMushIcon(mushIcon);
   const roastIcon = document.getElementById('roast-icon');
   if (roastIcon) drawRoastIcon(roastIcon);
+  const gappleIcon = document.getElementById('gapple-icon');
+  if (gappleIcon) drawGappleIcon(gappleIcon);
 }
 
 let lastHealthDrawn = -1;
@@ -10212,6 +10524,7 @@ let lastHoneyDrawn = -1;
 let lastBonesDrawn = -1;
 let lastMushDrawn = -1;
 let lastRoastDrawn = -1;
+let lastGappleDrawn = -1;
 
 // Лічильник зібраного м'яса (бейдж 🍖)
 function updateFoodHud() {
@@ -10365,6 +10678,39 @@ function drawRoastIcon(canvas) {
   ctx.fillRect(-4, -2, 3, 1.5);
   ctx.fillRect(2, -2, 3, 1.5);
   ctx.restore();
+}
+
+// Лічильник золотих яблук від торговця (бейдж 🍏 над рештою торби)
+function updateGappleHud() {
+  if (player.gapple === lastGappleDrawn) return;
+  lastGappleDrawn = player.gapple;
+  gappleCountEl.textContent = player.gapple;
+  gappleBadgeEl.hidden = player.gapple <= 0;
+}
+
+// Піксельна іконка золотого яблука (бейдж, без атласу)
+function drawGappleIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#e8b820';                          // золотий бік
+  ctx.beginPath();
+  ctx.ellipse(8, 9.5, 5.4, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#c99310';                          // тінь знизу
+  ctx.beginPath();
+  ctx.ellipse(9.5, 11, 3.4, 2.8, 0.3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#fff3b8';                          // сяйний відблиск
+  ctx.fillRect(5, 7, 2, 2);
+  ctx.fillRect(6, 6, 1, 1);
+  ctx.fillStyle = '#6b4a2b';                          // хвостик
+  ctx.fillRect(7.5, 2.5, 1.5, 3);
+  ctx.fillStyle = '#5f8f3d';                          // листок
+  ctx.beginPath();
+  ctx.ellipse(10.5, 3.5, 2.2, 1.2, -0.5, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 // Лічильник зібраних яєць (бейдж 🥚 над торбою їжі)
@@ -11162,6 +11508,10 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     closeAchPanel();
   }
+  if (tradeOpen && e.code === 'Escape') {
+    e.preventDefault();
+    closeTradePanel();
+  }
 });
 
 document.addEventListener('keyup', (e) => { keys[e.code] = false; });
@@ -11225,6 +11575,7 @@ updateHoneyHud();
 updateBoneHud();
 updateMushHud();
 updateRoastHud();
+updateGappleHud();
 document.getElementById('respawn-btn').addEventListener('click', respawn);
 
 // ===== Вимикач звуку =====
@@ -11584,6 +11935,8 @@ const ACHIEVEMENTS = [
   { id: 'breed',       icon: '💞', title: 'Селекціонер',        desc: 'Дочекатися приплоду, погодувавши пару тварин' },
   { id: 'scarecrow',   icon: '🪶', title: 'Опудало на варті',   desc: 'Опудало відлякало ворону від посівів' },
   { id: 'mushroom',    icon: '🍄', title: 'Грибник',            desc: 'Зібрати гриб у темній печері' },
+  { id: 'trade',       icon: '🤝', title: 'Вигідна угода',      desc: 'Обміняти крам у мандрівного торговця' },
+  { id: 'gapple',      icon: '🍏', title: 'Золотий смак',       desc: "З'їсти золоте яблуко" },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -12689,6 +13042,52 @@ window.MCDebug = {
   },
   get mushroomCount() { return mushrooms.size; },
   get mushBag() { return { mush: player.mush, roast: player.roast }; },
+  // Мандрівний торговець (для тестів)
+  forceTrader: () => {
+    if (!trader) {
+      if (dayNightSun <= 0.15) MCDebug.day();
+      traderTimer = TRADER_PERIOD_MIN + Math.random() * TRADER_PERIOD_VAR;
+      spawnTrader(true);
+    }
+    return MCDebug.traderInfo;
+  },
+  dismissTrader: () => { if (trader) traderLeave(true); return MCDebug.traderInfo; },
+  get traderInfo() {
+    return {
+      present: !!trader,
+      timer: +traderTimer.toFixed(1),
+      tradeOpen,
+      pos: trader
+        ? { x: +trader.pos.x.toFixed(1), y: +trader.pos.y.toFixed(1),
+            z: +trader.pos.z.toFixed(1) }
+        : null,
+      offers: trader ? trader.offers.map((o) => ({ ...o })) : null,
+      gapple: player.gapple,
+    };
+  },
+  trade: (i = 0) => {
+    if (!trader) return 'торговця немає — MCDebug.forceTrader()';
+    const o = trader.offers[i];
+    if (!o) return 'немає такої пропозиції';
+    return { ok: doTrade(o), offer: { ...o },
+             bag: { food: player.food, eggs: player.eggs, mush: player.mush,
+                    honey: player.honey, bones: player.bones, gapple: player.gapple } };
+  },
+  openTrade: () => { openTradePanel(); return tradeOpen; },
+  closeTrade: () => { closeTradePanel(); return tradeOpen; },
+  giveGoods: (n = 12) => {
+    player.food = Math.min(FOOD_MAX, player.food + n);
+    player.eggs = Math.min(EGG_MAX, player.eggs + n);
+    player.mush = Math.min(MUSH_MAX, player.mush + n);
+    player.honey = Math.min(HONEY_MAX, player.honey + n);
+    updateFoodHud(); updateEggHud(); updateMushHud(); updateHoneyHud();
+    return { food: player.food, eggs: player.eggs, mush: player.mush, honey: player.honey };
+  },
+  giveGapple: (n = 1) => {
+    player.gapple = Math.min(GAPPLE_MAX, player.gapple + n);
+    updateGappleHud();
+    return player.gapple;
+  },
   // Багаття та смаженина (для тестів)
   giveCampfire: () => { assignBlockToSlot(CAMPFIRE); return BLOCK_NAMES[CAMPFIRE]; },
   giveFood: (n = 8) => {
@@ -12763,6 +13162,7 @@ function animate() {
     updatePlayer(dt);
     updateSurvival(dt);
     updateAnimals(dt);
+    updateTrader(dt);
     updateMobs(dt);
     updateTnt(dt);
     updateTorches(dt);
