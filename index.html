@@ -42,6 +42,7 @@
         <div>🪧 Табличка (меню) — <kbd>ПКМ</kbd> поставити на землю й написати текст; <kbd>ПКМ</kbd> по табличці — редагувати, <kbd>ЛКМ</kbd> — зняти</div>
         <div>🔥 Багаття (меню) — <kbd>ПКМ</kbd> поставити на землю; <kbd>ПКМ</kbd> по багатті з м'ясом 🍖 у торбі — засмажити (смаженина 🍗 ситніша), <kbd>ЛКМ</kbd> — розібрати</div>
         <div>🧳 Торговець (гість удень) — <kbd>ПКМ</kbd> по ньому — обміняти надлишки торби на золоті яблука 🍏 та інший крам</div>
+        <div>⚒️ Ковадло (меню) — <kbd>ПКМ</kbd> поставити; руда з кайла збирається в торбу, <kbd>ПКМ</kbd> по ковадлу — скувати швидшу кирку, <kbd>ЛКМ</kbd> — розібрати</div>
         <div><kbd>F</kbd> — з'їсти їжу (смаженина 🍗 відновлює більше голоду)</div>
         <div><kbd>M</kbd> — увімкнути / вимкнути звук</div>
         <div><kbd>N</kbd> — сховати / показати мінімапу • тап по ній — масштаб</div>
@@ -65,6 +66,7 @@
         <div>🪧 Табличка (меню ▤) — ▦ поставити й написати текст; ▦ по табличці — редагувати, ⛏ — зняти</div>
         <div>🔥 Багаття (меню ▤) — ▦ поставити; ▦ по багатті з м'ясом 🍖 — засмажити (🍗 ситніша), ⛏ — розібрати</div>
         <div>🧳 Торговець (гість удень) — ▦ по ньому — обміняти надлишки торби на золоті яблука 🍏</div>
+        <div>⚒️ Ковадло (меню ▤) — ▦ поставити; руда з кайла йде в торбу, ▦ по ковадлу — скувати швидшу кирку, ⛏ — розібрати</div>
         <div>🍖 — з'їсти м'ясо / зерно</div>
         <div>🗺 Мінімапа (вгорі праворуч) — тап перемикає масштаб</div>
         <div>🏆 — журнал досягнень (кнопка праворуч)</div>
@@ -113,6 +115,24 @@
       <canvas id="gapple-icon"></canvas>
       <span id="gapple-count">0</span>
     </div>
+    <div id="ore-badge" hidden>
+      <span class="ore-chip" id="ore-chip-coal" hidden>
+        <canvas id="ore-icon-coal"></canvas>
+        <span id="ore-count-coal">0</span>
+      </span>
+      <span class="ore-chip" id="ore-chip-iron" hidden>
+        <canvas id="ore-icon-iron"></canvas>
+        <span id="ore-count-iron">0</span>
+      </span>
+      <span class="ore-chip" id="ore-chip-gold" hidden>
+        <canvas id="ore-icon-gold"></canvas>
+        <span id="ore-count-gold">0</span>
+      </span>
+      <span class="ore-chip" id="ore-chip-diam" hidden>
+        <canvas id="ore-icon-diam"></canvas>
+        <span id="ore-count-diam">0</span>
+      </span>
+    </div>
     <div id="hotbar"></div>
     <div id="item-name"></div>
     <div id="debug"></div>
@@ -152,6 +172,16 @@
       <p class="menu-hint">Виберіть блок для активного слота • <kbd>Tab</kbd>/<kbd>Esc</kbd> — закрити</p>
       <div id="block-grid"></div>
       <div id="menu-hotbar"></div>
+    </div>
+  </div>
+
+  <div id="forge-panel" hidden>
+    <div id="forge-panel-inner">
+      <button id="forge-close" title="Закрити">✕</button>
+      <h2>⚒️ Кузня</h2>
+      <p class="menu-hint">Куйте міцніші кирки з видобутої руди • <kbd>Esc</kbd> — закрити</p>
+      <div id="forge-list"></div>
+      <p id="forge-bag"></p>
     </div>
   </div>
 

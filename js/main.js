@@ -168,6 +168,32 @@ const MUSH_FOOD = 3;            // скільки голоду відновлю�
 const ROAST_MAX = 64;           // максимум печених грибів у торбі
 const ROAST_FOOD = 8;           // скільки голоду відновлює печений гриб (4 ніжки)
 
+// Ковадло — предмет-сутність (як опудало, не воксель): чавунна колода на
+// підставці, ставиться ПКМ на тверду землю. Видобута киркою руда (вугілля,
+// залізо, золото, алмази) тепер збирається в торбу, а ПКМ по ковадлу
+// відкриває кузню: з руди кується міцніша кирка, що добуває блоки швидше.
+// ЛКМ — розібрати ковадло.
+const ANVIL = 52;
+
+// Руди в торбі: лічильники та капи (сировина для кування кирок)
+const ORE_MAX = { coal: 64, iron: 32, gold: 16, diam: 8 };
+const ORE_OF_BLOCK_ID = {};      // заповнюється нижче, коли відомі id руд
+const ORE_GOODS = {
+  coal: { icon: '⚫', name: 'вугілля' },
+  iron: { icon: '⛓', name: 'залізо' },
+  gold: { icon: '🟡', name: 'золото' },
+  diam: { icon: '💎', name: 'алмази' },
+};
+
+// Рівні кирки: множник швидкості видобутку та рецепт кування наступного
+// рівня (руди з торби). Кується послідовно: залізна → золота → алмазна.
+const PICK_TIERS = [
+  { name: 'Проста кирка',  icon: '⛏', speed: 1,   head: 0x9099a3 },
+  { name: 'Залізна кирка', icon: '⛏', speed: 1.8, head: 0xdfe4ea, cost: { coal: 2, iron: 3 } },
+  { name: 'Золота кирка',  icon: '⛏', speed: 2.5, head: 0xe8b820, cost: { coal: 3, gold: 3 } },
+  { name: 'Алмазна кирка', icon: '⛏', speed: 3.5, head: 0x5fd8d2, cost: { coal: 4, diam: 3 } },
+];
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -192,7 +218,14 @@ const BLOCK_NAMES = {
   [BEEHIVE]: 'Вулик',
   [BONEMEAL]: 'Кістяне борошно',
   [SCARECROW]: 'Опудало',
+  [ANVIL]: 'Ковадло',
 };
+
+// Яка руда з торби відповідає воксельному блоку руди
+ORE_OF_BLOCK_ID[COAL] = 'coal';
+ORE_OF_BLOCK_ID[IRON] = 'iron';
+ORE_OF_BLOCK_ID[GOLD] = 'gold';
+ORE_OF_BLOCK_ID[DIAMOND] = 'diam';
 
 // Усі блоки, доступні для встановлення — показуються в меню вибору (Tab)
 const ALL_BLOCKS = [
@@ -200,7 +233,7 @@ const ALL_BLOCKS = [
   WATER, LAVA,
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
-  SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW,
+  SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -412,6 +445,11 @@ function saveGame() {
         mush: player.mush,
         roast: player.roast,
         gapple: player.gapple,
+        coal: player.coal,
+        iron: player.iron,
+        gold: player.gold,
+        diam: player.diam,
+        pickTier: player.pickTier,
         flying: player.flying,
       },
       timeOfDay,
@@ -434,6 +472,7 @@ function saveGame() {
          c.cookItem === 'mush' ? 1 : 0]),
       beehives: [...beehives.values()].map((h) => [h.x, h.y, h.z, +h.honey.toFixed(1)]),
       scarecrows: [...scarecrows.values()].map((s) => [s.x, s.y, s.z]),
+      anvils: [...anvils.values()].map((a) => [a.x, a.y, a.z]),
       mushrooms: [...mushrooms.values()].map((m) =>
         [m.x, m.y, m.z, m.kind, m.farmed ? 1 : 0]),
       wolves: animals.filter((a) => a.type === 'wolf' && a.tamed)
@@ -843,6 +882,17 @@ const Sound = (() => {
         if (!enabled) return;
         tone({ freq: 1560, dur: 0.1, type: 'triangle', gain: 0.1, slideTo: 1240 });
       }, 75);
+    },
+    // Кування на ковадлі: два дзвінкі удари молота по металу
+    forge() {
+      if (!ctx || !enabled) return;
+      const clang = () => {
+        noise({ dur: 0.14, gain: 0.16, type: 'highpass', freq: 2400, q: 1.2 });
+        tone({ freq: 1240, dur: 0.2, type: 'square', gain: 0.05, slideTo: 1160 });
+        tone({ freq: 640, dur: 0.26, type: 'triangle', gain: 0.1, slideTo: 560 });
+      };
+      clang();
+      setTimeout(() => { if (enabled) clang(); }, 170);
     },
     achievement() {
       if (!ctx || !enabled) return;
@@ -1646,10 +1696,20 @@ function makePickaxe() {
   headGroup.add(tip2);
   g.add(headGroup);
 
+  g.userData.headMat = headMat;   // для перефарбування голівки за рівнем кирки
   return g;
 }
 
 const viewModel = makePickaxe();
+
+// Перефарбувати голівку кирки під поточний рівень (кується на ковадлі);
+// алмазна ледь світиться зсередини, щоб рівень читався і в темній шахті
+function applyPickTier() {
+  const mat = viewModel.userData.headMat;
+  const tier = PICK_TIERS[player.pickTier];
+  mat.color.setHex(tier.head);
+  mat.emissive.setHex(player.pickTier === PICK_TIERS.length - 1 ? 0x0a2f2c : 0x000000);
+}
 const VIEW_BASE_POS = new THREE.Vector3(0.42, -0.42, -0.85);
 const VIEW_BASE_ROT = new THREE.Euler(0.3, -0.35, 0.35);
 viewModel.position.copy(VIEW_BASE_POS);
@@ -1895,6 +1955,11 @@ const player = {
   mush: 0,              // зібрані в печерах сирі гриби
   roast: 0,             // печені на багатті гриби (ситна страва)
   gapple: 0,            // золоті яблука від торговця (запас на чорну годину)
+  coal: 0,              // видобуте вугілля (паливо кузні)
+  iron: 0,              // видобуте залізо (сировина кування)
+  gold: 0,              // видобуте золото (сировина кування)
+  diam: 0,              // видобуті алмази (сировина кування)
+  pickTier: 0,          // рівень кирки (0..3): кується на ковадлі з руд
   starveTick: 0,        // таймер шкоди від голоду
   eatTimer: 0,          // перезарядка поїдання
   dead: false,
@@ -1954,9 +2019,18 @@ if (savedGame && savedGame.player) {
   if (Number.isFinite(p.gapple)) {
     player.gapple = THREE.MathUtils.clamp(Math.floor(p.gapple), 0, GAPPLE_MAX);
   }
+  for (const k of Object.keys(ORE_MAX)) {
+    if (Number.isFinite(p[k])) {
+      player[k] = THREE.MathUtils.clamp(Math.floor(p[k]), 0, ORE_MAX[k]);
+    }
+  }
+  if (Number.isFinite(p.pickTier)) {
+    player.pickTier = THREE.MathUtils.clamp(Math.floor(p.pickTier), 0, PICK_TIERS.length - 1);
+  }
   player.flying = !!p.flying;
 }
 player.fallPeakY = player.pos.y;
+applyPickTier();   // збережений рівень кирки — перефарбувати голівку
 
 const keys = {};
 let selectedSlot = 0;
@@ -3707,6 +3781,7 @@ function openTradePanel() {
   if (tradeOpen || !trader) return;
   if (blockMenuOpen) closeBlockMenu();
   if (achPanelOpen) closeAchPanel();
+  if (forgeOpen) closeForgePanel();
   tradeOpen = true;
   mining = false;
   cancelBowDraw();
@@ -4762,12 +4837,17 @@ function startBreakOrAttack() {
   // них (клітинка перед блоком)
   if (torches.size > 0 || crops.size > 0 || ladders.size > 0 || saplings.size > 0 ||
       signs.size > 0 || rails.size > 0 || campfires.size > 0 || beehives.size > 0 ||
-      scarecrows.size > 0 || mushrooms.size > 0) {
+      scarecrows.size > 0 || mushrooms.size > 0 || anvils.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
       if (mushrooms.has(key)) {
         pickMushroom(key);
+        triggerSwing();
+        return;
+      }
+      if (anvils.has(key)) {
+        breakAnvil(key);
         triggerSwing();
         return;
       }
@@ -5392,6 +5472,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateCampfires(); // ... і опору багать
   validateBeehives();  // ... і опору вуликів
   validateScarecrows(); // ... і опору опудал
+  validateAnvils();    // ... і опору ковадел
   validateMushrooms(); // ... і ґрунт грибів
   Sound.explosion();
   knockback(player, cx, cy, cz);
@@ -5535,6 +5616,7 @@ function updateFallingBlocks(dt) {
       validateCampfires();
       validateBeehives();
       validateScarecrows();
+      validateAnvils();
       validateMushrooms();
       // Гравій, що впав просто на колону з двох блоків снігу, теж оживає
       if (f.id === GRAVEL) tryFormGolem(f.x, landY, f.z);
@@ -5874,7 +5956,7 @@ function placeTorch(hit) {
       saplings.has(torchKey(x, y, z)) || signs.has(torchKey(x, y, z)) ||
       rails.has(torchKey(x, y, z)) || campfires.has(torchKey(x, y, z)) ||
       beehives.has(torchKey(x, y, z)) ||
-      scarecrows.has(torchKey(x, y, z)) ||
+      scarecrows.has(torchKey(x, y, z)) || anvils.has(torchKey(x, y, z)) ||
       mushrooms.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
@@ -6036,7 +6118,7 @@ function placeLadder(hit) {
       gates.has(ladderKey(x, y, z)) || saplings.has(ladderKey(x, y, z)) ||
       signs.has(ladderKey(x, y, z)) || rails.has(ladderKey(x, y, z)) ||
       campfires.has(ladderKey(x, y, z)) || beehives.has(ladderKey(x, y, z)) ||
-      scarecrows.has(ladderKey(x, y, z)) ||
+      scarecrows.has(ladderKey(x, y, z)) || anvils.has(ladderKey(x, y, z)) ||
       mushrooms.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
@@ -6246,7 +6328,8 @@ function placeDoor(hit) {
     if (doorAtCell(x, cy, z) || torches.has(k) || crops.has(k) ||
         beds.has(k) || ladders.has(k) || fences.has(k) || gates.has(k) ||
         saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
-        beehives.has(k) || scarecrows.has(k) || mushrooms.has(k)) return false;
+        beehives.has(k) || scarecrows.has(k) || anvils.has(k) ||
+        mushrooms.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -6511,7 +6594,8 @@ function fenceCellFree(x, y, z) {
   return !fences.has(k) && !gates.has(k) && !doorAtCell(x, y, z) &&
          !torches.has(k) && !crops.has(k) && !beds.has(k) && !ladders.has(k) &&
          !saplings.has(k) && !signs.has(k) && !rails.has(k) && !campfires.has(k) &&
-         !beehives.has(k) && !scarecrows.has(k) && !mushrooms.has(k);
+         !beehives.has(k) && !scarecrows.has(k) && !anvils.has(k) &&
+         !mushrooms.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -6682,6 +6766,7 @@ function plantCrop(hit) {
       saplings.has(cropKey(x, y, z)) || signs.has(cropKey(x, y, z)) ||
       rails.has(cropKey(x, y, z)) || campfires.has(cropKey(x, y, z)) ||
       beehives.has(cropKey(x, y, z)) || scarecrows.has(cropKey(x, y, z)) ||
+      anvils.has(cropKey(x, y, z)) ||
       mushrooms.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
@@ -6841,7 +6926,7 @@ function plantSapling(hit) {
       fences.has(saplingKey(x, y, z)) || gates.has(saplingKey(x, y, z)) ||
       signs.has(saplingKey(x, y, z)) || rails.has(saplingKey(x, y, z)) ||
       campfires.has(saplingKey(x, y, z)) || beehives.has(saplingKey(x, y, z)) ||
-      scarecrows.has(saplingKey(x, y, z)) ||
+      scarecrows.has(saplingKey(x, y, z)) || anvils.has(saplingKey(x, y, z)) ||
       mushrooms.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
@@ -6895,6 +6980,7 @@ function growSaplingTree(s) {
   validateCampfires();
   validateBeehives();
   validateScarecrows();
+  validateAnvils();
   validateMushrooms();
   unlockAch('grow_tree');
   return true;
@@ -6996,7 +7082,7 @@ function placeBed(hit) {
       gates.has(bedKey(x, y, z)) || saplings.has(bedKey(x, y, z)) ||
       signs.has(bedKey(x, y, z)) || rails.has(bedKey(x, y, z)) ||
       campfires.has(bedKey(x, y, z)) || beehives.has(bedKey(x, y, z)) ||
-      scarecrows.has(bedKey(x, y, z)) ||
+      scarecrows.has(bedKey(x, y, z)) || anvils.has(bedKey(x, y, z)) ||
       mushrooms.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
@@ -7226,6 +7312,7 @@ function signCellFree(x, y, z) {
   const k = signKey(x, y, z);
   return blockAt(x, y, z) === AIR && !signs.has(k) && !torches.has(k) && !rails.has(k) &&
          !campfires.has(k) && !beehives.has(k) && !scarecrows.has(k) &&
+         !anvils.has(k) &&
          !crops.has(k) && !beds.has(k) && !ladders.has(k) && !doorAtCell(x, y, z) &&
          !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k);
 }
@@ -7395,7 +7482,8 @@ function updateMining(dt, hit) {
     miningState.progress = 0;
   }
   const hardness = BLOCK_HARDNESS[id] ?? DEFAULT_HARDNESS;
-  miningState.progress += dt / hardness;
+  // Кована кирка б'є швидше: множник рівня (проста ×1 … алмазна ×3.5)
+  miningState.progress += (dt * PICK_TIERS[player.pickTier].speed) / hardness;
 
   // Ритмічне «цокання» киркою по блоку
   digSoundTimer -= dt;
@@ -7408,6 +7496,9 @@ function updateMining(dt, hit) {
     spawnParticles(x + 0.5, y + 0.5, z + 0.5, blockColor(id), 14,
       { radius: 0.45, speed: 3.5, upBias: 1.5, life: 0.7, size: 0.13 });
     Sound.breakBlock(id);
+    // Руда, поставлена гравцем із меню, лишила слід у edits — така в торбу
+    // не йде (інакше «постав-вибий» друкував би сировину з повітря)
+    const oreFromWorld = ORE_OF_BLOCK_ID[id] && edits.get(key) !== id;
     setBlock(x, y, z, AIR);
     validateTorches();  // міг зникнути блок-опора смолоскипа
     validateCrops();    // ... або грунт під посівом
@@ -7421,6 +7512,7 @@ function updateMining(dt, hit) {
     validateCampfires(); // ... або опору багаття
     validateBeehives();  // ... або опору вулика
     validateScarecrows(); // ... або опору опудала
+    validateAnvils();    // ... або опору ковадла
     validateMushrooms(); // ... або ґрунт гриба
     unlockAch('first_block');
     if (id === LOG) unlockAch('chop_wood');
@@ -7430,6 +7522,7 @@ function updateMining(dt, hit) {
     else if (id === DIAMOND) unlockAch('diamond');
     else if (id === STARBLOCK) unlockAch('star');
     else if (id === TREASURE) onTreasureMined(x, y, z);
+    if (oreFromWorld) collectOre(id);
     resetMining();
     return;
   }
@@ -7778,7 +7871,7 @@ function placeRail(hit) {
   if (blockAt(x, y, z) !== AIR || !isSolid(blockAt(x, y - 1, z))) return false;
   if (rails.has(k) || torches.has(k) || crops.has(k) || beds.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
-      beehives.has(k) || scarecrows.has(k) || mushrooms.has(k) ||
+      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mushrooms.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
   for (const d of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -8289,7 +8382,7 @@ function placeCampfire(hit) {
   if (blockAt(x, y, z) !== AIR || campfires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
-      rails.has(k) || beehives.has(k) || scarecrows.has(k) ||
+      rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) ||
       mushrooms.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
@@ -8589,7 +8682,7 @@ function placeBeehive(hit) {
   if (blockAt(x, y, z) !== AIR || beehives.has(k) || campfires.has(k) ||
       torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) ||
       gates.has(k) || crops.has(k) || beds.has(k) || saplings.has(k) ||
-      signs.has(k) || rails.has(k) || scarecrows.has(k) ||
+      signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) ||
       mushrooms.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addBeehive(x, y, z)) return false;
@@ -8777,7 +8870,7 @@ function placeScarecrow(hit) {
   if (blockAt(x, y, z) !== AIR || scarecrows.has(k) || beehives.has(k) ||
       campfires.has(k) || torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) ||
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
-      saplings.has(k) || signs.has(k) || rails.has(k) ||
+      saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) ||
       mushrooms.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addScarecrow(x, y, z)) return false;
@@ -8803,6 +8896,222 @@ if (savedGame && Array.isArray(savedGame.scarecrows)) {
   for (const e of savedGame.scarecrows) {
     if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
       addScarecrow(e[0], e[1], e[2]);
+    }
+  }
+}
+
+// ============================================================
+// Кузня: ковадло та кування кирок із видобутої руди
+// ============================================================
+// Руда з кайла тепер збирається в торбу (лічильники ⚫⛓🟡💎), а ковадло —
+// сутність у клітинці (як опудало, воксельну сітку не змінює): чавунна
+// колода з рогом на кам'яній підставці. ПКМ по ковадлу відкриває кузню з
+// драбиною рівнів кирки: заплатив рудою — кирка перековується в міцнішу
+// й добуває блоки швидше (залізна ×1.8, золота ×2.5, алмазна ×3.5).
+// ЛКМ — розібрати ковадло.
+const anvils = new Map();              // "x,y,z" -> { x, y, z, group }
+const ANVIL_MAX = 16;                  // межа, щоб збереження не розросталося
+const ANVIL_IRON = 0x3f444c;
+const ANVIL_IRON_DARK = 0x2d3138;
+const ANVIL_BASE = 0x6f7680;
+const ANVIL_SPARK = new THREE.Color(0xffc860);
+
+const anvilKey = (x, y, z) => x + ',' + y + ',' + z;
+
+function makeAnvilModel() {
+  const g = new THREE.Group();
+  animalBox(g, 0.62, 0.14, 0.5, ANVIL_BASE, 0, 0.07, 0);        // кам'яна підставка
+  animalBox(g, 0.4, 0.16, 0.34, ANVIL_IRON_DARK, 0, 0.22, 0);   // нижній ярус
+  animalBox(g, 0.22, 0.18, 0.22, ANVIL_IRON_DARK, 0, 0.39, 0);  // талія
+  animalBox(g, 0.66, 0.14, 0.34, ANVIL_IRON, 0, 0.55, 0);       // робоча плита
+  const horn = animalBox(g, 0.2, 0.1, 0.16, ANVIL_IRON, 0.42, 0.55, 0); // ріг
+  horn.rotation.z = -0.18;
+  return g;
+}
+
+function addAnvil(x, y, z) {
+  const key = anvilKey(x, y, z);
+  if (anvils.has(key) || anvils.size >= ANVIL_MAX) return false;
+  const group = makeAnvilModel();
+  group.position.set(x + 0.5, y, z + 0.5);
+  scene.add(group);
+  anvils.set(key, { x, y, z, group });
+  return true;
+}
+
+function removeAnvil(key) {
+  const a = anvils.get(key);
+  if (!a) return;
+  scene.remove(a.group);
+  a.group.traverse((o) => {
+    if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
+  });
+  anvils.delete(key);
+}
+
+// Розібрати ковадло ударом (чи втратою опори): металевий брязкіт
+function breakAnvil(key) {
+  const a = anvils.get(key);
+  if (!a) return;
+  spawnParticles(a.x + 0.5, a.y + 0.4, a.z + 0.5, new THREE.Color(ANVIL_IRON), 10,
+    { radius: 0.3, speed: 1.8, upBias: 0.8, life: 0.5, size: 0.09, gravity: 8 });
+  Sound.breakBlock(STONE);
+  removeAnvil(key);
+}
+
+// Зняти ковадла, що втратили опору або клітинку яких зайняв блок
+function validateAnvils() {
+  if (anvils.size === 0) return;
+  for (const [key, a] of anvils) {
+    const occupied = isSolid(blockAt(a.x, a.y, a.z));
+    const supported = isSolid(blockAt(a.x, a.y - 1, a.z));
+    if (occupied || !supported) breakAnvil(key);
+  }
+}
+
+// Поставити ковадло в клітинку перед прицілом (лише на тверду підлогу)
+function placeAnvil(hit) {
+  const [x, y, z] = hit.prev;
+  const k = anvilKey(x, y, z);
+  if (blockAt(x, y, z) !== AIR || anvils.has(k) || scarecrows.has(k) ||
+      beehives.has(k) || campfires.has(k) || torches.has(k) || ladders.has(k) ||
+      doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
+      beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
+      mushrooms.has(k)) return false;
+  if (!isSolid(blockAt(x, y - 1, z))) return false;
+  if (!addAnvil(x, y, z)) return false;
+  Sound.place(STONE);
+  spawnParticles(x + 0.5, y + 0.4, z + 0.5, new THREE.Color(ANVIL_IRON), 7,
+    { radius: 0.3, speed: 1.4, upBias: 0.8, life: 0.45, size: 0.08, gravity: 8 });
+  return true;
+}
+
+// Видобута руда лягає в торбу (кап на кожен вид); перша підказує, що далі
+let oreHintShown = false;
+function collectOre(blockId) {
+  const ore = ORE_OF_BLOCK_ID[blockId];
+  if (!ore) return;
+  if (player[ore] >= ORE_MAX[ore]) {
+    flashItemName(`Торба повна — ${ORE_GOODS[ore].icon} ${ORE_GOODS[ore].name} нікуди класти`);
+    return;
+  }
+  player[ore] += 1;
+  updateOreHud();
+  flashItemName(`+1 ${ORE_GOODS[ore].icon} ${ORE_GOODS[ore].name} (${player[ore]})`);
+  if (!oreHintShown && player.pickTier === 0) {
+    oreHintShown = true;
+    sleepToast('⚒️ Руда в торбі! Постав ковадло (Tab) і скуй міцнішу кирку');
+  }
+}
+
+// ===== Кузня (панель кування) =====
+const forgePanelEl = document.getElementById('forge-panel');
+const forgeListEl = document.getElementById('forge-list');
+const forgeBagEl = document.getElementById('forge-bag');
+let forgeOpen = false;
+let forgeAnvil = null;                 // ковадло, біля якого кують (для іскор)
+
+// Рядок вартості рецепта: «⚫ 2 × вугілля + ⛓ 3 × залізо»
+function forgeCostText(cost) {
+  return Object.entries(cost)
+    .map(([k, n]) => `${ORE_GOODS[k].icon} ${n} × ${ORE_GOODS[k].name}`)
+    .join(' + ');
+}
+
+function canAffordForge(cost) {
+  return Object.entries(cost).every(([k, n]) => (player[k] || 0) >= n);
+}
+
+function renderForgePanel() {
+  if (!forgeListEl) return;
+  forgeListEl.innerHTML = '';
+  for (let t = 0; t < PICK_TIERS.length; t++) {
+    const tier = PICK_TIERS[t];
+    const row = document.createElement('div');
+    const done = t <= player.pickTier;
+    const next = t === player.pickTier + 1;
+    row.className = 'trade-row' + (done ? ' forged' : next ? '' : ' soldout');
+    const goods = document.createElement('div');
+    goods.className = 'trade-goods';
+    const line = document.createElement('div');
+    line.textContent = `${tier.icon} ${tier.name} — видобуток ×${tier.speed}`;
+    const status = document.createElement('div');
+    status.className = 'trade-stock';
+    if (t === player.pickTier) status.textContent = 'у руках';
+    else if (done) status.textContent = 'уже перекована';
+    else if (!tier.cost) status.textContent = '';
+    else status.textContent = forgeCostText(tier.cost) + (next ? '' : ' • спершу попередня');
+    goods.append(line, status);
+    row.append(goods);
+    if (next && tier.cost) {
+      const btn = document.createElement('button');
+      btn.className = 'trade-btn';
+      btn.textContent = 'Скувати';
+      btn.disabled = !canAffordForge(tier.cost);
+      btn.addEventListener('click', () => doForge(t));
+      row.append(btn);
+    }
+    forgeListEl.appendChild(row);
+  }
+  forgeBagEl.textContent = 'У торбі: ' + Object.keys(ORE_MAX)
+    .map((k) => `${ORE_GOODS[k].icon} ${player[k] || 0}`).join('  ');
+}
+
+// Скувати кирку рівня t (наступного за поточним). Повертає true, якщо вдалося.
+function doForge(t) {
+  const tier = PICK_TIERS[t];
+  if (!tier || t !== player.pickTier + 1 || !tier.cost) return false;
+  if (!canAffordForge(tier.cost)) return false;
+  for (const [k, n] of Object.entries(tier.cost)) player[k] -= n;
+  player.pickTier = t;
+  applyPickTier();
+  Sound.forge();
+  const at = forgeAnvil;
+  if (at) {
+    spawnParticles(at.x + 0.5, at.y + 0.7, at.z + 0.5, ANVIL_SPARK, 14,
+      { radius: 0.3, speed: 2.4, upBias: 1.4, life: 0.6, size: 0.08, gravity: 6 });
+  }
+  flashItemName(`⚒️ ${tier.name} скута — видобуток ×${tier.speed}!`);
+  unlockAch('forge');
+  if (t === PICK_TIERS.length - 1) unlockAch('diamond_pick');
+  updateOreHud();
+  renderForgePanel();
+  saveGame();
+  return true;
+}
+
+function openForgePanel(anvil) {
+  if (forgeOpen) return;
+  if (blockMenuOpen) closeBlockMenu();
+  if (achPanelOpen) closeAchPanel();
+  if (tradeOpen) closeTradePanel();
+  forgeOpen = true;
+  forgeAnvil = anvil || null;
+  mining = false;
+  cancelBowDraw();
+  renderForgePanel();
+  forgePanelEl.hidden = false;
+  if (isLocked()) document.exitPointerLock();   // звільнити курсор для кліків
+}
+
+function closeForgePanel() {
+  if (!forgeOpen) return;
+  forgeOpen = false;
+  forgeAnvil = null;
+  forgePanelEl.hidden = true;
+  if (!IS_TOUCH && !mobilePlaying && renderer.domElement.requestPointerLock) {
+    renderer.domElement.requestPointerLock();
+  }
+}
+
+document.getElementById('forge-close').addEventListener('click', closeForgePanel);
+forgePanelEl.addEventListener('click', (e) => { if (e.target === forgePanelEl) closeForgePanel(); });
+
+// Відновити збережені ковадла (формат: [x, y, z])
+if (savedGame && Array.isArray(savedGame.anvils)) {
+  for (const e of savedGame.anvils) {
+    if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
+      addAnvil(e[0], e[1], e[2]);
     }
   }
 }
@@ -8878,8 +9187,8 @@ function mushCellFree(x, y, z) {
   const k = mushroomKey(x, y, z);
   if (mushrooms.has(k) || torches.has(k) || crops.has(k) || ladders.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
-      beehives.has(k) || scarecrows.has(k) || beds.has(k) || fences.has(k) ||
-      gates.has(k) || doorAtCell(x, y, z)) return false;
+      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || beds.has(k) ||
+      fences.has(k) || gates.has(k) || doorAtCell(x, y, z)) return false;
   if (blockAt(x, y, z) !== AIR) return false;
   return mushSupportable(blockAt(x, y - 1, z));
 }
@@ -9479,6 +9788,12 @@ function placeBlock() {
     if (beehives.has(hk)) { tryHarvestHive(beehives.get(hk)); return; }
   }
 
+  // Ковадло в прицілі (ПКМ) → відкрити кузню, з будь-яким предметом у руці
+  if (anvils.size > 0) {
+    const ak = anvilKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    if (anvils.has(ak)) { openForgePanel(anvils.get(ak)); return; }
+  }
+
   if (hotbar[selectedSlot] === BOW) return;   // луком не ставлять блок
   if (hotbar[selectedSlot] === ROD) return;   // вудкою теж не ставлять блок
 
@@ -9514,6 +9829,12 @@ function placeBlock() {
   // Опудало — сутність на твердій підлозі, відлякує ворон від посівів
   if (id === SCARECROW) {
     placeScarecrow(hit);
+    return;
+  }
+
+  // Ковадло — сутність на твердій підлозі, кузня кирок (ПКМ по ньому)
+  if (id === ANVIL) {
+    placeAnvil(hit);
     return;
   }
 
@@ -9599,6 +9920,7 @@ function placeBlock() {
   validateCampfires(); // ... або клітинку багаття
   validateBeehives();  // ... або клітинку вулика
   validateScarecrows(); // ... або клітинку опудала
+  validateAnvils();    // ... або клітинку ковадла
   validateMushrooms(); // ... або клітинку гриба
 
   // Гравій поверх двох блоків снігу — сніговик оживає
@@ -10399,6 +10721,12 @@ const roastBadgeEl = document.getElementById('roast-badge');
 const roastCountEl = document.getElementById('roast-count');
 const gappleBadgeEl = document.getElementById('gapple-badge');
 const gappleCountEl = document.getElementById('gapple-count');
+const oreBadgeEl = document.getElementById('ore-badge');
+const oreChipEls = {}, oreCountEls = {};
+for (const k of ['coal', 'iron', 'gold', 'diam']) {
+  oreChipEls[k] = document.getElementById('ore-chip-' + k);
+  oreCountEls[k] = document.getElementById('ore-count-' + k);
+}
 const vignetteEl = document.getElementById('damage-vignette');
 const fireVignetteEl = document.getElementById('fire-vignette');
 const deathOverlay = document.getElementById('death-overlay');
@@ -10512,6 +10840,10 @@ function buildSurvivalHud() {
   if (roastIcon) drawRoastIcon(roastIcon);
   const gappleIcon = document.getElementById('gapple-icon');
   if (gappleIcon) drawGappleIcon(gappleIcon);
+  for (const k of Object.keys(ORE_MAX)) {
+    const oreIcon = document.getElementById('ore-icon-' + k);
+    if (oreIcon) drawOreIcon(oreIcon, k);
+  }
 }
 
 let lastHealthDrawn = -1;
@@ -10713,6 +11045,52 @@ function drawGappleIcon(canvas) {
   ctx.fill();
 }
 
+// Лічильники видобутих руд (один бейдж із чотирма чипами над рештою торби)
+let lastOreDrawn = '';
+function updateOreHud() {
+  const sig = `${player.coal},${player.iron},${player.gold},${player.diam}`;
+  if (sig === lastOreDrawn) return;
+  lastOreDrawn = sig;
+  let any = false;
+  for (const k of Object.keys(ORE_MAX)) {
+    const n = player[k] || 0;
+    if (oreCountEls[k]) oreCountEls[k].textContent = n;
+    if (oreChipEls[k]) oreChipEls[k].hidden = n <= 0;
+    if (n > 0) any = true;
+  }
+  if (oreBadgeEl) oreBadgeEl.hidden = !any;
+}
+
+// Піксельна іконка шматка руди: сірий камінь із вкрапленнями свого кольору
+const ORE_SPECK_COLORS = {
+  coal: ['#22252a', '#3a3f47'],
+  iron: ['#d8ac8a', '#b98a68'],
+  gold: ['#e8b820', '#f5d45e'],
+  diam: ['#59d6d0', '#a8efec'],
+};
+function drawOreIcon(canvas, ore) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#7d848d';                          // камінь
+  ctx.beginPath();
+  ctx.moveTo(3, 13); ctx.lineTo(2, 7); ctx.lineTo(6, 3);
+  ctx.lineTo(11, 2); ctx.lineTo(14, 7); ctx.lineTo(13, 13);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#6a7078';                          // тінь грані
+  ctx.fillRect(3, 11, 10, 2);
+  const [c1, c2] = ORE_SPECK_COLORS[ore];
+  ctx.fillStyle = c1;                                 // вкраплення руди
+  ctx.fillRect(5, 5, 3, 3);
+  ctx.fillRect(9, 8, 3, 3);
+  ctx.fillRect(4, 9, 2, 2);
+  ctx.fillStyle = c2;                                 // відблиски
+  ctx.fillRect(6, 6, 1, 1);
+  ctx.fillRect(10, 9, 1, 1);
+}
+
 // Лічильник зібраних яєць (бейдж 🥚 над торбою їжі)
 function updateEggHud() {
   if (player.eggs === lastEggsDrawn) return;
@@ -10866,6 +11244,22 @@ function drawBlockIcon(canvas, id) {
     ctx.fillStyle = '#b89a55';
     ctx.fillRect(4, 2, 8, 1);          // криси капелюха
     ctx.fillRect(6, 1, 4, 1);          // наголовок
+    return;
+  }
+  if (id === ANVIL) {
+    // Процедурна іконка ковадла: підставка, талія, плита з рогом
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#6f7680';                 // кам'яна підставка
+    ctx.fillRect(3, 13, 10, 2);
+    ctx.fillStyle = '#2d3138';                 // нижній ярус і талія
+    ctx.fillRect(4, 10, 8, 3);
+    ctx.fillRect(6, 7, 4, 3);
+    ctx.fillStyle = '#3f444c';                 // робоча плита
+    ctx.fillRect(2, 4, 12, 3);
+    ctx.fillRect(13, 5, 2, 2);                 // ріг
+    ctx.fillStyle = '#585f6a';                 // відблиск плити
+    ctx.fillRect(3, 4, 10, 1);
     return;
   }
   if (id === SEEDS) {
@@ -11512,6 +11906,10 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     closeTradePanel();
   }
+  if (forgeOpen && e.code === 'Escape') {
+    e.preventDefault();
+    closeForgePanel();
+  }
 });
 
 document.addEventListener('keyup', (e) => { keys[e.code] = false; });
@@ -11576,6 +11974,7 @@ updateBoneHud();
 updateMushHud();
 updateRoastHud();
 updateGappleHud();
+updateOreHud();
 document.getElementById('respawn-btn').addEventListener('click', respawn);
 
 // ===== Вимикач звуку =====
@@ -11937,6 +12336,8 @@ const ACHIEVEMENTS = [
   { id: 'mushroom',    icon: '🍄', title: 'Грибник',            desc: 'Зібрати гриб у темній печері' },
   { id: 'trade',       icon: '🤝', title: 'Вигідна угода',      desc: 'Обміняти крам у мандрівного торговця' },
   { id: 'gapple',      icon: '🍏', title: 'Золотий смак',       desc: "З'їсти золоте яблуко" },
+  { id: 'forge',       icon: '⚒', title: 'Ковальська справа',  desc: 'Скувати міцнішу кирку на ковадлі' },
+  { id: 'diamond_pick',icon: '🔷', title: 'Алмазний різець',    desc: 'Скувати алмазну кирку' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -13090,6 +13491,69 @@ window.MCDebug = {
     player.gapple = Math.min(GAPPLE_MAX, player.gapple + n);
     updateGappleHud();
     return player.gapple;
+  },
+  // Кузня: руди, ковадло та кування (для тестів)
+  giveOres: (n = 8) => {
+    for (const k of Object.keys(ORE_MAX)) {
+      player[k] = Math.min(ORE_MAX[k], player[k] + n);
+    }
+    updateOreHud();
+    return MCDebug.forgeInfo;
+  },
+  anvilNear: (dx = 2, dz = 0) => {
+    const x = Math.floor(player.pos.x) + dx, z = Math.floor(player.pos.z) + dz;
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0 || isSolid(blockAt(x, gy + 1, z))) return null;
+    return addAnvil(x, gy + 1, z) ? { x, y: gy + 1, z } : null;
+  },
+  forgeNext: () => {
+    const t = player.pickTier + 1;
+    if (t >= PICK_TIERS.length) return 'уже алмазна — далі нікуди';
+    return { ok: doForge(t), ...MCDebug.forgeInfo };
+  },
+  openForge: () => {
+    const a = [...anvils.values()][0] || null;
+    openForgePanel(a);
+    return forgeOpen;
+  },
+  // Знайти незайману (природну) руду неподалік гравця — для тестів збирання
+  findOre: (r = 24, maxY = 40) => {
+    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dz = -r; dz <= r; dz++) {
+        for (let y = 1; y < maxY; y++) {
+          const id = blockAt(px + dx, y, pz + dz);
+          if (ORE_OF_BLOCK_ID[id] && !edits.has((px + dx) + ',' + y + ',' + (pz + dz))) {
+            return { x: px + dx, y, z: pz + dz, id, ore: ORE_OF_BLOCK_ID[id] };
+          }
+        }
+      }
+    }
+    return null;
+  },
+  // Видобути блок справжнім шляхом updateMining (в обхід прицілювання)
+  mineAt: (x, y, z) => {
+    const id = blockAt(x, y, z);
+    if (id === AIR || id === TNT) return 'нема що копати';
+    mining = true;
+    const hit = { block: [x, y, z], prev: [x, y + 1, z] };
+    for (let i = 0; i < 400 && blockAt(x, y, z) !== AIR; i++) updateMining(0.05, hit);
+    mining = false;
+    return { broken: blockAt(x, y, z) === AIR, ...MCDebug.forgeInfo };
+  },
+  closeForge: () => { closeForgePanel(); return forgeOpen; },
+  get forgeInfo() {
+    return {
+      pickTier: player.pickTier,
+      pick: PICK_TIERS[player.pickTier].name,
+      speed: PICK_TIERS[player.pickTier].speed,
+      ores: { coal: player.coal, iron: player.iron, gold: player.gold, diam: player.diam },
+      anvils: anvils.size,
+      forgeOpen,
+    };
   },
   // Багаття та смаженина (для тестів)
   giveCampfire: () => { assignBlockToSlot(CAMPFIRE); return BLOCK_NAMES[CAMPFIRE]; },
