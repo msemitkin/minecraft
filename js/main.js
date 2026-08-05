@@ -8953,6 +8953,9 @@ function removeAnvil(key) {
 function breakAnvil(key) {
   const a = anvils.get(key);
   if (!a) return;
+  // На сенсорному екрані ковадло можна розібрати, поки його кузня відкрита
+  // (кнопка ⛏ живе поряд із панеллю) — панель без ковадла закриваємо
+  if (forgeOpen && forgeAnvil === a) closeForgePanel();
   spawnParticles(a.x + 0.5, a.y + 0.4, a.z + 0.5, new THREE.Color(ANVIL_IRON), 10,
     { radius: 0.3, speed: 1.8, upBias: 0.8, life: 0.5, size: 0.09, gravity: 8 });
   Sound.breakBlock(STONE);
@@ -9038,7 +9041,7 @@ function renderForgePanel() {
     const status = document.createElement('div');
     status.className = 'trade-stock';
     if (t === player.pickTier) status.textContent = 'у руках';
-    else if (done) status.textContent = 'уже перекована';
+    else if (done) status.textContent = tier.cost ? 'уже перекована' : 'замінена міцнішою';
     else if (!tier.cost) status.textContent = '';
     else status.textContent = forgeCostText(tier.cost) + (next ? '' : ' • спершу попередня');
     goods.append(line, status);
