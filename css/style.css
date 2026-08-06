@@ -921,6 +921,17 @@ kbd {
   opacity: 0.8;
 }
 
+/* Підзаголовок драбини рівнів у кузні («⛏ Кирка», «⚔️ Меч») */
+.forge-sub {
+  margin-top: 14px;
+  font-size: 14px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  color: #cdd3e0;
+  text-align: left;
+  text-shadow: 1px 1px 0 #1a1a1a;
+}
+
 .trade-row {
   display: flex;
   align-items: center;

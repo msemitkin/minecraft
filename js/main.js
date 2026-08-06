@@ -194,6 +194,17 @@ const PICK_TIERS = [
   { name: 'Алмазна кирка', icon: '⛏', speed: 3.5, head: 0x5fd8d2, cost: { coal: 4, diam: 3 } },
 ];
 
+// Рівні меча: шкода та вертикальний відкид удару по істоті, рецепт кування
+// наступного рівня (руди з торби). Рівень 0 — бій голіруч, як і був; меч не
+// окремий предмет хотбара, а сила удару: клинок зблискує в руці на час
+// замаху по істоті. Кується послідовно: залізний → золотий → алмазний.
+const SWORD_TIERS = [
+  { name: 'Голіруч',      icon: '👊', dmg: 5,  kb: 4 },
+  { name: 'Залізний меч', icon: '⚔️', dmg: 8,  kb: 4.5, blade: 0xdfe4ea, cost: { coal: 2, iron: 2 } },
+  { name: 'Золотий меч',  icon: '⚔️', dmg: 11, kb: 5,   blade: 0xe8b820, cost: { coal: 2, gold: 2 } },
+  { name: 'Алмазний меч', icon: '🗡', dmg: 15, kb: 6,   blade: 0x5fd8d2, cost: { coal: 3, diam: 2 } },
+];
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -450,6 +461,7 @@ function saveGame() {
         gold: player.gold,
         diam: player.diam,
         pickTier: player.pickTier,
+        swordTier: player.swordTier,
         flying: player.flying,
       },
       timeOfDay,
@@ -893,6 +905,12 @@ const Sound = (() => {
       };
       clang();
       setTimeout(() => { if (enabled) clang(); }, 170);
+    },
+    // Помах меча: короткий металевий свист клинка в повітрі
+    sword() {
+      if (!ctx || !enabled) return;
+      noise({ dur: 0.16, gain: 0.1, type: 'bandpass', freq: 3200, q: 2.2 });
+      tone({ freq: 1900, dur: 0.12, type: 'triangle', gain: 0.05, slideTo: 850 });
     },
     achievement() {
       if (!ctx || !enabled) return;
@@ -1716,6 +1734,55 @@ viewModel.position.copy(VIEW_BASE_POS);
 viewModel.rotation.copy(VIEW_BASE_ROT);
 viewScene.add(viewModel);
 
+// ===== Модель меча від першої особи =====
+// Скутий меч не висить у руці постійно: клинок зблискує замість кирки на
+// мить удару по істоті (і ще пів секунди після), тож видобуток лишається
+// за киркою, а бій — за мечем. Модель процедурна: руків'я, гарда, клинок.
+function makeSwordView() {
+  const g = new THREE.Group();
+  const bladeMat = new THREE.MeshLambertMaterial({ color: 0xdfe4ea });
+  const gripMat = new THREE.MeshLambertMaterial({ color: 0x5a3b1e });
+  const guardMat = new THREE.MeshLambertMaterial({ color: 0x8a6d3b });
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.2, 0.06), gripMat);
+  g.add(grip);
+  const pommel = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.05, 0.09), guardMat);
+  pommel.position.y = -0.13;
+  g.add(pommel);
+  const guard = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.05, 0.09), guardMat);
+  guard.position.y = 0.13;
+  g.add(guard);
+  const blade = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.6, 0.035), bladeMat);
+  blade.position.y = 0.45;
+  g.add(blade);
+  const tip = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.14, 4), bladeMat);
+  tip.position.y = 0.82;
+  tip.rotation.y = Math.PI / 4;
+  g.add(tip);
+  g.userData.bladeMat = bladeMat;   // для перефарбування клинка за рівнем
+  return g;
+}
+
+const swordView = makeSwordView();
+const SWORD_VIEW_POS = new THREE.Vector3(0.44, -0.5, -0.8);
+const SWORD_VIEW_ROT = new THREE.Euler(-0.35, -0.2, 0.25);
+swordView.position.copy(SWORD_VIEW_POS);
+swordView.rotation.copy(SWORD_VIEW_ROT);
+swordView.visible = false;
+viewScene.add(swordView);
+
+// Скільки секунд меч видно в руці після удару по істоті
+const SWORD_FLASH_TIME = 0.9;
+let swordFlash = 0;
+
+// Перефарбувати клинок під поточний рівень меча (кується на ковадлі);
+// алмазний ледь світиться зсередини, як і алмазна кирка
+function applySwordTier() {
+  const mat = swordView.userData.bladeMat;
+  const tier = SWORD_TIERS[player.swordTier];
+  mat.color.setHex(tier.blade || 0xdfe4ea);
+  mat.emissive.setHex(player.swordTier === SWORD_TIERS.length - 1 ? 0x0a2f2c : 0x000000);
+}
+
 // ===== Модель лука від першої особи =====
 // Дуга з тора, тятива та накладена стріла; під час натягу стріла й тятива
 // відходять до гравця, а лук трохи піднімається до прицілу.
@@ -1835,10 +1902,15 @@ function triggerSwing() {
 let bobPhase = 0;
 
 function updateViewModel(dt) {
-  // Перемикання між киркою, луком та вудкою за активним предметом хотбара
+  // Перемикання між киркою, луком та вудкою за активним предметом хотбара;
+  // скутий меч на мить удару по істоті витісняє кирку з руки
   const holdingBow = hotbar[selectedSlot] === BOW;
   const holdingRod = hotbar[selectedSlot] === ROD;
-  viewModel.visible = !holdingBow && !holdingRod;
+  if (swordFlash > 0) swordFlash = Math.max(0, swordFlash - dt);
+  const showSword = swordFlash > 0 && player.swordTier > 0 &&
+    !holdingBow && !holdingRod && !mining;
+  viewModel.visible = !holdingBow && !holdingRod && !showSword;
+  swordView.visible = showSword;
   bowView.group.visible = holdingBow;
   rodView.group.visible = holdingRod;
   if (holdingRod) {
@@ -1889,6 +1961,21 @@ function updateViewModel(dt) {
   const speed = Math.hypot(player.vel.x, player.vel.z);
   if (speed > 0.5 && player.onGround) bobPhase += dt * 9;
   const bob = Math.min(speed, 6) * 0.004;
+
+  if (showSword) {
+    // Рубальний рух: клинок падає вперед-униз по дузі й вертається
+    swordView.position.set(
+      SWORD_VIEW_POS.x - s * 0.14 + Math.cos(bobPhase) * bob,
+      SWORD_VIEW_POS.y + s * 0.04 + Math.abs(Math.sin(bobPhase)) * bob,
+      SWORD_VIEW_POS.z - s * 0.12
+    );
+    swordView.rotation.set(
+      SWORD_VIEW_ROT.x + s * 1.1,
+      SWORD_VIEW_ROT.y - s * 0.45,
+      SWORD_VIEW_ROT.z - s * 0.35
+    );
+    return;
+  }
 
   viewModel.position.set(
     VIEW_BASE_POS.x - s * 0.05 + Math.cos(bobPhase) * bob,
@@ -1960,6 +2047,7 @@ const player = {
   gold: 0,              // видобуте золото (сировина кування)
   diam: 0,              // видобуті алмази (сировина кування)
   pickTier: 0,          // рівень кирки (0..3): кується на ковадлі з руд
+  swordTier: 0,         // рівень меча (0..3): 0 — голіруч, далі кується на ковадлі
   starveTick: 0,        // таймер шкоди від голоду
   eatTimer: 0,          // перезарядка поїдання
   dead: false,
@@ -2027,10 +2115,14 @@ if (savedGame && savedGame.player) {
   if (Number.isFinite(p.pickTier)) {
     player.pickTier = THREE.MathUtils.clamp(Math.floor(p.pickTier), 0, PICK_TIERS.length - 1);
   }
+  if (Number.isFinite(p.swordTier)) {
+    player.swordTier = THREE.MathUtils.clamp(Math.floor(p.swordTier), 0, SWORD_TIERS.length - 1);
+  }
   player.flying = !!p.flying;
 }
 player.fallPeakY = player.pos.y;
 applyPickTier();   // збережений рівень кирки — перефарбувати голівку
+applySwordTier();  // ...і клинок меча
 
 const keys = {};
 let selectedSlot = 0;
@@ -4760,8 +4852,19 @@ function tryAttack() {
   triggerSwing();
   // Напрям відкидання — від гравця до істоти, по горизонталі
   const dx = best.pos.x - player.pos.x, dz = best.pos.z - player.pos.z;
-  damageEntity(best, bestIsAnimal, 5, dx, dz, 4);
+  meleeStrike(best, bestIsAnimal, dx, dz);
   return true;
+}
+
+// Удар рукою чи скутим мечем: шкода й відкид за рівнем меча; клинок
+// зблискує в руці зі свистом (спільний шлях для ЛКМ і тестів із консолі)
+function meleeStrike(entity, isAnimal, dx, dz) {
+  const tier = SWORD_TIERS[player.swordTier];
+  if (player.swordTier > 0) {
+    swordFlash = SWORD_FLASH_TIME;
+    Sound.sword();
+  }
+  damageEntity(entity, isAnimal, tier.dmg, dx, dz, tier.kb);
 }
 
 // Спільне завдання шкоди істоті (зомбі/кріпер або тварина) ударом чи стрілою.
@@ -9025,25 +9128,30 @@ function canAffordForge(cost) {
   return Object.entries(cost).every(([k, n]) => (player[k] || 0) >= n);
 }
 
-function renderForgePanel() {
-  if (!forgeListEl) return;
-  forgeListEl.innerHTML = '';
-  for (let t = 0; t < PICK_TIERS.length; t++) {
-    const tier = PICK_TIERS[t];
+// Одна драбина рівнів у кузні (кирка або меч): рядки зі статусом, рецептом
+// і кнопкою «Скувати» на наступному рівні. labels — слова під конкретний
+// інструмент (рід і формулювання відрізняються).
+function renderForgeTrack(title, tiers, cur, forgeFn, statText, labels) {
+  const sub = document.createElement('div');
+  sub.className = 'forge-sub';
+  sub.textContent = title;
+  forgeListEl.appendChild(sub);
+  for (let t = 0; t < tiers.length; t++) {
+    const tier = tiers[t];
     const row = document.createElement('div');
-    const done = t <= player.pickTier;
-    const next = t === player.pickTier + 1;
+    const done = t <= cur;
+    const next = t === cur + 1;
     row.className = 'trade-row' + (done ? ' forged' : next ? '' : ' soldout');
     const goods = document.createElement('div');
     goods.className = 'trade-goods';
     const line = document.createElement('div');
-    line.textContent = `${tier.icon} ${tier.name} — видобуток ×${tier.speed}`;
+    line.textContent = `${tier.icon} ${tier.name} — ${statText(tier)}`;
     const status = document.createElement('div');
     status.className = 'trade-stock';
-    if (t === player.pickTier) status.textContent = 'у руках';
-    else if (done) status.textContent = tier.cost ? 'уже перекована' : 'замінена міцнішою';
+    if (t === cur) status.textContent = labels.cur;
+    else if (done) status.textContent = tier.cost ? labels.done : labels.doneBase;
     else if (!tier.cost) status.textContent = '';
-    else status.textContent = forgeCostText(tier.cost) + (next ? '' : ' • спершу попередня');
+    else status.textContent = forgeCostText(tier.cost) + (next ? '' : labels.prev);
     goods.append(line, status);
     row.append(goods);
     if (next && tier.cost) {
@@ -9051,11 +9159,25 @@ function renderForgePanel() {
       btn.className = 'trade-btn';
       btn.textContent = 'Скувати';
       btn.disabled = !canAffordForge(tier.cost);
-      btn.addEventListener('click', () => doForge(t));
+      btn.addEventListener('click', () => forgeFn(t));
       row.append(btn);
     }
     forgeListEl.appendChild(row);
   }
+}
+
+function renderForgePanel() {
+  if (!forgeListEl) return;
+  forgeListEl.innerHTML = '';
+  renderForgeTrack('⛏ Кирка', PICK_TIERS, player.pickTier, doForge,
+    (tier) => `видобуток ×${tier.speed}`,
+    { cur: 'у руках', done: 'уже перекована', doneBase: 'замінена міцнішою',
+      prev: ' • спершу попередня' });
+  renderForgeTrack('⚔️ Меч', SWORD_TIERS, player.swordTier, doForgeSword,
+    (tier) => `шкода ${tier.dmg}`,
+    { cur: player.swordTier === 0 ? 'так і б\'ємось' : 'при поясі',
+      done: 'уже перекутий', doneBase: 'замінено міцнішим',
+      prev: ' • спершу попередній' });
   forgeBagEl.textContent = 'У торбі: ' + Object.keys(ORE_MAX)
     .map((k) => `${ORE_GOODS[k].icon} ${player[k] || 0}`).join('  ');
 }
@@ -9077,6 +9199,29 @@ function doForge(t) {
   flashItemName(`⚒️ ${tier.name} скута — видобуток ×${tier.speed}!`);
   unlockAch('forge');
   if (t === PICK_TIERS.length - 1) unlockAch('diamond_pick');
+  updateOreHud();
+  renderForgePanel();
+  saveGame();
+  return true;
+}
+
+// Скувати меч рівня t (наступного за поточним). Повертає true, якщо вдалося.
+function doForgeSword(t) {
+  const tier = SWORD_TIERS[t];
+  if (!tier || t !== player.swordTier + 1 || !tier.cost) return false;
+  if (!canAffordForge(tier.cost)) return false;
+  for (const [k, n] of Object.entries(tier.cost)) player[k] -= n;
+  player.swordTier = t;
+  applySwordTier();
+  Sound.forge();
+  const at = forgeAnvil;
+  if (at) {
+    spawnParticles(at.x + 0.5, at.y + 0.7, at.z + 0.5, ANVIL_SPARK, 14,
+      { radius: 0.3, speed: 2.4, upBias: 1.4, life: 0.6, size: 0.08, gravity: 6 });
+  }
+  flashItemName(`⚔️ ${tier.name} скутий — шкода удару ${tier.dmg}!`);
+  unlockAch('swordsmith');
+  if (t === SWORD_TIERS.length - 1) unlockAch('diamond_sword');
   updateOreHud();
   renderForgePanel();
   saveGame();
@@ -12341,6 +12486,8 @@ const ACHIEVEMENTS = [
   { id: 'gapple',      icon: '🍏', title: 'Золотий смак',       desc: "З'їсти золоте яблуко" },
   { id: 'forge',       icon: '⚒', title: 'Ковальська справа',  desc: 'Скувати міцнішу кирку на ковадлі' },
   { id: 'diamond_pick',icon: '🔷', title: 'Алмазний різець',    desc: 'Скувати алмазну кирку' },
+  { id: 'swordsmith',  icon: '⚔', title: 'Зброяр',             desc: 'Скувати меч на ковадлі' },
+  { id: 'diamond_sword',icon: '🗡', title: 'Алмазний клинок',   desc: 'Скувати алмазний меч' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -13517,6 +13664,23 @@ window.MCDebug = {
     if (t >= PICK_TIERS.length) return 'уже алмазна — далі нікуди';
     return { ok: doForge(t), ...MCDebug.forgeInfo };
   },
+  forgeSwordNext: () => {
+    const t = player.swordTier + 1;
+    if (t >= SWORD_TIERS.length) return 'уже алмазний — далі нікуди';
+    return { ok: doForgeSword(t), ...MCDebug.forgeInfo };
+  },
+  // Удар по найближчій нечисті справжнім шляхом meleeStrike (для тестів меча)
+  strikeNearestMob: () => {
+    let best = null, bestDist = Infinity;
+    for (const m of mobs) {
+      const d = m.pos.distanceTo(player.pos);
+      if (d < bestDist) { bestDist = d; best = m; }
+    }
+    if (!best) return null;
+    meleeStrike(best, false, best.pos.x - player.pos.x, best.pos.z - player.pos.z);
+    return { type: best.type, health: +best.health.toFixed(1),
+             dmg: SWORD_TIERS[player.swordTier].dmg, swordFlash: +swordFlash.toFixed(2) };
+  },
   openForge: () => {
     const a = [...anvils.values()][0] || null;
     openForgePanel(a);
@@ -13553,6 +13717,9 @@ window.MCDebug = {
       pickTier: player.pickTier,
       pick: PICK_TIERS[player.pickTier].name,
       speed: PICK_TIERS[player.pickTier].speed,
+      swordTier: player.swordTier,
+      sword: SWORD_TIERS[player.swordTier].name,
+      dmg: SWORD_TIERS[player.swordTier].dmg,
       ores: { coal: player.coal, iron: player.iron, gold: player.gold, diam: player.diam },
       anvils: anvils.size,
       forgeOpen,
