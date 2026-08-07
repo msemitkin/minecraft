@@ -205,6 +205,19 @@ const SWORD_TIERS = [
   { name: 'Алмазний меч', icon: '🗡', dmg: 15, kb: 6,   blade: 0x5fd8d2, cost: { coal: 3, diam: 2 } },
 ];
 
+// Щит — не предмет хотбара, а стійка оборони: утримуй C (чи сенсорну
+// кнопку 🛡), щоб прикритися — піднятий щит відбиває удари нечисті та
+// стріли скелетів спереду (в межах фронтального конуса dot), відкидаючи
+// нападника (kb), але сповільнює крок. Кується на ковадлі услід за киркою
+// та мечем: залізний → алмазний (той ширший у захваті й гасить пів вибуху).
+const SHIELD_TIERS = [
+  { name: 'Без щита',      icon: '🙌', stat: 'нема захисту', dot: 1, kb: 0 },
+  { name: 'Залізний щит',  icon: '🛡', stat: 'відбиває удари й стріли спереду',
+    dot: 0.5,  kb: 7,  face: 0x9aa3ad, cost: { coal: 2, iron: 3 } },
+  { name: 'Алмазний щит',  icon: '🛡', stat: 'ширший захват, гасить пів вибуху',
+    dot: 0.17, kb: 10, face: 0x5fd8d2, cost: { coal: 3, diam: 2 } },
+];
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -462,6 +475,7 @@ function saveGame() {
         diam: player.diam,
         pickTier: player.pickTier,
         swordTier: player.swordTier,
+        shieldTier: player.shieldTier,
         flying: player.flying,
       },
       timeOfDay,
@@ -905,6 +919,13 @@ const Sound = (() => {
       };
       clang();
       setTimeout(() => { if (enabled) clang(); }, 170);
+    },
+    // Щит приймає удар: дзвінкий металевий «бам» із коротким низьким гулом
+    shieldBlock() {
+      if (!ctx || !enabled) return;
+      noise({ dur: 0.12, gain: 0.14, type: 'highpass', freq: 2600, q: 1.1 });
+      tone({ freq: 980, dur: 0.18, type: 'square', gain: 0.05, slideTo: 740 });
+      tone({ freq: 420, dur: 0.3, type: 'triangle', gain: 0.1, slideTo: 300 });
     },
     // Помах меча: короткий металевий свист клинка в повітрі
     sword() {
@@ -1783,6 +1804,85 @@ function applySwordTier() {
   mat.emissive.setHex(player.swordTier === SWORD_TIERS.length - 1 ? 0x0a2f2c : 0x000000);
 }
 
+// ===== Модель щита від першої особи =====
+// Кутаста плита з темним обідком і центральним умбоном у лівій руці;
+// у стійці оборони підіймається з-під краю екрана перед груди
+function makeShieldView() {
+  const g = new THREE.Group();
+  const faceMat = new THREE.MeshLambertMaterial({ color: 0x9aa3ad });
+  const rimMat = new THREE.MeshLambertMaterial({ color: 0x474c54 });
+  const face = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.6, 0.05), faceMat);
+  g.add(face);
+  const rimTop = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.06, 0.07), rimMat);
+  rimTop.position.y = 0.31;
+  g.add(rimTop);
+  const rimBot = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.06, 0.07), rimMat);
+  rimBot.position.y = -0.31;
+  g.add(rimBot);
+  const rimL = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.56, 0.07), rimMat);
+  rimL.position.x = -0.26;
+  g.add(rimL);
+  const rimR = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.56, 0.07), rimMat);
+  rimR.position.x = 0.26;
+  g.add(rimR);
+  const boss = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 0.06), rimMat);
+  boss.position.z = -0.05;                 // умбон дивиться від гравця
+  g.add(boss);
+  g.userData.faceMat = faceMat;            // для перефарбування за рівнем
+  return g;
+}
+
+const shieldView = makeShieldView();
+const SHIELD_DOWN_POS = new THREE.Vector3(-0.55, -0.9, -0.8);
+const SHIELD_UP_POS = new THREE.Vector3(-0.2, -0.34, -0.66);
+const SHIELD_DOWN_ROT = new THREE.Euler(0.5, 0.65, 0.15);
+const SHIELD_UP_ROT = new THREE.Euler(0.04, 0.3, 0.02);
+shieldView.position.copy(SHIELD_DOWN_POS);
+shieldView.rotation.copy(SHIELD_DOWN_ROT);
+shieldView.visible = false;
+viewScene.add(shieldView);
+let shieldRaise = 0;      // 0..1 — плавний підйом щита в стійку
+let shieldImpact = 0;     // 1→0 — поштовх щита від щойно прийнятого удару
+let touchShieldHeld = false;   // сенсорна кнопка 🛡 утримується
+const SHIELD_SPARK = new THREE.Color(0xd8e2ec);
+
+// Перефарбувати плиту щита під рівень; алмазний ледь світиться, як і
+// решта алмазного знаряддя. Сенсорна кнопка 🛡 з'являється з першим щитом.
+function applyShieldTier() {
+  const mat = shieldView.userData.faceMat;
+  const tier = SHIELD_TIERS[player.shieldTier];
+  mat.color.setHex(tier.face || 0x9aa3ad);
+  mat.emissive.setHex(player.shieldTier === SHIELD_TIERS.length - 1 ? 0x0a2f2c : 0x000000);
+  const btn = document.getElementById('btn-shield');
+  if (btn) btn.hidden = player.shieldTier <= 0;
+}
+
+// Чи прикриває піднятий щит від нападу з точки (sx, sz): напрям на джерело
+// має лежати у фронтальному конусі погляду (поріг dot поточного рівня)
+function shieldBlocksFrom(sx, sz) {
+  if (!player.blocking || player.shieldTier <= 0) return false;
+  const dx = sx - player.pos.x, dz = sz - player.pos.z;
+  const k = Math.hypot(dx, dz);
+  if (k < 0.001) return true;
+  const dot = (dx / k) * -Math.sin(player.yaw) + (dz / k) * -Math.cos(player.yaw);
+  return dot >= SHIELD_TIERS[player.shieldTier].dot;
+}
+
+// Щит прийняв удар із точки (sx, sy, sz): дзвін, іскри об плиту, поштовх
+// моделі й досягнення оборонця
+function shieldDeflect(sx, sy, sz) {
+  Sound.shieldBlock();
+  shieldImpact = 1;
+  const dx = sx - player.pos.x, dz = sz - player.pos.z;
+  const k = Math.hypot(dx, dz) || 1;
+  spawnParticles(
+    player.pos.x + (dx / k) * 0.7, player.pos.y + 1.25, player.pos.z + (dz / k) * 0.7,
+    SHIELD_SPARK, 8,
+    { radius: 0.16, speed: 2.4, upBias: 0.9, life: 0.4, size: 0.06, gravity: 8 }
+  );
+  unlockAch('block_hit');
+}
+
 // ===== Модель лука від першої особи =====
 // Дуга з тора, тятива та накладена стріла; під час натягу стріла й тятива
 // відходять до гравця, а лук трохи піднімається до прицілу.
@@ -1913,6 +2013,34 @@ function updateViewModel(dt) {
   swordView.visible = showSword;
   bowView.group.visible = holdingBow;
   rodView.group.visible = holdingRod;
+
+  // Щит: плавний підйом у стійку оборони й «віддача» від прийнятого удару
+  shieldRaise += ((player.blocking ? 1 : 0) - shieldRaise) * Math.min(1, dt * 11);
+  if (!player.blocking && shieldRaise < 0.02) shieldRaise = 0;
+  if (shieldImpact > 0) shieldImpact = Math.max(0, shieldImpact - dt * 3.5);
+  shieldView.visible = player.shieldTier > 0 && shieldRaise > 0.02;
+  if (shieldView.visible) {
+    const r = shieldRaise;
+    const imp = Math.sin(shieldImpact * Math.PI) * 0.1;
+    shieldView.position.set(
+      SHIELD_DOWN_POS.x + (SHIELD_UP_POS.x - SHIELD_DOWN_POS.x) * r,
+      SHIELD_DOWN_POS.y + (SHIELD_UP_POS.y - SHIELD_DOWN_POS.y) * r,
+      SHIELD_DOWN_POS.z + (SHIELD_UP_POS.z - SHIELD_DOWN_POS.z) * r + imp
+    );
+    shieldView.rotation.set(
+      SHIELD_DOWN_ROT.x + (SHIELD_UP_ROT.x - SHIELD_DOWN_ROT.x) * r + imp * 1.6,
+      SHIELD_DOWN_ROT.y + (SHIELD_UP_ROT.y - SHIELD_DOWN_ROT.y) * r,
+      SHIELD_DOWN_ROT.z + (SHIELD_UP_ROT.z - SHIELD_DOWN_ROT.z) * r
+    );
+  }
+  if (player.blocking) {
+    // Стійка оборони займає обидві руки — решта знарядь сховані
+    viewModel.visible = false;
+    swordView.visible = false;
+    bowView.group.visible = false;
+    rodView.group.visible = false;
+    return;
+  }
   if (holdingRod) {
     // Легкий замах при закиданні; інакше — спокійна поза з тремтінням волосіні
     if (swing.active) {
@@ -2048,6 +2176,8 @@ const player = {
   diam: 0,              // видобуті алмази (сировина кування)
   pickTier: 0,          // рівень кирки (0..3): кується на ковадлі з руд
   swordTier: 0,         // рівень меча (0..3): 0 — голіруч, далі кується на ковадлі
+  shieldTier: 0,        // рівень щита (0..2): 0 — без щита, далі кується на ковадлі
+  blocking: false,      // стійка оборони: щит піднято (утримується C чи кнопка 🛡)
   starveTick: 0,        // таймер шкоди від голоду
   eatTimer: 0,          // перезарядка поїдання
   dead: false,
@@ -2118,11 +2248,15 @@ if (savedGame && savedGame.player) {
   if (Number.isFinite(p.swordTier)) {
     player.swordTier = THREE.MathUtils.clamp(Math.floor(p.swordTier), 0, SWORD_TIERS.length - 1);
   }
+  if (Number.isFinite(p.shieldTier)) {
+    player.shieldTier = THREE.MathUtils.clamp(Math.floor(p.shieldTier), 0, SHIELD_TIERS.length - 1);
+  }
   player.flying = !!p.flying;
 }
 player.fallPeakY = player.pos.y;
 applyPickTier();   // збережений рівень кирки — перефарбувати голівку
 applySwordTier();  // ...і клинок меча
+applyShieldTier(); // ...і плиту щита (та сенсорну кнопку 🛡)
 
 const keys = {};
 let selectedSlot = 0;
@@ -2177,6 +2311,17 @@ function toggleFlight() {
 }
 
 function updatePlayer(dt) {
+  // Стійка оборони: щит піднято, поки утримується C (чи сенсорна кнопка 🛡);
+  // верхи, у човні, вагонетці, панелях чи мертвим не прикритися
+  player.blocking = player.shieldTier > 0 && !player.dead &&
+    (keys['KeyC'] || touchShieldHeld) &&
+    !ridingBoat && !ridingHorse && !ridingCart && gameActive() &&
+    !blockMenuOpen && !forgeOpen && !achPanelOpen && !tradeOpen && !signEditorOpen;
+  if (player.blocking && (mining || bow.drawing)) {
+    mining = false;                        // щит займає руки: ні копати, ні цілитись
+    cancelBowDraw();
+  }
+
   // Пливемо в човні: власна фізика гравця вимкнена, кермуємо човном
   if (ridingBoat) {
     driveBoat(dt);
@@ -2225,7 +2370,8 @@ function updatePlayer(dt) {
   const len = Math.hypot(fx, fz);
   if (len > 1) { fx /= len; fz /= len; }
 
-  const moveMult = flying ? 1 : (inLava ? 0.35 : inWater ? 0.6 : 1);
+  const moveMult = (flying ? 1 : (inLava ? 0.35 : inWater ? 0.6 : 1)) *
+    (player.blocking && !flying ? 0.55 : 1);   // за щитом крок обережний
   const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
   player.vel.x = (fx * cos + fz * sin) * speed * moveMult;
   player.vel.z = (-fx * sin + fz * cos) * speed * moveMult;
@@ -4710,13 +4856,25 @@ function updateMob(m, dt) {
     const vOverlap = player.pos.y < m.pos.y + m.height &&
                      player.pos.y + player.height > m.pos.y;
     if (chase && distH < reach && vOverlap && m.attackCD <= 0 && !player.dead) {
-      damagePlayer(isSpider ? 2 : 3, isSpider ? 'spider' : 'zombie');
-      const k = distH || 1;
-      player.vel.x += (dx / k) * 4;
-      player.vel.z += (dz / k) * 4;
-      player.vel.y += 3;
-      m.attackCD = 1.0;
-      m.attackAnim = 1;
+      if (shieldBlocksFrom(m.pos.x, m.pos.z)) {
+        // Піднятий щит приймає удар: гравець неушкоджений, нападника відкидає
+        const kb = SHIELD_TIERS[player.shieldTier].kb;
+        const k = distH || 1;
+        m.vel.x -= (dx / k) * kb;
+        m.vel.z -= (dz / k) * kb;
+        m.vel.y += 3.5;
+        shieldDeflect(m.pos.x, m.pos.y + m.height * 0.6, m.pos.z);
+        m.attackCD = 1.2;
+        m.attackAnim = 1;
+      } else {
+        damagePlayer(isSpider ? 2 : 3, isSpider ? 'spider' : 'zombie');
+        const k = distH || 1;
+        player.vel.x += (dx / k) * 4;
+        player.vel.z += (dz / k) * 4;
+        player.vel.y += 3;
+        m.attackCD = 1.0;
+        m.attackAnim = 1;
+      }
     }
   }
 
@@ -4914,6 +5072,7 @@ function damageEntity(entity, isAnimal, dmg, kx, kz, kup) {
 // Спільний обробник ЛКМ / кнопки «добувати»: спершу удар по істоті,
 // інакше — почати видобуток блока.
 function startBreakOrAttack() {
+  if (player.blocking) return;             // щит займає руки
   if (hotbar[selectedSlot] === BOW) { startBowDraw(); return; }
   if (hotbar[selectedSlot] === ROD) { castOrReel(); return; }
   if (tryAttack()) return;
@@ -5159,12 +5318,22 @@ function arrowHitEntity(a) {
 
 // Влучання стріли скелета в гравця: відкид у напрямі польоту + шкода
 function arrowHitPlayer(a) {
-  if (player.dead) return false;
+  if (player.dead || a.deflected) return false;
   const dy = a.pos.y - (player.pos.y + player.height * 0.5);
   if (Math.abs(dy) > player.height * 0.5 + ARROW_HIT_R) return false;
   const dx = a.pos.x - player.pos.x, dz = a.pos.z - player.pos.z;
   const r = ARROW_HIT_R + player.halfW;
   if (dx * dx + dz * dz > r * r) return false;
+  // Піднятий щит відбиває фронтальну стрілу: та відскакує, не завдавши шкоди
+  const kv = Math.hypot(a.vel.x, a.vel.z) || 1;
+  if (shieldBlocksFrom(player.pos.x - a.vel.x / kv, player.pos.z - a.vel.z / kv)) {
+    a.deflected = true;
+    a.vel.x *= -0.25;
+    a.vel.z *= -0.25;
+    a.vel.y = 3.2;
+    shieldDeflect(a.pos.x, a.pos.y, a.pos.z);
+    return false;
+  }
   damagePlayer(a.dmg, 'arrow');
   const k = Math.hypot(a.vel.x, a.vel.z) || 1;
   player.vel.x += (a.vel.x / k) * 3;
@@ -5588,7 +5757,13 @@ function explode(cx, cy, cz, cause = 'tnt') {
     player.pos.z - cz
   );
   if (pd < TNT_RADIUS + 2) {
-    damagePlayer(Math.ceil((1 - pd / (TNT_RADIUS + 2)) * 14), cause);
+    let dmg = Math.ceil((1 - pd / (TNT_RADIUS + 2)) * 14);
+    // Алмазний щит, піднятий до вибуху, гасить половину ударної хвилі
+    if (player.shieldTier >= 2 && shieldBlocksFrom(cx, cz)) {
+      dmg = Math.ceil(dmg / 2);
+      shieldDeflect(cx, cy, cz);
+    }
+    damagePlayer(dmg, cause);
   }
 
   // Спалах вибуху
@@ -9178,6 +9353,11 @@ function renderForgePanel() {
     { cur: player.swordTier === 0 ? 'так і б\'ємось' : 'при поясі',
       done: 'уже перекутий', doneBase: 'замінено міцнішим',
       prev: ' • спершу попередній' });
+  renderForgeTrack('🛡 Щит', SHIELD_TIERS, player.shieldTier, doForgeShield,
+    (tier) => tier.stat,
+    { cur: player.shieldTier === 0 ? 'прикритися нічим' : 'на лівій руці',
+      done: 'уже перекутий', doneBase: 'замінено міцнішим',
+      prev: ' • спершу попередній' });
   forgeBagEl.textContent = 'У торбі: ' + Object.keys(ORE_MAX)
     .map((k) => `${ORE_GOODS[k].icon} ${player[k] || 0}`).join('  ');
 }
@@ -9222,6 +9402,28 @@ function doForgeSword(t) {
   flashItemName(`⚔️ ${tier.name} скутий — шкода удару ${tier.dmg}!`);
   unlockAch('swordsmith');
   if (t === SWORD_TIERS.length - 1) unlockAch('diamond_sword');
+  updateOreHud();
+  renderForgePanel();
+  saveGame();
+  return true;
+}
+
+// Скувати щит рівня t (наступного за поточним). Повертає true, якщо вдалося.
+function doForgeShield(t) {
+  const tier = SHIELD_TIERS[t];
+  if (!tier || t !== player.shieldTier + 1 || !tier.cost) return false;
+  if (!canAffordForge(tier.cost)) return false;
+  for (const [k, n] of Object.entries(tier.cost)) player[k] -= n;
+  player.shieldTier = t;
+  applyShieldTier();
+  Sound.forge();
+  const at = forgeAnvil;
+  if (at) {
+    spawnParticles(at.x + 0.5, at.y + 0.7, at.z + 0.5, ANVIL_SPARK, 14,
+      { radius: 0.3, speed: 2.4, upBias: 1.4, life: 0.6, size: 0.08, gravity: 6 });
+  }
+  flashItemName(`🛡 ${tier.name} скуто — тримай ${IS_TOUCH ? 'кнопку 🛡' : 'C'}, щоб прикритися!`);
+  unlockAch('shieldsmith');
   updateOreHud();
   renderForgePanel();
   saveGame();
@@ -9865,6 +10067,7 @@ function useBucket() {
 }
 
 function placeBlock() {
+  if (player.blocking) return;             // щит займає руки
   triggerSwing();
 
   // Човен поряд (ПКМ) → сісти в нього, з будь-яким предметом у руці. Робимо це
@@ -11979,6 +12182,11 @@ bindTouchButton('btn-place', () => placeBlock());
 
 bindTouchButton('btn-eat', () => eatFood());
 
+// Щит: кнопка 🛡 (видима лише зі скутим щитом) тримається — стійка оборони
+bindTouchButton('btn-shield',
+  () => { touchShieldHeld = true; },
+  () => { touchShieldHeld = false; });
+
 bindTouchButton('btn-inv', () => toggleBlockMenu());
 
 document.getElementById('btn-pause').addEventListener('touchstart', (e) => {
@@ -12488,6 +12696,8 @@ const ACHIEVEMENTS = [
   { id: 'diamond_pick',icon: '🔷', title: 'Алмазний різець',    desc: 'Скувати алмазну кирку' },
   { id: 'swordsmith',  icon: '⚔', title: 'Зброяр',             desc: 'Скувати меч на ковадлі' },
   { id: 'diamond_sword',icon: '🗡', title: 'Алмазний клинок',   desc: 'Скувати алмазний меч' },
+  { id: 'shieldsmith', icon: '🛡', title: 'Щитоносець',         desc: 'Скувати щит на ковадлі' },
+  { id: 'block_hit',   icon: '🔰', title: 'Несхитна стіна',     desc: 'Відбити напад піднятим щитом' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -13669,6 +13879,74 @@ window.MCDebug = {
     if (t >= SWORD_TIERS.length) return 'уже алмазний — далі нікуди';
     return { ok: doForgeSword(t), ...MCDebug.forgeInfo };
   },
+  forgeShieldNext: () => {
+    const t = player.shieldTier + 1;
+    if (t >= SHIELD_TIERS.length) return 'уже алмазний — далі нікуди';
+    return { ok: doForgeShield(t), ...MCDebug.forgeInfo };
+  },
+  // Підняти/опустити щит тим самим шляхом, що й сенсорна кнопка 🛡
+  raiseShield: (on = true) => {
+    touchShieldHeld = !!on;
+    return { held: touchShieldHeld, shieldTier: player.shieldTier };
+  },
+  get shieldInfo() {
+    return {
+      shieldTier: player.shieldTier,
+      shield: SHIELD_TIERS[player.shieldTier].name,
+      blocking: player.blocking,
+      raise: +shieldRaise.toFixed(2),
+      health: player.health,
+    };
+  },
+  // Підтягти найближчу нечисть упритул перед гравцем (тест блоку впритул)
+  pullNearestMob: (dist = 1.0) => {
+    let best = null, bestDist = Infinity;
+    for (const m of mobs) {
+      const d = m.pos.distanceTo(player.pos);
+      if (d < bestDist) { bestDist = d; best = m; }
+    }
+    if (!best) return null;
+    best.pos.set(
+      player.pos.x - Math.sin(player.yaw) * dist,
+      player.pos.y,
+      player.pos.z - Math.cos(player.yaw) * dist
+    );
+    best.vel.set(0, 0, 0);
+    return { type: best.type, dist };
+  },
+  // Повернути погляд гравця на найближчу нечисть (тест фронтального блоку)
+  faceNearestMob: () => {
+    let best = null, bestDist = Infinity;
+    for (const m of mobs) {
+      const d = m.pos.distanceTo(player.pos);
+      if (d < bestDist) { bestDist = d; best = m; }
+    }
+    if (!best) return null;
+    player.yaw = Math.atan2(-(best.pos.x - player.pos.x), -(best.pos.z - player.pos.z));
+    return { type: best.type, dist: +bestDist.toFixed(1), yaw: +player.yaw.toFixed(2) };
+  },
+  // Пустити стрілу в гравця з точки попереду (чи позаду) — тест відбиття щитом
+  arrowAtPlayer: (dist = 6, fromBehind = false) => {
+    const sgn = fromBehind ? -1 : 1;
+    const dirX = -Math.sin(player.yaw) * sgn;
+    const dirZ = -Math.cos(player.yaw) * sgn;
+    const ox = player.pos.x + dirX * dist;
+    const oy = player.pos.y + 1.4;
+    const oz = player.pos.z + dirZ * dist;
+    if (arrows.length >= ARROW_MAX) disposeArrow(arrows.shift());
+    const group = makeArrowModel();
+    const a = {
+      group,
+      pos: new THREE.Vector3(ox, oy, oz),
+      vel: new THREE.Vector3(-dirX, 0, -dirZ).multiplyScalar(MOB_ARROW_SPEED),
+      life: 0, stuck: false, dmg: MOB_ARROW_DMG, fromMob: true,
+    };
+    group.position.copy(a.pos);
+    orientArrow(a);
+    scene.add(group);
+    arrows.push(a);
+    return { from: [+ox.toFixed(1), +oy.toFixed(1), +oz.toFixed(1)], health: player.health };
+  },
   // Удар по найближчій нечисті справжнім шляхом meleeStrike (для тестів меча)
   strikeNearestMob: () => {
     let best = null, bestDist = Infinity;
@@ -13720,6 +13998,8 @@ window.MCDebug = {
       swordTier: player.swordTier,
       sword: SWORD_TIERS[player.swordTier].name,
       dmg: SWORD_TIERS[player.swordTier].dmg,
+      shieldTier: player.shieldTier,
+      shield: SHIELD_TIERS[player.shieldTier].name,
       ores: { coal: player.coal, iron: player.iron, gold: player.gold, diam: player.diam },
       anvils: anvils.size,
       forgeOpen,
