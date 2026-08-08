@@ -175,6 +175,14 @@ const ROAST_FOOD = 8;           // скільки голоду відновлю�
 // ЛКМ — розібрати ковадло.
 const ANVIL = 52;
 
+// Повідець — скручений із павутини, яку лишають по собі здолані павуки
+// (другий луут із нечисті після кісток). ПКМ із повідцем у руці по свійській
+// тварині бере її на повід (витрачає 1 🕸): тварина слухняно йде за гравцем —
+// нарешті є спосіб привести знайдену в полі худобу до свого загону. ПКМ по
+// тварині на повідці — відпустити (павутина вертається в торбу). Відійти
+// задалеко — повідець рветься, і павутину втрачено.
+const LEASH = 53;
+
 // Руди в торбі: лічильники та капи (сировина для кування кирок)
 const ORE_MAX = { coal: 64, iron: 32, gold: 16, diam: 8 };
 const ORE_OF_BLOCK_ID = {};      // заповнюється нижче, коли відомі id руд
@@ -243,6 +251,7 @@ const BLOCK_NAMES = {
   [BONEMEAL]: 'Кістяне борошно',
   [SCARECROW]: 'Опудало',
   [ANVIL]: 'Ковадло',
+  [LEASH]: 'Повідець',
 };
 
 // Яка руда з торби відповідає воксельному блоку руди
@@ -257,7 +266,7 @@ const ALL_BLOCKS = [
   WATER, LAVA,
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
-  SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL,
+  SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -466,6 +475,7 @@ function saveGame() {
         honey: player.honey,
         eggs: player.eggs,
         bones: player.bones,
+        silk: player.silk,
         mush: player.mush,
         roast: player.roast,
         gapple: player.gapple,
@@ -510,6 +520,10 @@ function saveGame() {
       golems: animals.filter((a) => a.type === 'golem')
         .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
                      +a.health.toFixed(1)]),
+      // Тварини на повідці — «свої», тож переживають перезавантаження
+      leashed: animals.filter((a) => a.leashed)
+        .map((a) => [a.type, +a.pos.x.toFixed(1), +a.pos.y.toFixed(1),
+                     +a.pos.z.toFixed(1), a.baby ? 1 : 0]),
       treasure: treasureHunt.active
         ? [treasureHunt.x, treasureHunt.y, treasureHunt.z] : null,
       traderAt: trader
@@ -792,6 +806,21 @@ const Sound = (() => {
     bonePop() {
       noise({ dur: 0.06, gain: 0.12, type: 'bandpass', freq: 2100, q: 3, attack: 0.002 });
       tone({ freq: 660, dur: 0.09, type: 'triangle', gain: 0.09, slideTo: 990 });
+    },
+    // Повідець накинуто: пружний скрип натягнутої мотузки
+    leashOn() {
+      noise({ dur: 0.08, gain: 0.1, type: 'bandpass', freq: 1400, q: 2 });
+      tone({ freq: 340, dur: 0.12, type: 'triangle', gain: 0.09, slideTo: 520 });
+    },
+    // Повідець знято: той самий скрип, але тоном донизу
+    leashOff() {
+      noise({ dur: 0.08, gain: 0.08, type: 'bandpass', freq: 1200, q: 2 });
+      tone({ freq: 480, dur: 0.12, type: 'triangle', gain: 0.08, slideTo: 300 });
+    },
+    // Повідець урвався: різкий тріск струни, що лопнула
+    leashSnap() {
+      noise({ dur: 0.07, gain: 0.16, type: 'highpass', freq: 2600, q: 0.8 });
+      tone({ freq: 880, dur: 0.09, type: 'square', gain: 0.07, slideTo: 220 });
     },
     // Посипане борошно: м'який пилюжний «пух» із висхідним тоном росту
     boneMeal() {
@@ -2136,6 +2165,7 @@ const HONEY_MAX = 16;           // максимум меду в торбі
 const HONEY_HEAL = 6;           // скільки здоров'я загоює мед (3 серця)
 const HONEY_HUNGER = 4;         // і трохи вгамовує голод (2 ніжки)
 const BONES_MAX = 64;           // максимум кісток у торбі
+const SILK_MAX = 32;            // максимум павутини в торбі
 const GAPPLE_MAX = 8;           // максимум золотих яблук у торбі
 const GAPPLE_HEAL = 8;          // золоте яблуко загоює 4 серця...
 const GAPPLE_FOOD = 20;         // ...і наїдає досхочу (всі 10 «ніжок»)
@@ -2167,6 +2197,7 @@ const player = {
   honey: 0,             // зібраний із вуликів мед (цілющі ласощі)
   eggs: 0,              // зібрані курячі яйця (боєзапас для кидання)
   bones: 0,             // кістки від скелетів (сировина кістяного борошна)
+  silk: 0,              // павутина від павуків (сировина повідця)
   mush: 0,              // зібрані в печерах сирі гриби
   roast: 0,             // печені на багатті гриби (ситна страва)
   gapple: 0,            // золоті яблука від торговця (запас на чорну годину)
@@ -2227,6 +2258,9 @@ if (savedGame && savedGame.player) {
   }
   if (Number.isFinite(p.bones)) {
     player.bones = THREE.MathUtils.clamp(Math.floor(p.bones), 0, BONES_MAX);
+  }
+  if (Number.isFinite(p.silk)) {
+    player.silk = THREE.MathUtils.clamp(Math.floor(p.silk), 0, SILK_MAX);
   }
   if (Number.isFinite(p.mush)) {
     player.mush = THREE.MathUtils.clamp(Math.floor(p.mush), 0, MUSH_MAX);
@@ -3032,6 +3066,9 @@ function spawnAnimal(type, x, y, z, opts = {}) {
     saddle: group.userData.saddle || null,
     // Сніговик: місце, де його зліпили — охороняє й блукає поряд із ним
     homeX: x, homeZ: z,
+    // Повідець: тварина на поводі йде за гравцем; leashLine — мотузка в сцені
+    leashed: false,
+    leashLine: null,
   });
 }
 
@@ -3067,6 +3104,7 @@ function trySpawnAnimal() {
 function removeAnimal(index) {
   const a = animals[index];
   if (ridingHorse === a) dismountHorse(false);   // кінь зник під вершником
+  disposeLeashLine(a);
   scene.remove(a.group);
   a.group.traverse((obj) => {
     if (obj.isMesh) {
@@ -3090,6 +3128,11 @@ function updateAnimal(a, dt) {
   // Паніка після удару: тікає геть від гравця прискорено
   // (приручений вовк не панікує — його веде updateTamedWolf)
   const panicking = !a.tamed && a.panic > 0;
+  // Повідець рветься на дистанції незалежно від стану (паніка теж заносить)
+  if (a.leashed &&
+      Math.hypot(player.pos.x - a.pos.x, player.pos.z - a.pos.z) > LEASH_BREAK) {
+    snapLeash(a);
+  }
   if (a.tamed) {
     // Вовк-компаньйон іде за гравцем і охороняє; сніговик вартує біля місця,
     // де його зліпили; приручений кінь пасеться на місці й чекає вершника
@@ -3106,6 +3149,18 @@ function updateAnimal(a, dt) {
     a.state = 'idle';
     a.stateTimer = 1;
     a.targetYaw = Math.atan2(-(player.pos.x - a.pos.x), -(player.pos.z - a.pos.z));
+  } else if (a.leashed) {
+    // На повідці: слухняно йде за гравцем (повід сильніший за «настрій»)
+    a.pursuing = false;
+    const d = Math.hypot(player.pos.x - a.pos.x, player.pos.z - a.pos.z);
+    if (d > LEASH_FOLLOW_MIN) {
+      a.state = 'walk';
+      a.stateTimer = 0.5;
+      a.targetYaw = Math.atan2(a.pos.x - player.pos.x, a.pos.z - player.pos.z);
+    } else {
+      a.state = 'idle';
+      a.stateTimer = 0.5;
+    }
   } else {
     // «У настрої» після годування: крокує до найближчої такої самої
     // погодованої тварини; зійшлися впритул — приплід
@@ -3145,7 +3200,8 @@ function updateAnimal(a, dt) {
   const moving = panicking || a.state === 'walk';
   // До пари тварина трохи наддає ходи
   const sp = moving
-    ? a.speed * (panicking ? 2.2 : a.tamed ? a.runBoost : a.pursuing ? 1.3 : 1)
+    ? a.speed * (panicking ? 2.2 : a.tamed ? a.runBoost
+      : a.leashed ? 1.6 : a.pursuing ? 1.3 : 1)
     : 0;
   a.vel.x = -Math.sin(a.yaw) * sp;
   a.vel.z = -Math.cos(a.yaw) * sp;
@@ -3243,6 +3299,9 @@ function updateAnimal(a, dt) {
   a.group.rotation.y = a.yaw;
   // Поза сидіння: легкий нахил корпуса назад (ніс догори, зад до землі)
   a.group.rotation.x = a.tamed && a.sitting ? 0.26 : 0;
+
+  // Мотузка повідця тягнеться за грудьми гравця й шиєю тварини щокадру
+  if (a.leashed) updateLeashLine(a);
 }
 
 let animalSpawnTimer = 0;
@@ -3271,7 +3330,7 @@ function updateAnimals(dt) {
       updateAnimal(a, dt);
       continue;
     }
-    if (!a.tamed && a.type !== 'trader' &&
+    if (!a.tamed && !a.leashed && a.type !== 'trader' &&
         (a.pos.distanceTo(player.pos) > ANIMAL_DESPAWN_DIST || a.pos.y < -10)) {
       removeAnimal(i);
     } else {
@@ -3551,6 +3610,115 @@ if (savedGame && Array.isArray(savedGame.wolves)) {
     if (w.collar) w.collar.visible = true;
     if (Number.isFinite(e[3])) w.health = Math.max(1, Math.min(w.maxHealth, e[3]));
     w.sitting = e[4] === 1;
+  }
+}
+
+// ============================================================
+// Повідець: скручений із павутини павуків, веде свійську тварину за гравцем.
+// ПКМ із повідцем у руці по тварині — узяти на повід (витрачає 1 🕸), ПКМ по
+// тварині на поводі — відпустити (павутина вертається). Відстань понад
+// LEASH_BREAK — повідець рветься, павутину втрачено. Тварина на повідці
+// «своя»: не деспавниться на відстані та зберігається зі світом.
+// ============================================================
+const LEASH_REACH = 3.2;        // дистанція, з якої чіпляється повідець
+const LEASH_FOLLOW_MIN = 2.6;   // ближче — тварина спокійно стоїть
+const LEASH_BREAK = 12;         // далі — повідець рветься
+const LEASH_MAX_LED = 3;        // скільки тварин можна вести водночас
+const LEASH_ROPE_COLOR = 0xe8e4d8;
+const LEASH_ROPE_SEGS = 8;      // сегментів провисної мотузки
+
+function ledCount() {
+  let n = 0;
+  for (const a of animals) if (a.leashed) n++;
+  return n;
+}
+
+// Мотузка повідця: провисла ламана від руки гравця до шиї тварини
+function makeLeashLine() {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position',
+    new THREE.BufferAttribute(new Float32Array((LEASH_ROPE_SEGS + 1) * 3), 3));
+  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: LEASH_ROPE_COLOR }));
+  line.frustumCulled = false;   // кінці далеко один від одного — не відсікати
+  scene.add(line);
+  return line;
+}
+
+function updateLeashLine(a) {
+  if (!a.leashLine) a.leashLine = makeLeashLine();
+  const pos = a.leashLine.geometry.attributes.position;
+  const ox = player.pos.x, oy = player.pos.y + 1.05, oz = player.pos.z;
+  const tx = a.pos.x, ty = a.pos.y + a.height * 0.85, tz = a.pos.z;
+  const sag = Math.min(0.45, Math.hypot(tx - ox, tz - oz) * 0.08 + 0.06);
+  for (let i = 0; i <= LEASH_ROPE_SEGS; i++) {
+    const t = i / LEASH_ROPE_SEGS;
+    pos.setXYZ(i,
+      ox + (tx - ox) * t,
+      oy + (ty - oy) * t - Math.sin(t * Math.PI) * sag,
+      oz + (tz - oz) * t);
+  }
+  pos.needsUpdate = true;
+}
+
+function disposeLeashLine(a) {
+  if (!a.leashLine) return;
+  scene.remove(a.leashLine);
+  a.leashLine.geometry.dispose();
+  a.leashLine.material.dispose();
+  a.leashLine = null;
+}
+
+// Повідець урвався (задалеко чи паніка занесла): павутину втрачено
+function snapLeash(a) {
+  a.leashed = false;
+  disposeLeashLine(a);
+  Sound.leashSnap();
+  flashItemName('🕸 Повідець урвався!');
+  spawnParticles(a.pos.x, a.pos.y + a.height * 0.8, a.pos.z,
+    new THREE.Color(LEASH_ROPE_COLOR), 6,
+    { radius: 0.25, speed: 1.2, upBias: 0.8, life: 0.5, size: 0.07, gravity: 4 });
+}
+
+// ПКМ із повідцем у руці: узяти тварину на повід чи відпустити з нього.
+// Повертає true, якщо клік оброблено (щоб не годувати тварину тим самим кліком)
+function tryLeashAnimal() {
+  const a = breedableInSight(LEASH_REACH);
+  if (!a) return false;   // тварини в прицілі нема — клік іде далі (двері тощо)
+  if (a.leashed) {
+    a.leashed = false;
+    disposeLeashLine(a);
+    if (player.silk < SILK_MAX) { player.silk++; updateSilkHud(); }
+    Sound.leashOff();
+    flashItemName('Тварину відпущено з повідця');
+    triggerSwing();
+    return true;
+  }
+  if (player.silk <= 0) {
+    flashItemName('Немає павутини — її лишають павуки');
+    return true;
+  }
+  if (ledCount() >= LEASH_MAX_LED) {
+    flashItemName(`Більше ${LEASH_MAX_LED} тварин на повідці не втримати`);
+    return true;
+  }
+  player.silk--;
+  updateSilkHud();
+  a.leashed = true;
+  a.panic = 0;
+  updateLeashLine(a);
+  Sound.leashOn();
+  triggerSwing();
+  unlockAch('leash');
+  return true;
+}
+
+// Відновлення тварин на повідці зі збереження (формат [тип, x, y, z, маля])
+if (savedGame && Array.isArray(savedGame.leashed)) {
+  for (const e of savedGame.leashed) {
+    if (!Array.isArray(e) || e.length < 4 || !BREED_TYPES.has(e[0])) continue;
+    if (![e[1], e[2], e[3]].every(Number.isFinite)) continue;
+    spawnAnimal(e[0], e[1], e[2], e[3], { baby: e[4] === 1 });
+    animals[animals.length - 1].leashed = true;
   }
 }
 
@@ -4298,6 +4466,78 @@ function updateGroundBones(dt) {
   }
 }
 
+// ============================================================
+// Павутина — другий луут із нечисті: здоланий павук лишає 1–2 жмутки,
+// які підбираються впритул у торбу (🕸) — сировина повідця
+// ============================================================
+const SILK_DESPAWN = 120;        // секунд, поки непідібраний жмуток зникне
+const SILK_PICKUP_R = 1.25;      // радіус підбирання жмутка, бл
+const SILK_COLOR = new THREE.Color(0xefece2);
+
+// Спільні ресурси моделі жмутка (одні геометрії/матеріал на всі жмутки)
+const SILK_WAD_GEO = new THREE.BoxGeometry(0.2, 0.14, 0.2);
+const SILK_TUFT_GEO = new THREE.BoxGeometry(0.11, 0.09, 0.11);
+const SILK_MAT = new THREE.MeshLambertMaterial({ color: 0xefece2 });
+
+const groundSilk = [];           // жмутки павутини, що лежать на землі
+
+function makeSilkModel() {
+  const g = new THREE.Group();
+  const wad = new THREE.Mesh(SILK_WAD_GEO, SILK_MAT);
+  const t1 = new THREE.Mesh(SILK_TUFT_GEO, SILK_MAT);
+  const t2 = new THREE.Mesh(SILK_TUFT_GEO, SILK_MAT);
+  t1.position.set(0.1, 0.09, 0.06);
+  t2.position.set(-0.09, 0.08, -0.07);
+  g.add(wad, t1, t2);
+  return g;
+}
+
+// Павук розсипався: лишити на землі 1–2 жмутки павутини з розкидом
+function dropSilk(x, y, z) {
+  const n = 1 + (Math.random() < 0.5 ? 1 : 0);
+  for (let i = 0; i < n; i++) {
+    if (groundSilk.length >= 64) return;
+    const mesh = makeSilkModel();
+    const sx = x + (Math.random() - 0.5) * 0.6;
+    const sz = z + (Math.random() - 0.5) * 0.6;
+    mesh.position.set(sx, y + 0.14, sz);
+    mesh.rotation.y = Math.random() * Math.PI * 2;
+    scene.add(mesh);
+    groundSilk.push({ mesh, x: sx, y, z: sz, life: 0, bob: Math.random() * Math.PI * 2 });
+  }
+}
+
+function removeGroundSilk(i) {
+  scene.remove(groundSilk[i].mesh);   // спільні геометрії/матеріал — не чіпаємо
+  groundSilk.splice(i, 1);
+}
+
+// Жмутки на землі: погойдуються, підбираються гравцем упритул, зникають з часом
+function updateGroundSilk(dt) {
+  for (let i = groundSilk.length - 1; i >= 0; i--) {
+    const s = groundSilk[i];
+    s.life += dt;
+    s.bob += dt * 3;
+    s.mesh.position.y = s.y + 0.16 + Math.sin(s.bob) * 0.03;
+    s.mesh.rotation.y += dt * 0.9;
+    if (s.life > SILK_DESPAWN) { removeGroundSilk(i); continue; }
+    if (player.dead || player.silk >= SILK_MAX) continue;
+    const dx = s.x - player.pos.x, dz = s.z - player.pos.z;
+    const dy = s.y - player.pos.y;
+    if (dx * dx + dz * dz <= SILK_PICKUP_R * SILK_PICKUP_R && dy > -1.6 && dy < 2) {
+      const first = player.silk === 0 && !achUnlocked.has('silk');
+      player.silk = Math.min(SILK_MAX, player.silk + 1);
+      updateSilkHud();
+      spawnParticles(s.x, s.y + 0.2, s.z, SILK_COLOR, 4,
+        { radius: 0.15, speed: 1, upBias: 1.2, life: 0.4, size: 0.07, gravity: -5 });
+      Sound.bonePop();
+      removeGroundSilk(i);
+      unlockAch('silk');
+      if (first) flashItemName('🕸 Павутина! Скрути повідець (Tab) і веди тварин');
+    }
+  }
+}
+
 // Посипати кістяним борошном посів чи саджанець у клітинці перед прицілом (ПКМ)
 function useBonemeal(hit) {
   if (player.bones <= 0) {
@@ -4966,6 +5206,8 @@ function updateMobs(dt) {
       else unlockAch('zombie');
       // Скелет лишає по собі кістки — сировину кістяного борошна
       if (m.type === 'skeleton') dropBones(m.pos.x, m.pos.y, m.pos.z);
+      // Павук лишає по собі павутину — сировину повідця
+      if (m.type === 'spider') dropSilk(m.pos.x, m.pos.y, m.pos.z);
       removeMob(i);
       continue;
     }
@@ -10090,6 +10332,9 @@ function placeBlock() {
   // Торговець у прицілі (ПКМ) → відкрити ятку з пропозиціями дня
   if (trader && animalInSight('trader')) { openTradePanel(); return; }
 
+  // Повідець у руці (ПКМ) → узяти тварину на повід чи відпустити
+  if (hotbar[selectedSlot] === LEASH && animals.length > 0 && tryLeashAnimal()) return;
+
   // Свійська тварина в прицілі (ПКМ) → погодувати з торби: пара дає приплід
   if (animals.length > 0 && tryFeedFarmAnimal()) return;
 
@@ -10220,6 +10465,14 @@ function placeBlock() {
   // Кістяне борошно — посипати посів чи саджанець перед прицілом
   if (id === BONEMEAL) {
     useBonemeal(hit);
+    return;
+  }
+
+  // Повідець — не блок: чіпляється лише до свійської тварини в прицілі
+  if (id === LEASH) {
+    flashItemName(player.silk > 0
+      ? 'Наведи повідець на свійську тварину'
+      : 'Немає павутини — її лишають павуки');
     return;
   }
 
@@ -11066,6 +11319,8 @@ const honeyBadgeEl = document.getElementById('honey-badge');
 const honeyCountEl = document.getElementById('honey-count');
 const boneBadgeEl = document.getElementById('bone-badge');
 const boneCountEl = document.getElementById('bone-count');
+const silkBadgeEl = document.getElementById('silk-badge');
+const silkCountEl = document.getElementById('silk-count');
 const mushBadgeEl = document.getElementById('mush-badge');
 const mushCountEl = document.getElementById('mush-count');
 const roastBadgeEl = document.getElementById('roast-badge');
@@ -11185,6 +11440,8 @@ function buildSurvivalHud() {
   if (honeyIcon) drawHoneyIcon(honeyIcon);
   const boneIcon = document.getElementById('bone-icon');
   if (boneIcon) drawBoneIcon(boneIcon);
+  const silkIcon = document.getElementById('silk-icon');
+  if (silkIcon) drawSilkIcon(silkIcon);
   const mushIcon = document.getElementById('mush-icon');
   if (mushIcon) drawMushIcon(mushIcon);
   const roastIcon = document.getElementById('roast-icon');
@@ -11282,6 +11539,37 @@ function updateBoneHud() {
   lastBonesDrawn = player.bones;
   boneCountEl.textContent = player.bones;
   boneBadgeEl.hidden = player.bones <= 0;
+}
+
+// Лічильник зібраної павутини (бейдж 🕸 над кістками)
+let lastSilkDrawn = -1;
+function updateSilkHud() {
+  if (player.silk === lastSilkDrawn) return;
+  lastSilkDrawn = player.silk;
+  silkCountEl.textContent = player.silk;
+  silkBadgeEl.hidden = player.silk <= 0;
+}
+
+// Піксельна іконка жмутка павутини (бейдж, без атласу)
+function drawSilkIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.strokeStyle = '#efece2';                        // промені павутинки
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i < 4; i++) {
+    const ang = (i / 4) * Math.PI;
+    ctx.moveTo(8 - Math.cos(ang) * 6, 8 - Math.sin(ang) * 6);
+    ctx.lineTo(8 + Math.cos(ang) * 6, 8 + Math.sin(ang) * 6);
+  }
+  ctx.stroke();
+  ctx.strokeStyle = '#d8d3c2';                        // кільця
+  ctx.beginPath(); ctx.arc(8, 8, 3, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(8, 8, 5.6, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#ffffff';                          // жмуток у центрі
+  ctx.fillRect(6, 6, 4, 4);
 }
 
 // Піксельна іконка кістки (бейдж, без атласу)
@@ -11611,6 +11899,26 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(13, 5, 2, 2);                 // ріг
     ctx.fillStyle = '#585f6a';                 // відблиск плити
     ctx.fillRect(3, 4, 10, 1);
+    return;
+  }
+  if (id === LEASH) {
+    // Процедурна іконка повідця: змотана павутинна мотузка з петлею
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.strokeStyle = '#e8e4d8';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(8, 9, 4.6, 0, Math.PI * 2);       // моток
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(8, 9, 2.4, 0, Math.PI * 2);       // внутрішній виток
+    ctx.stroke();
+    ctx.strokeStyle = '#cfc9b8';
+    ctx.beginPath();
+    ctx.moveTo(11, 5); ctx.quadraticCurveTo(13, 2, 15, 3);  // хвіст мотузки
+    ctx.stroke();
+    ctx.fillStyle = '#8a5a2b';                 // шкіряна обв'язка мотка
+    ctx.fillRect(6, 8, 4, 2);
     return;
   }
   if (id === SEEDS) {
@@ -12327,6 +12635,7 @@ updateCookedHud();
 updateEggHud();
 updateHoneyHud();
 updateBoneHud();
+updateSilkHud();
 updateMushHud();
 updateRoastHud();
 updateGappleHud();
@@ -12698,6 +13007,8 @@ const ACHIEVEMENTS = [
   { id: 'diamond_sword',icon: '🗡', title: 'Алмазний клинок',   desc: 'Скувати алмазний меч' },
   { id: 'shieldsmith', icon: '🛡', title: 'Щитоносець',         desc: 'Скувати щит на ковадлі' },
   { id: 'block_hit',   icon: '🔰', title: 'Несхитна стіна',     desc: 'Відбити напад піднятим щитом' },
+  { id: 'silk',        icon: '🕸', title: 'Павучий шовк',       desc: 'Підібрати павутину, що лишив павук' },
+  { id: 'leash',       icon: '🐄', title: 'Поводир',            desc: 'Узяти свійську тварину на повідець' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -13594,6 +13905,54 @@ window.MCDebug = {
   },
   get boneCount() { return player.bones; },
   get bonesOnGround() { return groundBones.length; },
+  // Павутина й повідець (для тестів)
+  giveSilk: (n = 4) => {
+    player.silk = Math.min(SILK_MAX, player.silk + n);
+    updateSilkHud();
+    assignBlockToSlot(LEASH);
+    return { silk: player.silk, held: BLOCK_NAMES[hotbar[selectedSlot]] };
+  },
+  dropSilkNear: (dx = 1, dz = 0) => {
+    dropSilk(player.pos.x + dx, player.pos.y, player.pos.z + dz);
+    return { ground: groundSilk.length };
+  },
+  // Узяти на повідець найближчу свійську тварину (без прицілу)
+  leashNearest: () => {
+    if (player.silk <= 0) return 'немає павутини — MCDebug.giveSilk()';
+    if (ledCount() >= LEASH_MAX_LED) return 'на повідці вже максимум тварин';
+    let best = null, bestD = Infinity;
+    for (const a of animals) {
+      if (!BREED_TYPES.has(a.type) || a.leashed) continue;
+      const d = a.pos.distanceTo(player.pos);
+      if (d < bestD) { bestD = d; best = a; }
+    }
+    if (!best) return 'немає свійських тварин поряд';
+    player.silk--;
+    updateSilkHud();
+    best.leashed = true;
+    best.panic = 0;
+    updateLeashLine(best);
+    unlockAch('leash');
+    return { type: best.type, dist: +bestD.toFixed(1), led: ledCount() };
+  },
+  unleashAll: () => {
+    let n = 0;
+    for (const a of animals) {
+      if (!a.leashed) continue;
+      a.leashed = false;
+      disposeLeashLine(a);
+      n++;
+    }
+    return { released: n, silk: player.silk };
+  },
+  get silkCount() { return player.silk; },
+  get silkOnGround() { return groundSilk.length; },
+  get leashInfo() {
+    return animals.filter((a) => a.leashed).map((a) => ({
+      type: a.type, baby: a.baby,
+      dist: +a.pos.distanceTo(player.pos).toFixed(1),
+    }));
+  },
   // Розведення тварин (для тестів)
   // Пара дорослих тварин заданого виду обабіч точки за 3 блоки перед гравцем
   spawnBreedPair: (type = 'pig', apart = 6) => {
@@ -13835,7 +14194,8 @@ window.MCDebug = {
     if (!o) return 'немає такої пропозиції';
     return { ok: doTrade(o), offer: { ...o },
              bag: { food: player.food, eggs: player.eggs, mush: player.mush,
-                    honey: player.honey, bones: player.bones, gapple: player.gapple } };
+                    honey: player.honey, bones: player.bones, silk: player.silk,
+                    gapple: player.gapple } };
   },
   openTrade: () => { openTradePanel(); return tradeOpen; },
   closeTrade: () => { closeTradePanel(); return tradeOpen; },
@@ -14100,6 +14460,7 @@ function animate() {
     updateGroundEggs(dt);
     updateThrownEggs(dt);
     updateGroundBones(dt);
+    updateGroundSilk(dt);
     updateSnowballs(dt);
     updateFallingBlocks(dt);
     updateBoats(dt);

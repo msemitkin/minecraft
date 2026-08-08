@@ -279,6 +279,7 @@ kbd {
 #cooked-badge,
 #honey-badge,
 #bone-badge,
+#silk-badge,
 #mush-badge,
 #roast-badge,
 #gapple-badge {
@@ -323,11 +324,15 @@ kbd {
   bottom: 398px;
 }
 
+#silk-badge {
+  bottom: 442px;
+}
+
 /* Руди в торбі: один бейдж із чотирма чипами (⚫⛓🟡💎), порожні чипи зникають */
 #ore-badge {
   position: fixed;
   right: 16px;
-  bottom: 442px;
+  bottom: 486px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -365,6 +370,7 @@ kbd {
 #cooked-badge[hidden],
 #honey-badge[hidden],
 #bone-badge[hidden],
+#silk-badge[hidden],
 #mush-badge[hidden],
 #roast-badge[hidden],
 #gapple-badge[hidden] {
@@ -380,6 +386,7 @@ kbd {
   #cooked-badge,
   #honey-badge,
   #bone-badge,
+  #silk-badge,
   #mush-badge,
   #roast-badge,
   #gapple-badge,
@@ -393,6 +400,7 @@ kbd {
 #cooked-icon,
 #honey-icon,
 #bone-icon,
+#silk-icon,
 #mush-icon,
 #roast-icon {
   width: 26px;
@@ -405,6 +413,7 @@ kbd {
 #egg-count,
 #honey-count,
 #bone-count,
+#silk-count,
 #mush-count,
 #roast-count {
   font: bold 18px/1 system-ui, sans-serif;
