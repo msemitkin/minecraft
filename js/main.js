@@ -183,6 +183,14 @@ const ANVIL = 52;
 // задалеко — повідець рветься, і павутину втрачено.
 const LEASH = 53;
 
+// Гак-кішка — другий виріб із павутини: ПКМ вистрілює гачок на павутинній
+// мотузці в блок перед прицілом (до 24 блоків; постріл коштує 1 🕸, промах —
+// нічого). Зачепившись, мотузка підтягує гравця до якоря понад прірвами й
+// стрімчаками — вертикаль нарешті долається пострілом, а не драбиною поблок.
+// Space чи повторний ПКМ — відпустити мотузку (падіння від місця відпускання
+// рахується як звичайне).
+const GRAPPLE = 54;
+
 // Руди в торбі: лічильники та капи (сировина для кування кирок)
 const ORE_MAX = { coal: 64, iron: 32, gold: 16, diam: 8 };
 const ORE_OF_BLOCK_ID = {};      // заповнюється нижче, коли відомі id руд
@@ -252,6 +260,7 @@ const BLOCK_NAMES = {
   [SCARECROW]: 'Опудало',
   [ANVIL]: 'Ковадло',
   [LEASH]: 'Повідець',
+  [GRAPPLE]: 'Гак-кішка',
 };
 
 // Яка руда з торби відповідає воксельному блоку руди
@@ -267,6 +276,7 @@ const ALL_BLOCKS = [
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
+  GRAPPLE,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -821,6 +831,22 @@ const Sound = (() => {
     leashSnap() {
       noise({ dur: 0.07, gain: 0.16, type: 'highpass', freq: 2600, q: 0.8 });
       tone({ freq: 880, dur: 0.09, type: 'square', gain: 0.07, slideTo: 220 });
+    },
+    // Постріл гака: свист гачка, що розмотує за собою мотузку
+    grappleThrow() {
+      noise({ dur: 0.14, gain: 0.08, type: 'highpass', freq: 1600, q: 0.6 });
+      tone({ freq: 520, dur: 0.1, type: 'triangle', gain: 0.05, slideTo: 780 });
+    },
+    // Гачок зачепився: металевий цок об камінь і рип натягнутої мотузки
+    grappleHit() {
+      noise({ dur: 0.05, gain: 0.15, type: 'bandpass', freq: 2400, q: 3 });
+      tone({ freq: 620, dur: 0.08, type: 'square', gain: 0.06, slideTo: 310 });
+      tone({ freq: 300, dur: 0.14, type: 'triangle', gain: 0.07, slideTo: 460 });
+    },
+    // Мотузка гака зірвалась: тріск, як у повідця, але глухіший
+    grappleSnap() {
+      noise({ dur: 0.08, gain: 0.15, type: 'highpass', freq: 2200, q: 0.8 });
+      tone({ freq: 720, dur: 0.1, type: 'square', gain: 0.06, slideTo: 180 });
     },
     // Посипане борошно: м'який пилюжний «пух» із висхідним тоном росту
     boneMeal() {
@@ -2434,9 +2460,26 @@ function updatePlayer(dt) {
   } else {
     player.vel.y -= 24 * dt;
     player.vel.y = Math.max(player.vel.y, -50);
-    if (keys['Space'] && player.onGround) {
+    if (keys['Space'] && player.onGround && grapple.state !== 'pull') {
       player.vel.y = 8.2; Sound.jump();
       player.exhaustion += keys['ShiftLeft'] || keys['ShiftRight'] ? 0.8 : 0.2;
+    }
+  }
+
+  // Мотузка гака тягне до якоря: власний рух і гравітація мовчать,
+  // Space (не утримуваний із моменту пострілу) — відпустити мотузку
+  if (grapple.state === 'pull') {
+    if (keys['Space'] && !grapple.spaceLatch) {
+      releaseGrapple(false);
+    } else {
+      _grapplePull.set(
+        grapple.anchor.x - player.pos.x,
+        grapple.anchor.y - (player.pos.y + GRAPPLE_CHEST_H),
+        grapple.anchor.z - player.pos.z);
+      const d = _grapplePull.length();
+      if (d > 1e-4) _grapplePull.multiplyScalar(GRAPPLE_PULL_V / d);
+      player.vel.copy(_grapplePull);
+      player.fallPeakY = player.pos.y;   // натягнута мотузка гасить арку падіння
     }
   }
 
@@ -2538,6 +2581,7 @@ function die() {
   mining = false;
   cancelBowDraw();
   reelIn();
+  releaseGrapple(false);  // мертвий не тримає мотузки
   resetMining();
   if (isLocked()) document.exitPointerLock();
   unlockAch('death');
@@ -4594,6 +4638,191 @@ function useBonemeal(hit) {
     { radius: 0.25, speed: 1.2, upBias: 1.4, life: 0.55, size: 0.07, gravity: -3 });
   triggerSwing();
   unlockAch('bonemeal');
+}
+
+// ============================================================
+// Гак-кішка: гачок на павутинній мотузці, що підтягує гравця до блока.
+// ============================================================
+// ПКМ із гаком у руці вистрілює гачок у блок перед прицілом (постріл коштує
+// 1 🕸, промах — нічого). Якір — вільна клітинка впритул до влученої грані,
+// тож гравця ніколи не тягне всередину стіни. Поки мотузка тягне, власний рух
+// і гравітація мовчать; Space чи повторний ПКМ — відпустити. Мотузка, що
+// перестала тягти (гравець застряг об ребро чи стелю), рветься сама — павутину
+// втрачено, як і в повідця, що урвався.
+const GRAPPLE_RANGE = 24;       // дальність пострілу, бл
+const GRAPPLE_FLY_V = 46;       // швидкість польоту гачка, бл/с
+const GRAPPLE_PULL_V = 13;      // швидкість підтягування гравця, бл/с
+const GRAPPLE_ARRIVE = 1.35;    // дистанція до якоря, на якій мотузка відпускає
+const GRAPPLE_MANTLE_V = 6.5;   // підскок при прибутті — закинутися на виступ
+const GRAPPLE_STALL_T = 0.35;   // с без прогресу до якоря — мотузка рветься
+const GRAPPLE_HIGH_DY = 6;      // підйом для досягнення «Верхолаз», бл
+const GRAPPLE_CHEST_H = 1.05;   // мотузка йде від грудей (як у повідця)
+const GRAPPLE_ROPE_SEGS = 8;
+const GRAPPLE_ROPE_COLOR = 0xdcd7c6;
+
+// Гачок: темний стрижень із трьома розчепіреними лапами й павутинною обмоткою
+const grappleHook = (() => {
+  const g = new THREE.Group();
+  const iron = new THREE.MeshLambertMaterial({ color: 0x3f444c });
+  const wrap = new THREE.MeshLambertMaterial({ color: 0xe8e4d8 });
+  const shaft = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 0.3), iron);
+  g.add(shaft);
+  const band = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 0.08), wrap);
+  band.position.z = 0.1;
+  g.add(band);
+  for (let i = 0; i < 3; i++) {
+    const ang = (i / 3) * Math.PI * 2;
+    const claw = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.16, 0.05), iron);
+    claw.position.set(Math.cos(ang) * 0.09, Math.sin(ang) * 0.09, -0.16);
+    claw.rotation.z = ang + Math.PI / 2;
+    claw.rotation.x = -0.55;
+    g.add(claw);
+  }
+  g.visible = false;
+  scene.add(g);
+  return g;
+})();
+
+const grapple = {
+  state: 'idle',   // 'idle' | 'fly' (гачок летить) | 'pull' (мотузка тягне)
+  anchor: new THREE.Vector3(),  // центр вільної клітинки біля влученої грані
+  startY: 0,       // висота гравця на момент пострілу (для «Верхолаза»)
+  prevDist: 0,     // дистанція до якоря минулого кадру (детектор застрягання)
+  stall: 0,
+  spaceLatch: false, // Space, утримуваний ще з пострілу, не відпускає мотузку
+  rope: null,
+};
+
+const _grapplePull = new THREE.Vector3();
+
+function makeGrappleRope() {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position',
+    new THREE.BufferAttribute(new Float32Array((GRAPPLE_ROPE_SEGS + 1) * 3), 3));
+  const line = new THREE.Line(geo,
+    new THREE.LineBasicMaterial({ color: GRAPPLE_ROPE_COLOR }));
+  line.frustumCulled = false;
+  scene.add(line);
+  return line;
+}
+
+// Провисла мотузка від грудей гравця до гачка; натягнута тягне майже прямо
+function updateGrappleRope() {
+  if (!grapple.rope) grapple.rope = makeGrappleRope();
+  const pos = grapple.rope.geometry.attributes.position;
+  const ox = player.pos.x, oy = player.pos.y + GRAPPLE_CHEST_H, oz = player.pos.z;
+  const tx = grappleHook.position.x, ty = grappleHook.position.y, tz = grappleHook.position.z;
+  const slack = grapple.state === 'pull' ? 0.12 : 1;
+  const sag = Math.min(0.4, Math.hypot(tx - ox, tz - oz) * 0.05 + 0.04) * slack;
+  for (let i = 0; i <= GRAPPLE_ROPE_SEGS; i++) {
+    const t = i / GRAPPLE_ROPE_SEGS;
+    pos.setXYZ(i,
+      ox + (tx - ox) * t,
+      oy + (ty - oy) * t - Math.sin(t * Math.PI) * sag,
+      oz + (tz - oz) * t);
+  }
+  pos.needsUpdate = true;
+}
+
+function grappleDistToAnchor() {
+  return Math.hypot(
+    grapple.anchor.x - player.pos.x,
+    grapple.anchor.y - (player.pos.y + GRAPPLE_CHEST_H),
+    grapple.anchor.z - player.pos.z);
+}
+
+function releaseGrapple(arrived = false) {
+  if (grapple.state === 'idle') return;
+  grapple.state = 'idle';
+  grappleHook.visible = false;
+  if (grapple.rope) {
+    scene.remove(grapple.rope);
+    grapple.rope.geometry.dispose();
+    grapple.rope.material.dispose();
+    grapple.rope = null;
+  }
+  // Падіння після мотузки чесне: арка рахується від місця відпускання
+  player.fallPeakY = player.pos.y;
+  if (arrived) {
+    player.vel.y = GRAPPLE_MANTLE_V;    // підскок — закинутися на виступ
+    unlockAch('grapple');
+    if (grapple.anchor.y - grapple.startY >= GRAPPLE_HIGH_DY) unlockAch('grapple_high');
+  }
+}
+
+// ПКМ із гаком у руці: постріл, а коли мотузка вже в роботі — відпускання
+function fireGrapple() {
+  if (grapple.state !== 'idle') { releaseGrapple(false); return; }
+  if (ridingBoat || ridingHorse || ridingCart) return;
+  if (player.silk <= 0) {
+    flashItemName('Немає павутини — її лишають павуки');
+    return;
+  }
+  const hit = raycastBlock(GRAPPLE_RANGE);
+  if (!hit || !hit.prev) {
+    flashItemName(`Гаку нема за що зачепитися (до ${GRAPPLE_RANGE} блоків)`);
+    return;
+  }
+  player.silk--;
+  updateSilkHud();
+  grapple.anchor.set(hit.prev[0] + 0.5, hit.prev[1] + 0.5, hit.prev[2] + 0.5);
+  grapple.startY = player.pos.y;
+  grapple.state = 'fly';
+  grapple.stall = 0;
+  grapple.spaceLatch = !!keys['Space'];
+  grappleHook.position.set(
+    player.pos.x, player.pos.y + GRAPPLE_CHEST_H, player.pos.z);
+  grappleHook.lookAt(grapple.anchor);
+  grappleHook.visible = true;
+  triggerSwing();
+  Sound.grappleThrow();
+}
+
+function updateGrapple(dt) {
+  if (grapple.state === 'idle') return;
+  if (player.dead || ridingBoat || ridingHorse || ridingCart) {
+    releaseGrapple(false);
+    return;
+  }
+  if (!keys['Space']) grapple.spaceLatch = false;
+
+  if (grapple.state === 'fly') {
+    // Гачок летить до якоря по прямій, розмотуючи мотузку
+    const to = _grapplePull.copy(grapple.anchor).sub(grappleHook.position);
+    const d = to.length();
+    const step = GRAPPLE_FLY_V * dt;
+    if (d <= step) {
+      grappleHook.position.copy(grapple.anchor);
+      grapple.state = 'pull';
+      grapple.prevDist = grappleDistToAnchor();
+      grapple.stall = 0;
+      Sound.grappleHit();
+      spawnParticles(grapple.anchor.x, grapple.anchor.y, grapple.anchor.z,
+        new THREE.Color(GRAPPLE_ROPE_COLOR), 6,
+        { radius: 0.25, speed: 1.4, upBias: 0.4, life: 0.35, size: 0.07 });
+    } else {
+      grappleHook.position.addScaledVector(to, step / d);
+    }
+  } else {
+    const d = grappleDistToAnchor();
+    if (d <= GRAPPLE_ARRIVE) {
+      releaseGrapple(true);
+      return;
+    }
+    // Мотузка, що не тягне (гравець уперся в ребро чи стелю), рветься
+    if (grapple.prevDist - d < GRAPPLE_PULL_V * dt * 0.25) grapple.stall += dt;
+    else grapple.stall = 0;
+    grapple.prevDist = d;
+    if (grapple.stall >= GRAPPLE_STALL_T) {
+      Sound.grappleSnap();
+      spawnParticles(player.pos.x, player.pos.y + GRAPPLE_CHEST_H, player.pos.z,
+        new THREE.Color(GRAPPLE_ROPE_COLOR), 6,
+        { radius: 0.3, speed: 1.8, upBias: 0.6, life: 0.5, size: 0.07, gravity: 5 });
+      releaseGrapple(false);
+      return;
+    }
+  }
+  updateGrappleRope();
 }
 
 // ============================================================
@@ -10357,6 +10586,10 @@ function placeBlock() {
   // Сніжка в руці — кинути (запас безлімітний, кидок у небо теж має відбутись)
   if (hotbar[selectedSlot] === SNOWBALL) { throwSnowball(); return; }
 
+  // Гак-кішка в руці — вистрелити гачком (до raycast: у гака власна дальність),
+  // а коли мотузка вже в роботі — відпустити її
+  if (hotbar[selectedSlot] === GRAPPLE) { fireGrapple(); return; }
+
   const hit = raycastBlock();
   if (!hit || !hit.prev) return;
 
@@ -11921,6 +12154,34 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(6, 8, 4, 2);
     return;
   }
+  if (id === GRAPPLE) {
+    // Процедурна іконка гака-кішки: моток мотузки та гачок із трьома лапами
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.strokeStyle = '#dcd7c6';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.arc(4.5, 11.5, 3, 0, Math.PI * 2);      // моток мотузки
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(7, 10); ctx.quadraticCurveTo(9, 8, 10.5, 6.5);  // мотузка до гачка
+    ctx.stroke();
+    ctx.strokeStyle = '#3f444c';
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(10.5, 7.5); ctx.lineTo(12.5, 4.5);              // стрижень
+    ctx.stroke();
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(11, 4, 2.6, -Math.PI * 0.4, Math.PI * 0.55);       // лапи гачка
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(14, 5, 2.6, Math.PI * 0.55, Math.PI * 1.4);
+    ctx.stroke();
+    ctx.fillStyle = '#e8e4d8';
+    ctx.fillRect(10, 6, 2, 2);                                  // обмотка
+    return;
+  }
   if (id === SEEDS) {
     // Процедурна іконка насіння: смужка грунту + паростки й зерна
     const ctx = canvas.getContext('2d');
@@ -13009,6 +13270,8 @@ const ACHIEVEMENTS = [
   { id: 'block_hit',   icon: '🔰', title: 'Несхитна стіна',     desc: 'Відбити напад піднятим щитом' },
   { id: 'silk',        icon: '🕸', title: 'Павучий шовк',       desc: 'Підібрати павутину, що лишив павук' },
   { id: 'leash',       icon: '🐄', title: 'Поводир',            desc: 'Узяти свійську тварину на повідець' },
+  { id: 'grapple',     icon: '🪝', title: 'На гаку',            desc: 'Підтягнутися гаком-кішкою до блока' },
+  { id: 'grapple_high',icon: '🧗', title: 'Верхолаз',           desc: 'Злетіти гаком на 6 блоків угору' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -13953,6 +14216,35 @@ window.MCDebug = {
       dist: +a.pos.distanceTo(player.pos).toFixed(1),
     }));
   },
+  // Гак-кішка (для тестів)
+  get pos() {
+    return { x: +player.pos.x.toFixed(2), y: +player.pos.y.toFixed(2),
+             z: +player.pos.z.toFixed(2) };
+  },
+  giveGrapple: () => { assignBlockToSlot(GRAPPLE); return BLOCK_NAMES[GRAPPLE]; },
+  // Навести погляд гравця на точку світу (для пострілу гака без миші)
+  aimAt: (x, y, z) => {
+    const dx = x - player.pos.x, dz = z - player.pos.z;
+    const dy = y - (player.pos.y + EYE);
+    player.yaw = Math.atan2(-dx, -dz);
+    player.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+    camera.position.set(player.pos.x, player.pos.y + EYE, player.pos.z);
+    camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+    return { yaw: +player.yaw.toFixed(2), pitch: +player.pitch.toFixed(2) };
+  },
+  grappleFire: () => { fireGrapple(); return { state: grapple.state, silk: player.silk }; },
+  grappleRelease: () => { releaseGrapple(false); return { state: grapple.state }; },
+  get grappleInfo() {
+    return {
+      state: grapple.state, silk: player.silk,
+      anchor: grapple.state === 'idle' ? null : {
+        x: +grapple.anchor.x.toFixed(1), y: +grapple.anchor.y.toFixed(1),
+        z: +grapple.anchor.z.toFixed(1),
+      },
+      dist: grapple.state === 'idle' ? null : +grappleDistToAnchor().toFixed(2),
+      playerY: +player.pos.y.toFixed(2),
+    };
+  },
   // Розведення тварин (для тестів)
   // Пара дорослих тварин заданого виду обабіч точки за 3 блоки перед гравцем
   spawnBreedPair: (type = 'pig', apart = 6) => {
@@ -14461,6 +14753,7 @@ function animate() {
     updateThrownEggs(dt);
     updateGroundBones(dt);
     updateGroundSilk(dt);
+    updateGrapple(dt);
     updateSnowballs(dt);
     updateFallingBlocks(dt);
     updateBoats(dt);
