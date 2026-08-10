@@ -282,7 +282,10 @@ kbd {
 #silk-badge,
 #mush-badge,
 #roast-badge,
-#gapple-badge {
+#gapple-badge,
+#oyster-badge,
+#mollusk-badge,
+#pearl-badge {
   position: fixed;
   right: 16px;
   bottom: 90px;
@@ -326,6 +329,18 @@ kbd {
 
 #silk-badge {
   bottom: 442px;
+}
+
+#oyster-badge {
+  bottom: 530px;
+}
+
+#mollusk-badge {
+  bottom: 574px;
+}
+
+#pearl-badge {
+  bottom: 618px;
 }
 
 /* Руди в торбі: один бейдж із чотирма чипами (⚫⛓🟡💎), порожні чипи зникають */
@@ -373,7 +388,10 @@ kbd {
 #silk-badge[hidden],
 #mush-badge[hidden],
 #roast-badge[hidden],
-#gapple-badge[hidden] {
+#gapple-badge[hidden],
+#oyster-badge[hidden],
+#mollusk-badge[hidden],
+#pearl-badge[hidden] {
   display: none;
 }
 
@@ -390,6 +408,9 @@ kbd {
   #mush-badge,
   #roast-badge,
   #gapple-badge,
+  #oyster-badge,
+  #mollusk-badge,
+  #pearl-badge,
   #ore-badge {
     right: 96px;
   }

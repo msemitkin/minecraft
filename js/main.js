@@ -489,6 +489,10 @@ function saveGame() {
         mush: player.mush,
         roast: player.roast,
         gapple: player.gapple,
+        oyster: player.oyster,
+        mollusk: player.mollusk,
+        pearl: player.pearl,
+        pearlDry: player.pearlDry,
         coal: player.coal,
         iron: player.iron,
         gold: player.gold,
@@ -515,12 +519,13 @@ function saveGame() {
       carts: carts.map((c) => [+c.pos.x.toFixed(2), +c.pos.y.toFixed(2), +c.pos.z.toFixed(2)]),
       campfires: [...campfires.values()].map((c) =>
         [c.x, c.y, c.z, c.cooking ? 1 : 0, +c.cookT.toFixed(1),
-         c.cookItem === 'mush' ? 1 : 0]),
+         c.cookItem === 'mush' ? 1 : 0, c.steaming ? 1 : 0, +c.steamT.toFixed(1)]),
       beehives: [...beehives.values()].map((h) => [h.x, h.y, h.z, +h.honey.toFixed(1)]),
       scarecrows: [...scarecrows.values()].map((s) => [s.x, s.y, s.z]),
       anvils: [...anvils.values()].map((a) => [a.x, a.y, a.z]),
       mushrooms: [...mushrooms.values()].map((m) =>
         [m.x, m.y, m.z, m.kind, m.farmed ? 1 : 0]),
+      oysters: [...oysters.values()].map((o) => [o.x, o.y, o.z]),
       wolves: animals.filter((a) => a.type === 'wolf' && a.tamed)
         .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
                      +a.health.toFixed(1), a.sitting ? 1 : 0]),
@@ -2195,6 +2200,10 @@ const SILK_MAX = 32;            // максимум павутини в торб
 const GAPPLE_MAX = 8;           // максимум золотих яблук у торбі
 const GAPPLE_HEAL = 8;          // золоте яблуко загоює 4 серця...
 const GAPPLE_FOOD = 20;         // ...і наїдає досхочу (всі 10 «ніжок»)
+const OYSTER_MAX = 16;          // максимум сирих устриць у торбі
+const MOLLUSK_MAX = 32;         // максимум м'яса молюска в торбі
+const MOLLUSK_FOOD = 8;         // скільки голоду відновлює молюск (4 ніжки)
+const PEARL_MAX = 8;            // максимум перлин у торбі
 const EAT_COOLDOWN = 0.9;       // пауза між поїданнями, с
 const HUNGER_PER_EXHAUSTION = 4; // одиниць виснаження на 1 одиницю голоду
 const FALL_SAFE = 3;            // блоки падіння без шкоди
@@ -2227,6 +2236,10 @@ const player = {
   mush: 0,              // зібрані в печерах сирі гриби
   roast: 0,             // печені на багатті гриби (ситна страва)
   gapple: 0,            // золоті яблука від торговця (запас на чорну годину)
+  oyster: 0,            // зібрані з дна водойм устриці (сировина пари)
+  mollusk: 0,           // м'ясо молюска з розпарених мушель (ситна страва)
+  pearl: 0,             // перлини з мушель (найкращий крам для торговця)
+  pearlDry: 0,          // порожніх мушель поспіль (гарантія перлини згодом)
   coal: 0,              // видобуте вугілля (паливо кузні)
   iron: 0,              // видобуте залізо (сировина кування)
   gold: 0,              // видобуте золото (сировина кування)
@@ -2296,6 +2309,18 @@ if (savedGame && savedGame.player) {
   }
   if (Number.isFinite(p.gapple)) {
     player.gapple = THREE.MathUtils.clamp(Math.floor(p.gapple), 0, GAPPLE_MAX);
+  }
+  if (Number.isFinite(p.oyster)) {
+    player.oyster = THREE.MathUtils.clamp(Math.floor(p.oyster), 0, OYSTER_MAX);
+  }
+  if (Number.isFinite(p.mollusk)) {
+    player.mollusk = THREE.MathUtils.clamp(Math.floor(p.mollusk), 0, MOLLUSK_MAX);
+  }
+  if (Number.isFinite(p.pearl)) {
+    player.pearl = THREE.MathUtils.clamp(Math.floor(p.pearl), 0, PEARL_MAX);
+  }
+  if (Number.isFinite(p.pearlDry)) {
+    player.pearlDry = THREE.MathUtils.clamp(Math.floor(p.pearlDry), 0, 99);
   }
   for (const k of Object.keys(ORE_MAX)) {
     if (Number.isFinite(p[k])) {
@@ -2761,7 +2786,7 @@ function eatFood() {
     return;
   }
   const rawAny = player.food > 0 || player.mush > 0;
-  const cookedAny = player.cooked > 0 || player.roast > 0;
+  const cookedAny = player.cooked > 0 || player.roast > 0 || player.mollusk > 0;
   if (player.hunger >= MAX_HUNGER) return;
   if (!rawAny && !cookedAny) {
     // Іншої їжі немає: голодному золоте яблуко рятує й без ран
@@ -2774,15 +2799,19 @@ function eatFood() {
   // У кожній парі м'ясо йде першим, гриби — запасним: печений гриб трохи
   // менш ситний за смаженину, сирий — за сире м'ясо
   const deficit = MAX_HUNGER - player.hunger;
-  const cookedBest = player.cooked > 0 ? COOKED_FOOD : ROAST_FOOD;
+  const cookedBest = player.cooked > 0 ? COOKED_FOOD
+    : player.roast > 0 ? ROAST_FOOD : MOLLUSK_FOOD;
   const useCooked = cookedAny && (deficit >= cookedBest || !rawAny);
   if (useCooked) {
     if (player.cooked > 0) {
       player.cooked -= 1;
       player.hunger = Math.min(MAX_HUNGER, player.hunger + COOKED_FOOD);
-    } else {
+    } else if (player.roast > 0) {
       player.roast -= 1;
       player.hunger = Math.min(MAX_HUNGER, player.hunger + ROAST_FOOD);
+    } else {
+      player.mollusk -= 1;
+      player.hunger = Math.min(MAX_HUNGER, player.hunger + MOLLUSK_FOOD);
     }
   } else if (player.food > 0) {
     player.food -= 1;
@@ -2798,6 +2827,7 @@ function eatFood() {
   updateCookedHud();
   updateMushHud();
   updateRoastHud();
+  updateMolluskHud();
 }
 
 // ============================================================
@@ -4079,13 +4109,16 @@ const TRADE_GOODS = {
   honey:  { icon: '🍯', name: 'мед' },
   bones:  { icon: '🦴', name: 'кістки' },
   gapple: { icon: '🍏', name: 'золоте яблуко' },
+  pearl:  { icon: '⚪', name: 'перлина' },
 };
 const GOODS_MAX = {
   food: FOOD_MAX, eggs: EGG_MAX, mush: MUSH_MAX,
   honey: HONEY_MAX, bones: BONES_MAX, gapple: GAPPLE_MAX,
+  pearl: PEARL_MAX,
 };
 // Пул пропозицій: [віддати, скільки, отримати, скільки]. Головний приз —
-// золоте яблуко; кістки — запасний крам для тих, хто не б'ється зі скелетами
+// золоте яблуко; кістки — запасний крам для тих, хто не б'ється зі скелетами;
+// перлина з дна — найдорожчий товар гравця (одна варта золотого яблука)
 const TRADE_POOL = [
   ['food', 6, 'gapple', 1],
   ['eggs', 8, 'gapple', 1],
@@ -4093,6 +4126,8 @@ const TRADE_POOL = [
   ['honey', 3, 'gapple', 1],
   ['mush', 6, 'bones', 3],
   ['eggs', 5, 'bones', 2],
+  ['pearl', 1, 'gapple', 1],
+  ['pearl', 1, 'honey', 3],
 ];
 
 let trader = null;                          // сутність торговця серед animals (або null)
@@ -4188,6 +4223,7 @@ function doTrade(offer) {
   updateBoneHud();
   updateMushHud();
   updateGappleHud();
+  updatePearlHud();
   renderTradePanel();
   saveGame();
   return true;
@@ -4223,7 +4259,7 @@ function renderTradePanel() {
     tradeListEl.appendChild(row);
   }
   tradeBagEl.textContent = 'У торбі: ' +
-    ['food', 'eggs', 'mush', 'honey', 'bones', 'gapple']
+    ['food', 'eggs', 'mush', 'honey', 'bones', 'gapple', 'pearl']
       .map((k) => `${TRADE_GOODS[k].icon} ${player[k] || 0}`).join('  ');
 }
 
@@ -5570,12 +5606,18 @@ function startBreakOrAttack() {
   // них (клітинка перед блоком)
   if (torches.size > 0 || crops.size > 0 || ladders.size > 0 || saplings.size > 0 ||
       signs.size > 0 || rails.size > 0 || campfires.size > 0 || beehives.size > 0 ||
-      scarecrows.size > 0 || mushrooms.size > 0 || anvils.size > 0) {
+      scarecrows.size > 0 || mushrooms.size > 0 || anvils.size > 0 ||
+      oysters.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
       if (mushrooms.has(key)) {
         pickMushroom(key);
+        triggerSwing();
+        return;
+      }
+      if (oysters.has(key)) {
+        pickOyster(key);
         triggerSwing();
         return;
       }
@@ -6217,6 +6259,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateScarecrows(); // ... і опору опудал
   validateAnvils();    // ... і опору ковадел
   validateMushrooms(); // ... і ґрунт грибів
+  validateOysters();   // ... і дно устриць
   Sound.explosion();
   knockback(player, cx, cy, cz);
   for (const a of animals) knockback(a, cx, cy, cz);
@@ -6367,6 +6410,7 @@ function updateFallingBlocks(dt) {
       validateScarecrows();
       validateAnvils();
       validateMushrooms();
+      validateOysters();
       // Гравій, що впав просто на колону з двох блоків снігу, теж оживає
       if (f.id === GRAVEL) tryFormGolem(f.x, landY, f.z);
     }
@@ -7731,6 +7775,7 @@ function growSaplingTree(s) {
   validateScarecrows();
   validateAnvils();
   validateMushrooms();
+  validateOysters();
   unlockAch('grow_tree');
   return true;
 }
@@ -8263,6 +8308,7 @@ function updateMining(dt, hit) {
     validateScarecrows(); // ... або опору опудала
     validateAnvils();    // ... або опору ковадла
     validateMushrooms(); // ... або ґрунт гриба
+    validateOysters();   // ... або воду чи дно устриці
     unlockAch('first_block');
     if (id === LOG) unlockAch('chop_wood');
     else if (id === COAL) unlockAch('coal');
@@ -9050,10 +9096,22 @@ function makeCampfireModel() {
   meat.position.set(0, 0.58, 0);
   meat.visible = false;
   g.add(meat);
-  return { group: g, ember, flames, glow, glowMat, meat, meatMat };
+  // Пласкі камені біля вогню — «конфорка», де пара розкриває устрицю
+  animalBox(g, 0.24, 0.06, 0.2, 0x7d848d, 0.5, 0.03, 0.3);
+  const oysterG = new THREE.Group();
+  animalBox(oysterG, 0.16, 0.05, 0.13, 0x8f8a7c, 0, 0.025, 0);   // нижня стулка
+  const lid = animalBox(oysterG, 0.16, 0.04, 0.13, 0xa39d8d, 0, 0.075, -0.015);
+  lid.rotation.x = -0.35;                                        // ледь відхилена кришка
+  animalBox(oysterG, 0.1, 0.015, 0.07, 0xefe9db, 0, 0.052, 0.01); // проблиск м'якуша
+  oysterG.position.set(0.5, 0.06, 0.3);
+  oysterG.rotation.y = 0.6;
+  oysterG.visible = false;
+  g.add(oysterG);
+  return { group: g, ember, flames, glow, glowMat, meat, meatMat, oysterG };
 }
 
-function addCampfire(x, y, z, cooking = false, cookT = 0, cookItem = 'meat') {
+function addCampfire(x, y, z, cooking = false, cookT = 0, cookItem = 'meat',
+                     steaming = false, steamT = 0) {
   const key = campfireKey(x, y, z);
   if (campfires.has(key) || campfires.size >= CAMPFIRE_MAX) return false;
   const m = makeCampfireModel();
@@ -9062,14 +9120,17 @@ function addCampfire(x, y, z, cooking = false, cookT = 0, cookItem = 'meat') {
   campfires.set(key, {
     x, y, z, group: m.group, ember: m.ember, flames: m.flames,
     glow: m.glow, glowMat: m.glowMat, meat: m.meat, meatMat: m.meatMat,
+    oysterG: m.oysterG,
     flick: Math.random() * 6.28, spark: Math.random(), smoke: Math.random() * 0.8,
     sizzleT: 0, cooking: !!cooking, cookT: cooking ? cookT : 0,
     cookItem: cookItem === 'mush' ? 'mush' : 'meat',
+    steaming: !!steaming, steamT: steaming ? steamT : 0, steamPuff: 0,
   });
   if (cooking) {
     m.meat.visible = true;
     m.meatMat.color.copy(cookItem === 'mush' ? MUSH_RAW_COLOR : MEAT_RAW_COLOR);
   }
+  if (steaming) m.oysterG.visible = true;
   return true;
 }
 
@@ -9096,6 +9157,11 @@ function breakCampfire(key) {
       player.food = Math.min(FOOD_MAX, player.food + 1);
       updateFoodHud();
     }
+  }
+  if (c.steaming) {
+    // Недопарена устриця вертається в торбу
+    player.oyster = Math.min(OYSTER_MAX, player.oyster + 1);
+    updateOysterHud();
   }
   spawnParticles(c.x + 0.5, c.y + 0.35, c.z + 0.5, torchEmber, 10,
     { radius: 0.3, speed: 1.6, upBias: 0.8, life: 0.55, size: 0.08, gravity: 6 });
@@ -9142,14 +9208,18 @@ function placeCampfire(hit) {
 }
 
 // ПКМ по багатті: насадити на рожен порцію сирого м'яса, а як його нема —
-// зібраний у печері гриб
+// зібраний у печері гриб; зайнятий рожен (чи порожня торба смаження) кладе
+// на пласкі камені устрицю з дна — пара розкриє мушлю
 function tryCookAt(c) {
-  if (c.cooking) {
-    flashItemName('На багатті вже смажиться порція');
-    return true;
-  }
-  if (player.food <= 0 && player.mush <= 0) {
-    flashItemName("Немає що смажити — вполюйте здобич чи назбирайте грибів");
+  if (c.cooking || (player.food <= 0 && player.mush <= 0)) {
+    // Рожен зайнятий або нема що на нього класти — черга устриці
+    if (!c.steaming && player.oyster > 0) return trySteamAt(c);
+    if (c.cooking || c.steaming) {
+      flashItemName('На багатті вже готується порція');
+      return true;
+    }
+    flashItemName("Немає що готувати — вполюйте здобич, назбирайте грибів " +
+      'чи пірніть по устрицю');
     return true;
   }
   if (player.food > 0) {
@@ -9170,6 +9240,47 @@ function tryCookAt(c) {
   spawnParticles(c.x + 0.5, c.y + 0.62, c.z + 0.5, rawColor, 5,
     { radius: 0.12, speed: 0.8, upBias: 0.6, life: 0.4, size: 0.06, gravity: 4 });
   return true;
+}
+
+// Покласти устрицю на пласкі камені біля вогню: пара поволі розкриє мушлю
+function trySteamAt(c) {
+  c.steaming = true;
+  c.steamT = 0;
+  c.oysterG.visible = true;
+  player.oyster -= 1;
+  updateOysterHud();
+  Sound.sizzle(0.08);
+  spawnParticles(c.x + 1.0, c.y + 0.15, c.z + 0.8, OYSTER_STEAM_COLOR, 4,
+    { radius: 0.12, speed: 0.5, upBias: 1.2, life: 0.7, size: 0.07, gravity: -1.5 });
+  return true;
+}
+
+// Пара зробила своє: мушля розкрилася — м'ясо молюска, а часом і перлина
+function finishSteam(c) {
+  c.steaming = false;
+  c.steamT = 0;
+  c.oysterG.visible = false;
+  player.mollusk = Math.min(MOLLUSK_MAX, player.mollusk + 1);
+  updateMolluskHud();
+  const lucky = player.pearlDry >= PEARL_PITY || Math.random() < PEARL_CHANCE;
+  if (lucky && player.pearl < PEARL_MAX) {
+    player.pearl += 1;
+    player.pearlDry = 0;
+    updatePearlHud();
+    Sound.cookDone();
+    flashItemName('⚪ У мушлі — перлина! Торговець добре заплатить');
+    spawnParticles(c.x + 1.0, c.y + 0.3, c.z + 0.8, PEARL_COLOR, 12,
+      { radius: 0.2, speed: 1.6, upBias: 1.2, life: 0.7, size: 0.07, gravity: -1 });
+    unlockAch('pearl');
+  } else {
+    player.pearlDry += 1;
+    Sound.cookDone();
+    flashItemName(lucky ? 'Торба перлин повна — лише мʼясо молюска'
+      : 'Мушля розкрилась — мʼясо молюска (🍤 ситна страва)');
+    spawnParticles(c.x + 1.0, c.y + 0.25, c.z + 0.8, OYSTER_SHELL_COLOR, 7,
+      { radius: 0.15, speed: 1.1, upBias: 0.9, life: 0.5, size: 0.07, gravity: 4 });
+  }
+  saveGame();
 }
 
 const _campfireSorted = [];
@@ -9243,6 +9354,17 @@ function updateCampfires(dt) {
         }
       }
     }
+    // Пара над устрицею на каменях: білі клубочки, поки мушля не розкриється
+    if (c.steaming) {
+      c.steamT += dt;
+      c.steamPuff -= dt;
+      if (c.steamPuff <= 0) {
+        c.steamPuff = 0.5 + Math.random() * 0.5;
+        spawnParticles(c.x + 1.0, c.y + 0.18, c.z + 0.8, OYSTER_STEAM_COLOR, 1,
+          { radius: 0.08, speed: 0.4, upBias: 1.4, life: 0.9, size: 0.08, gravity: -1.6 });
+      }
+      if (c.steamT >= OYSTER_STEAM_TIME) finishSteam(c);
+    }
     // Стати у вогнище — обпектися (вогонь догорає, як після лави)
     if (px === c.x && pz === c.z && (py === c.y || py === c.y - 1) &&
         player.pos.y < c.y + 1) {
@@ -9284,7 +9406,7 @@ if (savedGame && Array.isArray(savedGame.campfires)) {
   for (const e of savedGame.campfires) {
     if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
       addCampfire(e[0], e[1], e[2], !!e[3], Number.isFinite(e[4]) ? e[4] : 0,
-        e[5] ? 'mush' : 'meat');
+        e[5] ? 'mush' : 'meat', !!e[6], Number.isFinite(e[7]) ? e[7] : 0);
     }
   }
 }
@@ -10175,6 +10297,204 @@ if (mushrooms.size === 0) {
   for (let i = 0; i < 24 && mushrooms.size < 10; i++) trySproutMushroom();
 }
 
+// ===== Устриці: молюски на дні водойм, що їх пара розкриває на перли =====
+// Дно, як і печери, платить за спуск: устриці проростають на затопленому дні
+// (щонайменше два блоки води над ними — по мілководдю не находишся), пірнач
+// збирає їх ЛКМ на запасі повітря, а пара багаття розкриває мушлю — м'ясо
+// молюска гарантовано, перлина — часом
+const oysters = new Map();             // "x,y,z" -> { x, y, z, group }
+const OYSTER_WORLD_MAX = 96;           // глобальний запобіжник (розмір збереження)
+const OYSTER_LOCAL_MAX = 8;            // стеля устриць довкола гравця
+const OYSTER_SPROUT_INTERVAL = 3;      // секунд між спробами проростання
+const OYSTER_SPROUT_TRIES = 6;         // колонок-кандидатів за спробу
+const OYSTER_SPROUT_MIN_R = 4;         // проростає не впритул до гравця...
+const OYSTER_SPROUT_MAX_R = 28;        // ...і не далі за це
+const OYSTER_MIN_GAP = 4;              // устриці не туляться купою
+const OYSTER_RECYCLE_DIST = 64;        // дальші устриці «пересіваються» до гравця
+const OYSTER_STEAM_TIME = 7;           // секунд пари до розкритої мушлі
+const PEARL_CHANCE = 1 / 3;            // шанс перлини в мушлі...
+const PEARL_PITY = 3;                  // ...але після стількох порожніх — гарантія
+const OYSTER_SHELL_COLOR = new THREE.Color(0x8f8a7c);
+const OYSTER_STEAM_COLOR = new THREE.Color(0xdfe6ea);
+const PEARL_COLOR = new THREE.Color(0xf4f1ea);
+const OYSTER_BUBBLE_COLOR = new THREE.Color(0x9fd8ff);
+let oysterClock = 0;
+let oysterBubbleClock = 0;
+let oysterHintShown = false;
+
+const oysterKey = (x, y, z) => x + ',' + y + ',' + z;
+
+function makeOysterModel() {
+  const g = new THREE.Group();
+  animalBox(g, 0.28, 0.08, 0.22, 0x8f8a7c, 0, 0.04, 0);          // нижня стулка
+  const lid = animalBox(g, 0.28, 0.06, 0.22, 0xa39d8d, 0, 0.115, -0.02);
+  lid.rotation.x = -0.28;                                        // ледь прочинена
+  animalBox(g, 0.18, 0.02, 0.12, 0xefe9db, 0, 0.085, 0.02);      // проблиск м'якуша
+  animalBox(g, 0.06, 0.03, 0.05, 0x7b766a, 0.09, 0.11, -0.06);   // нарости на кришці
+  animalBox(g, 0.05, 0.025, 0.05, 0x7b766a, -0.08, 0.105, 0.03);
+  g.rotation.y = Math.random() * Math.PI * 2;
+  g.scale.setScalar(0.85 + Math.random() * 0.35);
+  return g;
+}
+
+function addOyster(x, y, z) {
+  const key = oysterKey(x, y, z);
+  if (oysters.has(key) || oysters.size >= OYSTER_WORLD_MAX) return false;
+  const group = makeOysterModel();
+  group.position.set(x + 0.5, y, z + 0.5);
+  scene.add(group);
+  oysters.set(key, { x, y, z, group });
+  return true;
+}
+
+function removeOyster(key) {
+  const o = oysters.get(key);
+  if (!o) return;
+  scene.remove(o.group);
+  o.group.traverse((m) => {
+    if (m.isMesh) { m.geometry.dispose(); m.material.dispose(); }
+  });
+  oysters.delete(key);
+}
+
+// Клітинка придатна для устриці: повне джерело води на твердому дні, над нею —
+// ще щонайменше один блок води (глибина від двох — по мілководдю не находишся)
+function oysterCellOk(x, y, z) {
+  const k = oysterKey(x, y, z);
+  if (oysters.has(k) || mushrooms.has(k) || crops.has(k) || saplings.has(k) ||
+      torches.has(k) || ladders.has(k) || rails.has(k)) return false;
+  if (blockAt(x, y, z) !== WATER || blockAt(x, y + 1, z) !== WATER) return false;
+  return isSolid(blockAt(x, y - 1, z));
+}
+
+function oysterTooClose(x, y, z) {
+  const gap2 = OYSTER_MIN_GAP * OYSTER_MIN_GAP;
+  for (const o of oysters.values()) {
+    const dx = o.x - x, dy = o.y - y, dz = o.z - z;
+    if (dx * dx + dy * dy + dz * dz < gap2) return true;
+  }
+  return false;
+}
+
+function oystersNearPlayer() {
+  const r2 = OYSTER_SPROUT_MAX_R * OYSTER_SPROUT_MAX_R;
+  let n = 0;
+  for (const o of oysters.values()) {
+    const dx = o.x + 0.5 - player.pos.x, dz = o.z + 0.5 - player.pos.z;
+    if (dx * dx + dz * dz <= r2) n++;
+  }
+  return n;
+}
+
+// Як і в грибів: глобальна стеля — лише запобіжник збереження, найдальша
+// устриця поза очима тихо «пересівається» ближче до гравця
+function recycleFarOyster() {
+  let farKey = null, farD2 = OYSTER_RECYCLE_DIST * OYSTER_RECYCLE_DIST;
+  for (const [key, o] of oysters) {
+    const dx = o.x + 0.5 - player.pos.x, dz = o.z + 0.5 - player.pos.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 > farD2) { farD2 = d2; farKey = key; }
+  }
+  if (!farKey) return false;
+  removeOyster(farKey);
+  return true;
+}
+
+function trySproutOyster() {
+  if (oystersNearPlayer() >= OYSTER_LOCAL_MAX) return false;
+  if (oysters.size >= OYSTER_WORLD_MAX && !recycleFarOyster()) return false;
+  for (let attempt = 0; attempt < OYSTER_SPROUT_TRIES; attempt++) {
+    const ang = Math.random() * Math.PI * 2;
+    const dist = OYSTER_SPROUT_MIN_R +
+      Math.random() * (OYSTER_SPROUT_MAX_R - OYSTER_SPROUT_MIN_R);
+    const x = Math.floor(player.pos.x + Math.cos(ang) * dist);
+    const z = Math.floor(player.pos.z + Math.sin(ang) * dist);
+    // Дно: перший неводяний блок під стовпом моря (суходіл відсіється сам)
+    let fy = -1;
+    for (let y = SEA; y >= 1; y--) {
+      const id = blockAt(x, y, z);
+      if (isWaterId(id)) continue;
+      if (isSolid(id)) fy = y;
+      break;
+    }
+    if (fy < 0) continue;
+    const y = fy + 1;
+    if (!oysterCellOk(x, y, z) || oysterTooClose(x, y, z)) continue;
+    addOyster(x, y, z);
+    return true;
+  }
+  return false;
+}
+
+// Зняти устриці, чию воду злили чи клітинку/дно зайняв блок
+function validateOysters() {
+  if (oysters.size === 0) return;
+  for (const [key, o] of oysters) {
+    const flooded = blockAt(o.x, o.y, o.z) === WATER;
+    const supported = isSolid(blockAt(o.x, o.y - 1, o.z));
+    if (!flooded || !supported) {
+      spawnParticles(o.x + 0.5, o.y + 0.15, o.z + 0.5, OYSTER_SHELL_COLOR, 6,
+        { radius: 0.2, speed: 1.2, upBias: 0.6, life: 0.4, size: 0.07, gravity: 8 });
+      removeOyster(key);
+    }
+  }
+}
+
+function updateOysters(dt) {
+  // Зрідка булькає бульбашка над котроюсь із ближніх устриць — видає схованку
+  oysterBubbleClock -= dt;
+  if (oysterBubbleClock <= 0 && oysters.size > 0) {
+    oysterBubbleClock = 1.1 + Math.random() * 1.4;
+    const list = [...oysters.values()];
+    const o = list[Math.floor(Math.random() * list.length)];
+    const dx = o.x + 0.5 - player.pos.x, dz = o.z + 0.5 - player.pos.z;
+    if (dx * dx + dz * dz < 24 * 24) {
+      spawnParticles(o.x + 0.5, o.y + 0.3, o.z + 0.5, OYSTER_BUBBLE_COLOR, 1,
+        { radius: 0.08, speed: 0.3, upBias: 1.8, life: 0.9, size: 0.07, gravity: -3 });
+    }
+  }
+  oysterClock += dt;
+  if (oysterClock < OYSTER_SPROUT_INTERVAL) return;
+  oysterClock = 0;
+  validateOysters();   // вода тече без правок вокселів — перевіряємо і тут
+  trySproutOyster();
+}
+
+// Зібрати устрицю з дна (ЛКМ)
+function pickOyster(key) {
+  const o = oysters.get(key);
+  if (!o) return false;
+  if (player.oyster >= OYSTER_MAX) {
+    flashItemName('Торба устриць повна — розпарте їх на багатті');
+    return true;
+  }
+  player.oyster += 1;
+  updateOysterHud();
+  spawnParticles(o.x + 0.5, o.y + 0.2, o.z + 0.5, OYSTER_SHELL_COLOR, 7,
+    { radius: 0.25, speed: 1.4, upBias: 0.8, life: 0.45, size: 0.08, gravity: 6 });
+  Sound.splash();
+  removeOyster(key);
+  unlockAch('oyster');
+  if (!oysterHintShown) {
+    oysterHintShown = true;
+    flashItemName('🦪 Устриця в торбі — розпарте її на багатті!');
+  }
+  return true;
+}
+
+// Відновити збережені устриці (формат: [x, y, z])
+if (savedGame && Array.isArray(savedGame.oysters)) {
+  for (const e of savedGame.oysters) {
+    if (Array.isArray(e) && e.length >= 3 && e.every(Number.isFinite)) {
+      addOyster(e[0], e[1], e[2]);
+    }
+  }
+}
+// Новий світ (чи давній сейв без устриць): засіяти дно довкола спавну
+if (oysters.size === 0) {
+  for (let i = 0; i < 24 && oysters.size < 6; i++) trySproutOyster();
+}
+
 // ===== Ворони: зграйка, що налітає дзьобати підрослі посіви =====
 const crows = [];                      // зграя тимчасова — зі світом не зберігається
 const CROW_MAX = 3;                    // ворон у зграї водночас
@@ -10759,6 +11079,7 @@ function placeBlock() {
   validateScarecrows(); // ... або клітинку опудала
   validateAnvils();    // ... або клітинку ковадла
   validateMushrooms(); // ... або клітинку гриба
+  validateOysters();   // ... або воду чи дно устриці
 
   // Гравій поверх двох блоків снігу — сніговик оживає
   if (id === GRAVEL) tryFormGolem(x, y, z);
@@ -11560,6 +11881,12 @@ const roastBadgeEl = document.getElementById('roast-badge');
 const roastCountEl = document.getElementById('roast-count');
 const gappleBadgeEl = document.getElementById('gapple-badge');
 const gappleCountEl = document.getElementById('gapple-count');
+const oysterBadgeEl = document.getElementById('oyster-badge');
+const oysterCountEl = document.getElementById('oyster-count');
+const molluskBadgeEl = document.getElementById('mollusk-badge');
+const molluskCountEl = document.getElementById('mollusk-count');
+const pearlBadgeEl = document.getElementById('pearl-badge');
+const pearlCountEl = document.getElementById('pearl-count');
 const oreBadgeEl = document.getElementById('ore-badge');
 const oreChipEls = {}, oreCountEls = {};
 for (const k of ['coal', 'iron', 'gold', 'diam']) {
@@ -11681,6 +12008,12 @@ function buildSurvivalHud() {
   if (roastIcon) drawRoastIcon(roastIcon);
   const gappleIcon = document.getElementById('gapple-icon');
   if (gappleIcon) drawGappleIcon(gappleIcon);
+  const oysterIcon = document.getElementById('oyster-icon');
+  if (oysterIcon) drawOysterIcon(oysterIcon);
+  const molluskIcon = document.getElementById('mollusk-icon');
+  if (molluskIcon) drawMolluskIcon(molluskIcon);
+  const pearlIcon = document.getElementById('pearl-icon');
+  if (pearlIcon) drawPearlIcon(pearlIcon);
   for (const k of Object.keys(ORE_MAX)) {
     const oreIcon = document.getElementById('ore-icon-' + k);
     if (oreIcon) drawOreIcon(oreIcon, k);
@@ -11852,6 +12185,96 @@ function drawMushIcon(canvas) {
   ctx.fillRect(5, 4, 2, 2);
   ctx.fillRect(9, 3, 2, 2);
   ctx.fillRect(11, 6, 2, 1);
+}
+
+// Лічильники устриць, молюсків і перлин (бейджі 🦪 🍤 ⚪ над рештою торби)
+let lastOysterDrawn = -1;
+function updateOysterHud() {
+  if (player.oyster === lastOysterDrawn) return;
+  lastOysterDrawn = player.oyster;
+  oysterCountEl.textContent = player.oyster;
+  oysterBadgeEl.hidden = player.oyster <= 0;
+}
+
+let lastMolluskDrawn = -1;
+function updateMolluskHud() {
+  if (player.mollusk === lastMolluskDrawn) return;
+  lastMolluskDrawn = player.mollusk;
+  molluskCountEl.textContent = player.mollusk;
+  molluskBadgeEl.hidden = player.mollusk <= 0;
+}
+
+let lastPearlDrawn = -1;
+function updatePearlHud() {
+  if (player.pearl === lastPearlDrawn) return;
+  lastPearlDrawn = player.pearl;
+  pearlCountEl.textContent = player.pearl;
+  pearlBadgeEl.hidden = player.pearl <= 0;
+}
+
+// Піксельна іконка устриці: дві сірі стулки, ледь прочинені (бейдж, без атласу)
+function drawOysterIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#8f8a7c';                          // нижня стулка
+  ctx.beginPath();
+  ctx.ellipse(8, 10.5, 6.2, 3.6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#efe9db';                          // проблиск м'якуша
+  ctx.fillRect(3, 8, 10, 1.6);
+  ctx.fillStyle = '#a39d8d';                          // прочинена кришка
+  ctx.beginPath();
+  ctx.ellipse(8, 6.5, 6, 3.2, 0, Math.PI, 0);
+  ctx.fill();
+  ctx.fillStyle = '#7b766a';                          // борозни на кришці
+  ctx.fillRect(5, 4.5, 1.4, 1.2);
+  ctx.fillRect(9, 3.8, 1.4, 1.2);
+}
+
+// Піксельна іконка м'яса молюска на половинці мушлі (бейдж, без атласу)
+function drawMolluskIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#8f8a7c';                          // половинка мушлі
+  ctx.beginPath();
+  ctx.ellipse(8, 10, 6.4, 4.2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#f2c9a4';                          // пропарений молюск
+  ctx.beginPath();
+  ctx.ellipse(8, 8.6, 4.2, 3, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#f8e3cb';                          // відблиск
+  ctx.beginPath();
+  ctx.ellipse(6.6, 7.6, 1.6, 1.1, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// Піксельна іконка перлини на темній стулці (бейдж, без атласу)
+function drawPearlIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#5d594f';                          // темна стулка-підставка
+  ctx.beginPath();
+  ctx.ellipse(8, 11.5, 6.4, 3, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#f4f1ea';                          // перлина
+  ctx.beginPath();
+  ctx.arc(8, 7.5, 3.8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#d9d2c2';                          // тінь знизу
+  ctx.beginPath();
+  ctx.arc(8.9, 8.6, 2.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#ffffff';                          // блік
+  ctx.beginPath();
+  ctx.arc(6.6, 6.1, 1.2, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 // Лічильник печених грибів (бейдж 🍢 над сирими)
@@ -12900,6 +13323,9 @@ updateSilkHud();
 updateMushHud();
 updateRoastHud();
 updateGappleHud();
+updateOysterHud();
+updateMolluskHud();
+updatePearlHud();
 updateOreHud();
 document.getElementById('respawn-btn').addEventListener('click', respawn);
 
@@ -13272,6 +13698,8 @@ const ACHIEVEMENTS = [
   { id: 'leash',       icon: '🐄', title: 'Поводир',            desc: 'Узяти свійську тварину на повідець' },
   { id: 'grapple',     icon: '🪝', title: 'На гаку',            desc: 'Підтягнутися гаком-кішкою до блока' },
   { id: 'grapple_high',icon: '🧗', title: 'Верхолаз',           desc: 'Злетіти гаком на 6 блоків угору' },
+  { id: 'oyster',      icon: '🦪', title: 'Пірнач',             desc: 'Дістати устрицю з дна водойми' },
+  { id: 'pearl',       icon: '⚪', title: 'Ловець перлин',      desc: 'Знайти перлину в розпареній мушлі' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -14454,6 +14882,91 @@ window.MCDebug = {
   },
   get mushroomCount() { return mushrooms.size; },
   get mushBag() { return { mush: player.mush, roast: player.roast }; },
+  // Устриці та перли (для тестів)
+  giveOysters: (n = 4) => {
+    player.oyster = Math.min(OYSTER_MAX, player.oyster + n);
+    updateOysterHud();
+    return player.oyster;
+  },
+  givePearls: (n = 1) => {
+    player.pearl = Math.min(PEARL_MAX, player.pearl + n);
+    updatePearlHud();
+    return player.pearl;
+  },
+  // Кілька спроб природного проростання поспіль (повертає нові координати)
+  sproutOysters: (tries = 20) => {
+    const before = new Set(oysters.keys());
+    for (let i = 0; i < tries; i++) trySproutOyster();
+    return [...oysters.values()].filter((o) => !before.has(oysterKey(o.x, o.y, o.z)))
+      .map((o) => ({ x: o.x, y: o.y, z: o.z }));
+  },
+  oysterState: () => [...oysters.values()].map((o) => ({ x: o.x, y: o.y, z: o.z })),
+  // Перенести гравця до найближчої глибокої води (де ростуть устриці)
+  tpToSea: (maxR = 240) => {
+    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+    for (let r = 4; r <= maxR; r += 4) {
+      for (let a = 0; a < 16; a++) {
+        const ang = (a / 16) * Math.PI * 2;
+        const x = px + Math.round(Math.cos(ang) * r);
+        const z = pz + Math.round(Math.sin(ang) * r);
+        let fy = -1;
+        for (let y = SEA; y >= 1; y--) {
+          const id = blockAt(x, y, z);
+          if (isWaterId(id)) continue;
+          if (isSolid(id)) fy = y;
+          break;
+        }
+        if (fy < 0 || fy > SEA - 2) continue;
+        if (blockAt(x, fy + 1, z) !== WATER || blockAt(x, fy + 2, z) !== WATER) continue;
+        player.pos.set(x + 0.5, SEA + 2, z + 0.5);
+        player.vel.set(0, 0, 0);
+        return { x, floorY: fy, z, depth: SEA - fy };
+      }
+    }
+    return null;
+  },
+  // Перенести гравця до найближчої устриці (щоб пірнути в потрібному місці)
+  tpToOyster: () => {
+    let best = null, bestD = Infinity;
+    for (const o of oysters.values()) {
+      const d = Math.hypot(o.x + 0.5 - player.pos.x, o.z + 0.5 - player.pos.z);
+      if (d < bestD) { bestD = d; best = o; }
+    }
+    if (!best) return null;
+    player.pos.set(best.x + 0.5, SEA + 2, best.z + 0.5);
+    player.vel.set(0, 0, 0);
+    return { x: best.x, y: best.y, z: best.z };
+  },
+  // Зібрати найближчу устрицю (в обхід прицілювання)
+  pickNearestOyster: () => {
+    let best = null, bestD = Infinity;
+    for (const o of oysters.values()) {
+      const d = Math.hypot(o.x + 0.5 - player.pos.x, o.z + 0.5 - player.pos.z);
+      if (d < bestD) { bestD = d; best = o; }
+    }
+    if (!best) return null;
+    pickOyster(oysterKey(best.x, best.y, best.z));
+    return { oyster: player.oyster, left: oysters.size };
+  },
+  // Покласти устрицю на найближче багаття й одразу доварити (наступний кадр)
+  steamOyster: (fast = true) => {
+    let best = null, bestD = Infinity;
+    for (const c of campfires.values()) {
+      const d = Math.hypot(c.x + 0.5 - player.pos.x, c.z + 0.5 - player.pos.z);
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    if (!best) return 'багаття немає — MCDebug.campfireNear()';
+    if (!best.steaming && player.oyster <= 0) return 'немає устриць — MCDebug.giveOysters()';
+    if (!best.steaming) trySteamAt(best);
+    if (fast) best.steamT = OYSTER_STEAM_TIME;
+    return { steaming: best.steaming, oyster: player.oyster };
+  },
+  get oysterInfo() {
+    return {
+      world: oysters.size, bag: player.oyster, mollusk: player.mollusk,
+      pearl: player.pearl, pearlDry: player.pearlDry,
+    };
+  },
   // Мандрівний торговець (для тестів)
   forceTrader: () => {
     if (!trader) {
@@ -14745,6 +15258,7 @@ function animate() {
     updateCrops(dt);
     updateSaplings(dt);
     updateMushrooms(dt);
+    updateOysters(dt);
     updateDoors(dt);
     updateGates(dt);
     if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
