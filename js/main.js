@@ -168,6 +168,17 @@ const MUSH_FOOD = 3;            // скільки голоду відновлю�
 const ROAST_MAX = 64;           // максимум печених грибів у торбі
 const ROAST_FOOD = 8;           // скільки голоду відновлює печений гриб (4 ніжки)
 
+// Плоди опунції — пустельна здобич: зав'язуються на верхівках кактусів у
+// спеці пустелі. Голіруч зривати боляче (колючки!), тож плід збивають
+// пострілом — стрілою чи сніжкою (перше мирне застосування далекобою).
+// Збитий плід падає під кактус, підбирається впритул у торбу (🌵) і
+// печеться на пласких каменях багаття у печену опунцію (🍠) — солодку
+// ситну страву. Плоди не ставляться з меню: їх дарує лише пустеля.
+const FRUIT_MAX = 16;           // максимум сирих плодів у торбі
+const FRUIT_FOOD = 4;           // скільки голоду відновлює сирий плід (2 ніжки)
+const BAKED_MAX = 32;           // максимум печених опунцій у торбі
+const BAKED_FOOD = 8;           // скільки голоду відновлює печена опунція (4 ніжки)
+
 // Ковадло — предмет-сутність (як опудало, не воксель): чавунна колода на
 // підставці, ставиться ПКМ на тверду землю. Видобута киркою руда (вугілля,
 // залізо, золото, алмази) тепер збирається в торбу, а ПКМ по ковадлу
@@ -493,6 +504,8 @@ function saveGame() {
         mollusk: player.mollusk,
         pearl: player.pearl,
         pearlDry: player.pearlDry,
+        fruit: player.fruit,
+        baked: player.baked,
         coal: player.coal,
         iron: player.iron,
         gold: player.gold,
@@ -519,13 +532,15 @@ function saveGame() {
       carts: carts.map((c) => [+c.pos.x.toFixed(2), +c.pos.y.toFixed(2), +c.pos.z.toFixed(2)]),
       campfires: [...campfires.values()].map((c) =>
         [c.x, c.y, c.z, c.cooking ? 1 : 0, +c.cookT.toFixed(1),
-         c.cookItem === 'mush' ? 1 : 0, c.steaming ? 1 : 0, +c.steamT.toFixed(1)]),
+         c.cookItem === 'mush' ? 1 : 0, c.steaming ? 1 : 0, +c.steamT.toFixed(1),
+         c.baking ? 1 : 0, +c.bakeT.toFixed(1)]),
       beehives: [...beehives.values()].map((h) => [h.x, h.y, h.z, +h.honey.toFixed(1)]),
       scarecrows: [...scarecrows.values()].map((s) => [s.x, s.y, s.z]),
       anvils: [...anvils.values()].map((a) => [a.x, a.y, a.z]),
       mushrooms: [...mushrooms.values()].map((m) =>
         [m.x, m.y, m.z, m.kind, m.farmed ? 1 : 0]),
       oysters: [...oysters.values()].map((o) => [o.x, o.y, o.z]),
+      cactusFruits: [...cactusFruits.values()].map((f) => [f.x, f.y, f.z]),
       wolves: animals.filter((a) => a.type === 'wolf' && a.tamed)
         .map((a) => [+a.pos.x.toFixed(1), +a.pos.y.toFixed(1), +a.pos.z.toFixed(1),
                      +a.health.toFixed(1), a.sitting ? 1 : 0]),
@@ -739,6 +754,11 @@ const Sound = (() => {
     lavaHiss() {
       noise({ dur: 0.4, gain: 0.18, type: 'highpass', freq: 2400, q: 0.5, attack: 0.004 });
       noise({ dur: 0.24, gain: 0.1, type: 'bandpass', freq: 780, q: 0.7 });
+    },
+    // Збитий плід опунції: пружний «плюх» зірваного плоду
+    fruitPop() {
+      tone({ freq: 520, dur: 0.09, type: 'sine', gain: 0.16, slideTo: 300 });
+      noise({ dur: 0.08, gain: 0.07, type: 'lowpass', freq: 900, q: 0.7 });
     },
     // Стрижка вівці: два швидкі «вжик»-клацання ножиць
     shear() {
@@ -2239,6 +2259,8 @@ const player = {
   oyster: 0,            // зібрані з дна водойм устриці (сировина пари)
   mollusk: 0,           // м'ясо молюска з розпарених мушель (ситна страва)
   pearl: 0,             // перлини з мушель (найкращий крам для торговця)
+  fruit: 0,             // збиті з кактусів плоди опунції (соковитий харч пустелі)
+  baked: 0,             // печені на багатті опунції (солодка ситна страва)
   pearlDry: 0,          // порожніх мушель поспіль (гарантія перлини згодом)
   coal: 0,              // видобуте вугілля (паливо кузні)
   iron: 0,              // видобуте залізо (сировина кування)
@@ -2321,6 +2343,12 @@ if (savedGame && savedGame.player) {
   }
   if (Number.isFinite(p.pearlDry)) {
     player.pearlDry = THREE.MathUtils.clamp(Math.floor(p.pearlDry), 0, 99);
+  }
+  if (Number.isFinite(p.fruit)) {
+    player.fruit = THREE.MathUtils.clamp(Math.floor(p.fruit), 0, FRUIT_MAX);
+  }
+  if (Number.isFinite(p.baked)) {
+    player.baked = THREE.MathUtils.clamp(Math.floor(p.baked), 0, BAKED_MAX);
   }
   for (const k of Object.keys(ORE_MAX)) {
     if (Number.isFinite(p[k])) {
@@ -2785,8 +2813,9 @@ function eatFood() {
     updateHoneyHud();
     return;
   }
-  const rawAny = player.food > 0 || player.mush > 0;
-  const cookedAny = player.cooked > 0 || player.roast > 0 || player.mollusk > 0;
+  const rawAny = player.food > 0 || player.fruit > 0 || player.mush > 0;
+  const cookedAny = player.cooked > 0 || player.roast > 0 || player.mollusk > 0 ||
+    player.baked > 0;
   if (player.hunger >= MAX_HUNGER) return;
   if (!rawAny && !cookedAny) {
     // Іншої їжі немає: голодному золоте яблуко рятує й без ран
@@ -2800,7 +2829,8 @@ function eatFood() {
   // менш ситний за смаженину, сирий — за сире м'ясо
   const deficit = MAX_HUNGER - player.hunger;
   const cookedBest = player.cooked > 0 ? COOKED_FOOD
-    : player.roast > 0 ? ROAST_FOOD : MOLLUSK_FOOD;
+    : player.roast > 0 ? ROAST_FOOD
+    : player.mollusk > 0 ? MOLLUSK_FOOD : BAKED_FOOD;
   const useCooked = cookedAny && (deficit >= cookedBest || !rawAny);
   if (useCooked) {
     if (player.cooked > 0) {
@@ -2809,13 +2839,19 @@ function eatFood() {
     } else if (player.roast > 0) {
       player.roast -= 1;
       player.hunger = Math.min(MAX_HUNGER, player.hunger + ROAST_FOOD);
-    } else {
+    } else if (player.mollusk > 0) {
       player.mollusk -= 1;
       player.hunger = Math.min(MAX_HUNGER, player.hunger + MOLLUSK_FOOD);
+    } else {
+      player.baked -= 1;
+      player.hunger = Math.min(MAX_HUNGER, player.hunger + BAKED_FOOD);
     }
   } else if (player.food > 0) {
     player.food -= 1;
     player.hunger = Math.min(MAX_HUNGER, player.hunger + EAT_AMOUNT);
+  } else if (player.fruit > 0) {
+    player.fruit -= 1;
+    player.hunger = Math.min(MAX_HUNGER, player.hunger + FRUIT_FOOD);
   } else {
     player.mush -= 1;
     player.hunger = Math.min(MAX_HUNGER, player.hunger + MUSH_FOOD);
@@ -2828,6 +2864,8 @@ function eatFood() {
   updateMushHud();
   updateRoastHud();
   updateMolluskHud();
+  updateFruitHud();
+  updateBakedHud();
 }
 
 // ============================================================
@@ -4110,11 +4148,12 @@ const TRADE_GOODS = {
   bones:  { icon: '🦴', name: 'кістки' },
   gapple: { icon: '🍏', name: 'золоте яблуко' },
   pearl:  { icon: '⚪', name: 'перлина' },
+  fruit:  { icon: '🌵', name: 'плоди опунції' },
 };
 const GOODS_MAX = {
   food: FOOD_MAX, eggs: EGG_MAX, mush: MUSH_MAX,
   honey: HONEY_MAX, bones: BONES_MAX, gapple: GAPPLE_MAX,
-  pearl: PEARL_MAX,
+  pearl: PEARL_MAX, fruit: FRUIT_MAX,
 };
 // Пул пропозицій: [віддати, скільки, отримати, скільки]. Головний приз —
 // золоте яблуко; кістки — запасний крам для тих, хто не б'ється зі скелетами;
@@ -4128,6 +4167,8 @@ const TRADE_POOL = [
   ['eggs', 5, 'bones', 2],
   ['pearl', 1, 'gapple', 1],
   ['pearl', 1, 'honey', 3],
+  ['fruit', 5, 'gapple', 1],
+  ['fruit', 3, 'honey', 2],
 ];
 
 let trader = null;                          // сутність торговця серед animals (або null)
@@ -4259,7 +4300,7 @@ function renderTradePanel() {
     tradeListEl.appendChild(row);
   }
   tradeBagEl.textContent = 'У торбі: ' +
-    ['food', 'eggs', 'mush', 'honey', 'bones', 'gapple', 'pearl']
+    ['food', 'eggs', 'mush', 'honey', 'bones', 'fruit', 'gapple', 'pearl']
       .map((k) => `${TRADE_GOODS[k].icon} ${player[k] || 0}`).join('  ');
 }
 
@@ -4946,7 +4987,7 @@ function updateSnowballs(dt) {
       s.pos.x += s.vel.x * dt / steps;
       s.pos.y += s.vel.y * dt / steps;
       s.pos.z += s.vel.z * dt / steps;
-      if (snowballHitEntity(s)) { broke = true; break; }
+      if (snowballHitEntity(s) || fruitHitAt(s.pos, s.vel.x, s.vel.z)) { broke = true; break; }
       const cx = Math.floor(s.pos.x), cy = Math.floor(s.pos.y), cz = Math.floor(s.pos.z);
       if (isSolid(blockAt(cx, cy, cz)) || doorBlocksCell(cx, cy, cz) ||
           fenceSolidAtCell(cx, cy, cz)) {
@@ -5607,7 +5648,7 @@ function startBreakOrAttack() {
   if (torches.size > 0 || crops.size > 0 || ladders.size > 0 || saplings.size > 0 ||
       signs.size > 0 || rails.size > 0 || campfires.size > 0 || beehives.size > 0 ||
       scarecrows.size > 0 || mushrooms.size > 0 || anvils.size > 0 ||
-      oysters.size > 0) {
+      oysters.size > 0 || cactusFruits.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -5618,6 +5659,11 @@ function startBreakOrAttack() {
       }
       if (oysters.has(key)) {
         pickOyster(key);
+        triggerSwing();
+        return;
+      }
+      if (cactusFruits.has(key)) {
+        pickFruitByHand(key);
         triggerSwing();
         return;
       }
@@ -5870,7 +5916,8 @@ function updateArrows(dt) {
       a.pos.x += a.vel.x * dt / steps;
       a.pos.y += a.vel.y * dt / steps;
       a.pos.z += a.vel.z * dt / steps;
-      const hit = a.fromMob ? arrowHitPlayer(a) : arrowHitEntity(a);
+      const hit = a.fromMob ? arrowHitPlayer(a)
+        : arrowHitEntity(a) || fruitHitAt(a.pos, a.vel.x, a.vel.z);
       if (hit) { outcome = 'entity'; break; }
       const acx = Math.floor(a.pos.x), acy = Math.floor(a.pos.y), acz = Math.floor(a.pos.z);
       const bid = blockAt(acx, acy, acz);
@@ -6260,6 +6307,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateAnvils();    // ... і опору ковадел
   validateMushrooms(); // ... і ґрунт грибів
   validateOysters();   // ... і дно устриць
+  validateCactusFruits(); // ... і кактус під плодом
   Sound.explosion();
   knockback(player, cx, cy, cz);
   for (const a of animals) knockback(a, cx, cy, cz);
@@ -6411,6 +6459,7 @@ function updateFallingBlocks(dt) {
       validateAnvils();
       validateMushrooms();
       validateOysters();
+      validateCactusFruits(); // ... і кактус під плодом
       // Гравій, що впав просто на колону з двох блоків снігу, теж оживає
       if (f.id === GRAVEL) tryFormGolem(f.x, landY, f.z);
     }
@@ -7776,6 +7825,7 @@ function growSaplingTree(s) {
   validateAnvils();
   validateMushrooms();
   validateOysters();
+  validateCactusFruits(); // ... і кактус під плодом
   unlockAch('grow_tree');
   return true;
 }
@@ -8309,6 +8359,7 @@ function updateMining(dt, hit) {
     validateAnvils();    // ... або опору ковадла
     validateMushrooms(); // ... або ґрунт гриба
     validateOysters();   // ... або воду чи дно устриці
+    validateCactusFruits(); // ... і кактус під плодом
     unlockAch('first_block');
     if (id === LOG) unlockAch('chop_wood');
     else if (id === COAL) unlockAch('coal');
@@ -9026,6 +9077,7 @@ if (savedGame && Array.isArray(savedGame.carts)) {
 const campfires = new Map();           // "x,y,z" -> { x, y, z, group, ... }
 const CAMPFIRE_MAX = 64;               // межа, щоб збереження не розросталося
 const COOK_TIME = 6;                   // секунд смаження однієї порції
+const FRUIT_BAKE_TIME = 5;             // секунд запікання плоду опунції на каменях
 const CAMPFIRE_LIGHT_POOL = 3;         // скільки багать світять реально водночас
 const CAMPFIRE_LIGHT_RANGE = 34;       // далі за це лампа не призначається
 
@@ -9036,6 +9088,8 @@ const MEAT_RAW_COLOR = new THREE.Color(0xc0392b);
 const MEAT_DONE_COLOR = new THREE.Color(0x7a4a1f);
 const MUSH_RAW_COLOR = new THREE.Color(0xb0402e);   // сирий гриб на рожні
 const MUSH_DONE_COLOR = new THREE.Color(0x8a5a2b);  // печений — брунатний
+const FRUIT_RAW_COLOR = new THREE.Color(0xc23b6e);  // сирий плід опунції на каменях
+const FRUIT_BAKED_COLOR = new THREE.Color(0x8a4a3a); // спечений — карамельно-темний
 
 const campfireLights = [];
 for (let i = 0; i < CAMPFIRE_LIGHT_POOL; i++) {
@@ -9107,11 +9161,18 @@ function makeCampfireModel() {
   oysterG.rotation.y = 0.6;
   oysterG.visible = false;
   g.add(oysterG);
-  return { group: g, ember, flames, glow, glowMat, meat, meatMat, oysterG };
+  // Плід опунції на тих самих каменях (черга з устрицею — конфорка одна)
+  const fruitMat = new THREE.MeshLambertMaterial({ color: FRUIT_RAW_COLOR.clone() });
+  const fruitG = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.17, 0.14), fruitMat);
+  fruitG.position.set(0.5, 0.14, 0.3);
+  fruitG.rotation.y = 0.4;
+  fruitG.visible = false;
+  g.add(fruitG);
+  return { group: g, ember, flames, glow, glowMat, meat, meatMat, oysterG, fruitG, fruitMat };
 }
 
 function addCampfire(x, y, z, cooking = false, cookT = 0, cookItem = 'meat',
-                     steaming = false, steamT = 0) {
+                     steaming = false, steamT = 0, baking = false, bakeT = 0) {
   const key = campfireKey(x, y, z);
   if (campfires.has(key) || campfires.size >= CAMPFIRE_MAX) return false;
   const m = makeCampfireModel();
@@ -9120,17 +9181,19 @@ function addCampfire(x, y, z, cooking = false, cookT = 0, cookItem = 'meat',
   campfires.set(key, {
     x, y, z, group: m.group, ember: m.ember, flames: m.flames,
     glow: m.glow, glowMat: m.glowMat, meat: m.meat, meatMat: m.meatMat,
-    oysterG: m.oysterG,
+    oysterG: m.oysterG, fruitG: m.fruitG, fruitMat: m.fruitMat,
     flick: Math.random() * 6.28, spark: Math.random(), smoke: Math.random() * 0.8,
     sizzleT: 0, cooking: !!cooking, cookT: cooking ? cookT : 0,
     cookItem: cookItem === 'mush' ? 'mush' : 'meat',
     steaming: !!steaming, steamT: steaming ? steamT : 0, steamPuff: 0,
+    baking: !!baking, bakeT: baking ? bakeT : 0,
   });
   if (cooking) {
     m.meat.visible = true;
     m.meatMat.color.copy(cookItem === 'mush' ? MUSH_RAW_COLOR : MEAT_RAW_COLOR);
   }
   if (steaming) m.oysterG.visible = true;
+  if (baking) m.fruitG.visible = true;
   return true;
 }
 
@@ -9162,6 +9225,11 @@ function breakCampfire(key) {
     // Недопарена устриця вертається в торбу
     player.oyster = Math.min(OYSTER_MAX, player.oyster + 1);
     updateOysterHud();
+  }
+  if (c.baking) {
+    // Недопечений плід вертається в торбу сирим
+    player.fruit = Math.min(FRUIT_MAX, player.fruit + 1);
+    updateFruitHud();
   }
   spawnParticles(c.x + 0.5, c.y + 0.35, c.z + 0.5, torchEmber, 10,
     { radius: 0.3, speed: 1.6, upBias: 0.8, life: 0.55, size: 0.08, gravity: 6 });
@@ -9212,14 +9280,16 @@ function placeCampfire(hit) {
 // на пласкі камені устрицю з дна — пара розкриє мушлю
 function tryCookAt(c) {
   if (c.cooking || (player.food <= 0 && player.mush <= 0)) {
-    // Рожен зайнятий або нема що на нього класти — черга устриці
-    if (!c.steaming && player.oyster > 0) return trySteamAt(c);
-    if (c.cooking || c.steaming) {
+    // Рожен зайнятий або нема що на нього класти — черга каменів:
+    // устриця з дна, а за нею плід опунції
+    if (!c.steaming && !c.baking && player.oyster > 0) return trySteamAt(c);
+    if (!c.steaming && !c.baking && player.fruit > 0) return tryBakeAt(c);
+    if (c.cooking || c.steaming || c.baking) {
       flashItemName('На багатті вже готується порція');
       return true;
     }
-    flashItemName("Немає що готувати — вполюйте здобич, назбирайте грибів " +
-      'чи пірніть по устрицю');
+    flashItemName("Немає що готувати — вполюйте здобич, назбирайте грибів, " +
+      'пірніть по устрицю чи збийте плід із кактуса');
     return true;
   }
   if (player.food > 0) {
@@ -9253,6 +9323,35 @@ function trySteamAt(c) {
   spawnParticles(c.x + 1.0, c.y + 0.15, c.z + 0.8, OYSTER_STEAM_COLOR, 4,
     { radius: 0.12, speed: 0.5, upBias: 1.2, life: 0.7, size: 0.07, gravity: -1.5 });
   return true;
+}
+
+// Покласти плід опунції на пласкі камені: жар поволі спече його в ласощі
+function tryBakeAt(c) {
+  c.baking = true;
+  c.bakeT = 0;
+  c.fruitG.visible = true;
+  c.fruitMat.color.copy(FRUIT_RAW_COLOR);
+  player.fruit -= 1;
+  updateFruitHud();
+  Sound.sizzle(0.08);
+  spawnParticles(c.x + 1.0, c.y + 0.2, c.z + 0.8, FRUIT_RAW_COLOR, 4,
+    { radius: 0.12, speed: 0.6, upBias: 1, life: 0.5, size: 0.06, gravity: 2 });
+  return true;
+}
+
+// Жар зробив своє: плід спікся в печену опунцію — солодку ситну страву
+function finishBake(c) {
+  c.baking = false;
+  c.bakeT = 0;
+  c.fruitG.visible = false;
+  player.baked = Math.min(BAKED_MAX, player.baked + 1);
+  updateBakedHud();
+  Sound.cookDone();
+  flashItemName('🍠 Печена опунція готова — солодка й ситна!');
+  spawnParticles(c.x + 1.0, c.y + 0.25, c.z + 0.8, FRUIT_BAKED_COLOR, 8,
+    { radius: 0.15, speed: 1.3, upBias: 1, life: 0.5, size: 0.07, gravity: 5 });
+  unlockAch('fruit_bake');
+  saveGame();
 }
 
 // Пара зробила своє: мушля розкрилася — м'ясо молюска, а часом і перлина
@@ -9365,6 +9464,19 @@ function updateCampfires(dt) {
       }
       if (c.steamT >= OYSTER_STEAM_TIME) finishSteam(c);
     }
+    // Печеться плід: колір повзе до карамельного, зрідка солодкий димок
+    if (c.baking) {
+      c.bakeT += dt;
+      c.fruitMat.color.copy(FRUIT_RAW_COLOR)
+        .lerp(FRUIT_BAKED_COLOR, Math.min(1, c.bakeT / FRUIT_BAKE_TIME));
+      c.steamPuff -= dt;
+      if (c.steamPuff <= 0) {
+        c.steamPuff = 0.6 + Math.random() * 0.6;
+        spawnParticles(c.x + 1.0, c.y + 0.24, c.z + 0.8, SMOKE_COLOR, 1,
+          { radius: 0.08, speed: 0.4, upBias: 1.3, life: 0.8, size: 0.08, gravity: -1.5 });
+      }
+      if (c.bakeT >= FRUIT_BAKE_TIME) finishBake(c);
+    }
     // Стати у вогнище — обпектися (вогонь догорає, як після лави)
     if (px === c.x && pz === c.z && (py === c.y || py === c.y - 1) &&
         player.pos.y < c.y + 1) {
@@ -9401,12 +9513,14 @@ function updateCampfires(dt) {
   }
 }
 
-// Відновити збережені багаття (формат: [x, y, z, cooking, cookT])
+// Відновити збережені багаття (формат: [x, y, z, cooking, cookT, mush,
+// steaming, steamT, baking, bakeT] — хвіст старі сейви можуть не мати)
 if (savedGame && Array.isArray(savedGame.campfires)) {
   for (const e of savedGame.campfires) {
     if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
       addCampfire(e[0], e[1], e[2], !!e[3], Number.isFinite(e[4]) ? e[4] : 0,
-        e[5] ? 'mush' : 'meat', !!e[6], Number.isFinite(e[7]) ? e[7] : 0);
+        e[5] ? 'mush' : 'meat', !!e[6], Number.isFinite(e[7]) ? e[7] : 0,
+        !!e[8], Number.isFinite(e[9]) ? e[9] : 0);
     }
   }
 }
@@ -10495,6 +10609,276 @@ if (oysters.size === 0) {
   for (let i = 0; i < 24 && oysters.size < 6; i++) trySproutOyster();
 }
 
+// ===== Плоди опунції: пустельна здобич, що її збивають пострілом =====
+// Пустеля, як печери й дно, нарешті платить за похід: у спеці на верхівках
+// кактусів зав'язуються плоди. Голіруч зривати боляче (колючки), тож плід
+// збивають стрілою чи сніжкою — він падає під кактус і підбирається впритул.
+// Печеться на пласких каменях багаття в печену опунцію — солодку ситну страву.
+const cactusFruits = new Map();        // "x,y,z" -> { x, y, z, group }
+const FRUIT_WORLD_MAX = 64;            // глобальний запобіжник (розмір збереження)
+const FRUIT_LOCAL_MAX = 6;             // стеля плодів довкола гравця
+const FRUIT_SPROUT_INTERVAL = 4;       // секунд між спробами зав'язі
+const FRUIT_SPROUT_TRIES = 8;          // колонок-кандидатів за спробу
+const FRUIT_SPROUT_MIN_R = 6;          // зав'язується не впритул до гравця...
+const FRUIT_SPROUT_MAX_R = 30;         // ...і не далі за це
+const FRUIT_MIN_GAP = 3;               // плоди не туляться купою
+const FRUIT_RECYCLE_DIST = 64;         // дальші плоди «пересіваються» до гравця
+const FRUIT_DESPAWN = 120;             // секунд, поки збитий плід зів'яне
+const FRUIT_PICKUP_R = 1.25;           // радіус підбирання збитого плоду
+const FRUIT_HIT_R = 0.45;              // радіус влучання снаряда в плід
+const FRUIT_PRICKLE_DMG = 1;           // колючки: шкода за зривання голіруч
+const FRUIT_COLOR = FRUIT_RAW_COLOR;   // колір бризок (визначений біля багаття)
+let fruitClock = 0;
+let fruitHintShown = false;
+let fruitPrickleHinted = false;
+
+const fruitKey = (x, y, z) => x + ',' + y + ',' + z;
+
+function makeFruitModel() {
+  const g = new THREE.Group();
+  animalBox(g, 0.2, 0.09, 0.18, 0x4e8442, 0, 0.045, 0);          // зелена подушка
+  animalBox(g, 0.2, 0.22, 0.18, 0xc23b6e, 0, 0.2, 0);            // сам плід
+  animalBox(g, 0.1, 0.08, 0.09, 0xd9557f, 0.03, 0.26, -0.03);    // рум'яний бік
+  animalBox(g, 0.03, 0.06, 0.03, 0xe8d9a0, 0.09, 0.3, 0.06);     // колючки
+  animalBox(g, 0.03, 0.05, 0.03, 0xe8d9a0, -0.08, 0.32, -0.05);
+  g.rotation.y = Math.random() * Math.PI * 2;
+  g.scale.setScalar(0.85 + Math.random() * 0.3);
+  return g;
+}
+
+function addCactusFruit(x, y, z) {
+  const key = fruitKey(x, y, z);
+  if (cactusFruits.has(key) || cactusFruits.size >= FRUIT_WORLD_MAX) return false;
+  const group = makeFruitModel();
+  group.position.set(x + 0.5, y, z + 0.5);
+  scene.add(group);
+  cactusFruits.set(key, { x, y, z, group });
+  return true;
+}
+
+function removeCactusFruit(key) {
+  const f = cactusFruits.get(key);
+  if (!f) return;
+  scene.remove(f.group);
+  f.group.traverse((m) => {
+    if (m.isMesh) { m.geometry.dispose(); m.material.dispose(); }
+  });
+  cactusFruits.delete(key);
+}
+
+// Клітинка придатна для плоду: вільне повітря на верхівці кактуса в пустелі
+function fruitCellOk(x, y, z) {
+  const k = fruitKey(x, y, z);
+  if (cactusFruits.has(k) || mushrooms.has(k) || crops.has(k) || saplings.has(k) ||
+      torches.has(k) || ladders.has(k) || rails.has(k) || campfires.has(k) ||
+      scarecrows.has(k) || anvils.has(k) || beehives.has(k)) return false;
+  if (blockAt(x, y, z) !== AIR || blockAt(x, y - 1, z) !== CACTUS) return false;
+  return biomeAt(x, z) === BIOME.DESERT;
+}
+
+function fruitTooClose(x, y, z) {
+  const gap2 = FRUIT_MIN_GAP * FRUIT_MIN_GAP;
+  for (const f of cactusFruits.values()) {
+    const dx = f.x - x, dy = f.y - y, dz = f.z - z;
+    if (dx * dx + dy * dy + dz * dz < gap2) return true;
+  }
+  return false;
+}
+
+function fruitsNearPlayer() {
+  const r2 = FRUIT_SPROUT_MAX_R * FRUIT_SPROUT_MAX_R;
+  let n = 0;
+  for (const f of cactusFruits.values()) {
+    const dx = f.x + 0.5 - player.pos.x, dz = f.z + 0.5 - player.pos.z;
+    if (dx * dx + dz * dz <= r2) n++;
+  }
+  return n;
+}
+
+// Як і в грибів та устриць: глобальна стеля — лише запобіжник збереження,
+// найдальший плід поза очима тихо «пересівається» ближче до гравця
+function recycleFarFruit() {
+  let farKey = null, farD2 = FRUIT_RECYCLE_DIST * FRUIT_RECYCLE_DIST;
+  for (const [key, f] of cactusFruits) {
+    const dx = f.x + 0.5 - player.pos.x, dz = f.z + 0.5 - player.pos.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 > farD2) { farD2 = d2; farKey = key; }
+  }
+  if (!farKey) return false;
+  removeCactusFruit(farKey);
+  return true;
+}
+
+function trySproutFruit() {
+  if (fruitsNearPlayer() >= FRUIT_LOCAL_MAX) return false;
+  if (cactusFruits.size >= FRUIT_WORLD_MAX && !recycleFarFruit()) return false;
+  for (let attempt = 0; attempt < FRUIT_SPROUT_TRIES; attempt++) {
+    const ang = Math.random() * Math.PI * 2;
+    const dist = FRUIT_SPROUT_MIN_R +
+      Math.random() * (FRUIT_SPROUT_MAX_R - FRUIT_SPROUT_MIN_R);
+    const x = Math.floor(player.pos.x + Math.cos(ang) * dist);
+    const z = Math.floor(player.pos.z + Math.sin(ang) * dist);
+    if (biomeAt(x, z) !== BIOME.DESERT) continue;
+    // Верхівка кактуса: від поверхні вгору до останнього блока кактуса
+    const base = heightAt(x, z);
+    if (blockAt(x, base + 1, z) !== CACTUS) continue;
+    let top = base + 1;
+    while (top - base < 4 && blockAt(x, top + 1, z) === CACTUS) top++;
+    const y = top + 1;
+    if (!fruitCellOk(x, y, z) || fruitTooClose(x, y, z)) continue;
+    addCactusFruit(x, y, z);
+    return true;
+  }
+  return false;
+}
+
+// Зняти плоди, чий кактус зрубано чи клітинку зайняв блок або інша сутність
+function validateCactusFruits() {
+  if (cactusFruits.size === 0) return;
+  for (const [key, f] of cactusFruits) {
+    const occupied = blockAt(f.x, f.y, f.z) !== AIR ||
+      torches.has(key) || ladders.has(key) || campfires.has(key);
+    const supported = blockAt(f.x, f.y - 1, f.z) === CACTUS;
+    if (occupied || !supported) {
+      spawnParticles(f.x + 0.5, f.y + 0.2, f.z + 0.5, FRUIT_COLOR, 6,
+        { radius: 0.2, speed: 1.2, upBias: 0.6, life: 0.4, size: 0.07, gravity: 8 });
+      removeCactusFruit(key);
+    }
+  }
+}
+
+// ===== Збиті плоди на землі (підбираються впритул, як кістки) =====
+const FRUIT_DROP_GEO = new THREE.BoxGeometry(0.2, 0.22, 0.18);
+const FRUIT_DROP_MAT = new THREE.MeshLambertMaterial({ color: 0xc23b6e });
+const FRUIT_NUB_GEO = new THREE.BoxGeometry(0.1, 0.06, 0.09);
+const FRUIT_NUB_MAT = new THREE.MeshLambertMaterial({ color: 0x4e8442 });
+
+const groundFruits = [];
+
+function makeGroundFruitModel() {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(FRUIT_DROP_GEO, FRUIT_DROP_MAT);
+  body.position.y = 0.11;
+  const nub = new THREE.Mesh(FRUIT_NUB_GEO, FRUIT_NUB_MAT);
+  nub.position.set(0.03, 0.24, 0.02);
+  g.add(body, nub);
+  return g;
+}
+
+// Плід збито: падає під кактус у бік польоту снаряда й лягає на землю
+function knockFruitDown(key, vx, vz) {
+  const f = cactusFruits.get(key);
+  if (!f) return false;
+  spawnParticles(f.x + 0.5, f.y + 0.25, f.z + 0.5, FRUIT_COLOR, 7,
+    { radius: 0.2, speed: 1.6, upBias: 0.8, life: 0.5, size: 0.07, gravity: 8 });
+  Sound.fruitPop();
+  // Клітинка приземлення: крок у бік польоту снаряда, а як там стіна — під сам кактус
+  const len = Math.hypot(vx, vz) || 1;
+  let lx = f.x + Math.round(vx / len), lz = f.z + Math.round(vz / len);
+  if (isSolid(blockAt(lx, f.y, lz))) { lx = f.x; lz = f.z; }
+  let ly = f.y;
+  while (ly > 1 && !isSolid(blockAt(lx, ly - 1, lz))) ly--;
+  if (groundFruits.length < 32) {
+    const mesh = makeGroundFruitModel();
+    const gx = lx + 0.5 + (Math.random() - 0.5) * 0.4;
+    const gz = lz + 0.5 + (Math.random() - 0.5) * 0.4;
+    mesh.position.set(gx, ly + 0.02, gz);
+    mesh.rotation.y = Math.random() * Math.PI * 2;
+    scene.add(mesh);
+    groundFruits.push({ mesh, x: gx, y: ly, z: gz, life: 0, bob: Math.random() * Math.PI * 2 });
+  }
+  removeCactusFruit(key);
+  unlockAch('fruit_shot');
+  return true;
+}
+
+function removeGroundFruit(i) {
+  scene.remove(groundFruits[i].mesh);   // спільні геометрії/матеріали — не чіпаємо
+  groundFruits.splice(i, 1);
+}
+
+// Збиті плоди: погойдуються, підбираються гравцем упритул, в'януть з часом
+function updateGroundFruits(dt) {
+  for (let i = groundFruits.length - 1; i >= 0; i--) {
+    const f = groundFruits[i];
+    f.life += dt;
+    f.bob += dt * 3;
+    f.mesh.position.y = f.y + 0.04 + Math.sin(f.bob) * 0.03;
+    f.mesh.rotation.y += dt * 1.1;
+    if (f.life > FRUIT_DESPAWN) { removeGroundFruit(i); continue; }
+    if (player.dead || player.fruit >= FRUIT_MAX) continue;
+    const dx = f.x - player.pos.x, dz = f.z - player.pos.z;
+    const dy = f.y - player.pos.y;
+    if (dx * dx + dz * dz <= FRUIT_PICKUP_R * FRUIT_PICKUP_R && dy > -1.6 && dy < 2) {
+      player.fruit = Math.min(FRUIT_MAX, player.fruit + 1);
+      updateFruitHud();
+      spawnParticles(f.x, f.y + 0.2, f.z, FRUIT_COLOR, 4,
+        { radius: 0.15, speed: 1, upBias: 1.2, life: 0.4, size: 0.07, gravity: -5 });
+      Sound.bonePop();
+      removeGroundFruit(i);
+      if (!fruitHintShown) {
+        fruitHintShown = true;
+        flashItemName("🌵 Плід опунції! Спечи його на багатті чи з'їж соковитим");
+      }
+    }
+  }
+}
+
+// Влучання снаряда (стріли чи сніжки) у плід на кактусі
+function fruitHitAt(pos, vx, vz) {
+  if (cactusFruits.size === 0) return false;
+  const r2 = FRUIT_HIT_R * FRUIT_HIT_R;
+  for (const [key, f] of cactusFruits) {
+    const dx = pos.x - (f.x + 0.5), dy = pos.y - (f.y + 0.22), dz = pos.z - (f.z + 0.5);
+    if (dx * dx + dy * dy + dz * dz <= r2) return knockFruitDown(key, vx, vz);
+  }
+  return false;
+}
+
+// Зірвати плід голіруч (ЛКМ): плід у торбі, але колючки жалять руку
+function pickFruitByHand(key) {
+  const f = cactusFruits.get(key);
+  if (!f) return false;
+  if (player.fruit >= FRUIT_MAX) {
+    flashItemName('Торба плодів повна — спечіть їх на багатті');
+    return true;
+  }
+  player.fruit += 1;
+  updateFruitHud();
+  spawnParticles(f.x + 0.5, f.y + 0.25, f.z + 0.5, FRUIT_COLOR, 6,
+    { radius: 0.2, speed: 1.4, upBias: 0.8, life: 0.45, size: 0.08, gravity: 6 });
+  Sound.fruitPop();
+  removeCactusFruit(key);
+  damagePlayer(FRUIT_PRICKLE_DMG, 'Поколовся об кактус');
+  if (!fruitPrickleHinted) {
+    fruitPrickleHinted = true;
+    flashItemName('Ай, колючки! Плід можна збити стрілою чи сніжкою');
+  }
+  return true;
+}
+
+function updateCactusFruits(dt) {
+  fruitClock += dt;
+  if (fruitClock < FRUIT_SPROUT_INTERVAL) return;
+  fruitClock = 0;
+  validateCactusFruits();
+  trySproutFruit();
+}
+
+// Відновити збережені плоди (формат: [x, y, z])
+if (savedGame && Array.isArray(savedGame.cactusFruits)) {
+  for (const e of savedGame.cactusFruits) {
+    if (Array.isArray(e) && e.length >= 3 && e.every(Number.isFinite)) {
+      addCactusFruit(e[0], e[1], e[2]);
+    }
+  }
+}
+// Новий світ (чи давній сейв без плодів): якщо спавн серед пустелі — зав'язати
+// перші плоди одразу (деінде пустеля засіється, щойно гравець до неї дійде)
+if (cactusFruits.size === 0) {
+  for (let i = 0; i < 16 && cactusFruits.size < 4; i++) trySproutFruit();
+}
+
 // ===== Ворони: зграйка, що налітає дзьобати підрослі посіви =====
 const crows = [];                      // зграя тимчасова — зі світом не зберігається
 const CROW_MAX = 3;                    // ворон у зграї водночас
@@ -11080,6 +11464,7 @@ function placeBlock() {
   validateAnvils();    // ... або клітинку ковадла
   validateMushrooms(); // ... або клітинку гриба
   validateOysters();   // ... або воду чи дно устриці
+  validateCactusFruits(); // ... і кактус під плодом
 
   // Гравій поверх двох блоків снігу — сніговик оживає
   if (id === GRAVEL) tryFormGolem(x, y, z);
@@ -11881,6 +12266,10 @@ const roastBadgeEl = document.getElementById('roast-badge');
 const roastCountEl = document.getElementById('roast-count');
 const gappleBadgeEl = document.getElementById('gapple-badge');
 const gappleCountEl = document.getElementById('gapple-count');
+const fruitBadgeEl = document.getElementById('fruit-badge');
+const fruitCountEl = document.getElementById('fruit-count');
+const bakedBadgeEl = document.getElementById('baked-badge');
+const bakedCountEl = document.getElementById('baked-count');
 const oysterBadgeEl = document.getElementById('oyster-badge');
 const oysterCountEl = document.getElementById('oyster-count');
 const molluskBadgeEl = document.getElementById('mollusk-badge');
@@ -12008,6 +12397,10 @@ function buildSurvivalHud() {
   if (roastIcon) drawRoastIcon(roastIcon);
   const gappleIcon = document.getElementById('gapple-icon');
   if (gappleIcon) drawGappleIcon(gappleIcon);
+  const fruitIcon = document.getElementById('fruit-icon');
+  if (fruitIcon) drawFruitIcon(fruitIcon);
+  const bakedIcon = document.getElementById('baked-icon');
+  if (bakedIcon) drawBakedIcon(bakedIcon);
   const oysterIcon = document.getElementById('oyster-icon');
   if (oysterIcon) drawOysterIcon(oysterIcon);
   const molluskIcon = document.getElementById('mollusk-icon');
@@ -12185,6 +12578,67 @@ function drawMushIcon(canvas) {
   ctx.fillRect(5, 4, 2, 2);
   ctx.fillRect(9, 3, 2, 2);
   ctx.fillRect(11, 6, 2, 1);
+}
+
+// Лічильники плодів опунції — сирих і печених (бейджі 🌵 🍠 над рештою торби)
+let lastFruitDrawn = -1;
+function updateFruitHud() {
+  if (player.fruit === lastFruitDrawn) return;
+  lastFruitDrawn = player.fruit;
+  fruitCountEl.textContent = player.fruit;
+  fruitBadgeEl.hidden = player.fruit <= 0;
+}
+
+let lastBakedDrawn = -1;
+function updateBakedHud() {
+  if (player.baked === lastBakedDrawn) return;
+  lastBakedDrawn = player.baked;
+  bakedCountEl.textContent = player.baked;
+  bakedBadgeEl.hidden = player.baked <= 0;
+}
+
+// Піксельна іконка плоду опунції: рожевий плід на зеленій подушці кактуса
+function drawFruitIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#4e8442';                          // подушка кактуса
+  ctx.fillRect(4, 11, 8, 4);
+  ctx.fillStyle = '#5e9c50';
+  ctx.fillRect(5, 12, 2, 2);
+  ctx.fillStyle = '#c23b6e';                          // сам плід
+  ctx.beginPath();
+  ctx.ellipse(8, 6.5, 3.6, 4.6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#d9557f';                          // рум'яний бік
+  ctx.fillRect(8, 4, 2, 3);
+  ctx.fillStyle = '#e8d9a0';                          // колючки
+  ctx.fillRect(5, 3, 1, 1);
+  ctx.fillRect(10, 2, 1, 1);
+  ctx.fillRect(11, 7, 1, 1);
+}
+
+// Піксельна іконка печеної опунції: карамельний плід із парою
+function drawBakedIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#8a4a3a';                          // спечений плід
+  ctx.beginPath();
+  ctx.ellipse(8, 9.5, 4.2, 4.4, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#a85f42';                          // карамельний бік
+  ctx.fillRect(8, 7, 3, 3);
+  ctx.fillStyle = '#f0c26a';                          // солодкий надріз
+  ctx.fillRect(6, 9, 4, 2);
+  ctx.strokeStyle = '#d8d3c2';                        // пара
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(6, 4); ctx.lineTo(7, 2);
+  ctx.moveTo(10, 4); ctx.lineTo(9, 2);
+  ctx.stroke();
 }
 
 // Лічильники устриць, молюсків і перлин (бейджі 🦪 🍤 ⚪ над рештою торби)
@@ -13326,6 +13780,8 @@ updateGappleHud();
 updateOysterHud();
 updateMolluskHud();
 updatePearlHud();
+updateFruitHud();
+updateBakedHud();
 updateOreHud();
 document.getElementById('respawn-btn').addEventListener('click', respawn);
 
@@ -13700,6 +14156,8 @@ const ACHIEVEMENTS = [
   { id: 'grapple_high',icon: '🧗', title: 'Верхолаз',           desc: 'Злетіти гаком на 6 блоків угору' },
   { id: 'oyster',      icon: '🦪', title: 'Пірнач',             desc: 'Дістати устрицю з дна водойми' },
   { id: 'pearl',       icon: '⚪', title: 'Ловець перлин',      desc: 'Знайти перлину в розпареній мушлі' },
+  { id: 'fruit_shot',  icon: '🎯', title: 'Влучний збір',       desc: 'Збити плід опунції з кактуса пострілом' },
+  { id: 'fruit_bake',  icon: '🍠', title: 'Печена опунція',     desc: 'Спекти плід кактуса на багатті' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -14967,6 +15425,102 @@ window.MCDebug = {
       pearl: player.pearl, pearlDry: player.pearlDry,
     };
   },
+  // Перенести гравця в довільну точку (для тестів)
+  tp: (x, z, y = null) => {
+    player.pos.set(x + 0.5, Number.isFinite(y) ? y : safeSpawnY(Math.floor(x), Math.floor(z)) + 1,
+      z + 0.5);
+    player.vel.set(0, 0, 0);
+    return { x: player.pos.x, y: player.pos.y, z: player.pos.z };
+  },
+  // Плоди опунції (для тестів)
+  giveFruit: (n = 5) => {
+    player.fruit = Math.min(FRUIT_MAX, player.fruit + n);
+    updateFruitHud();
+    return player.fruit;
+  },
+  giveBaked: (n = 5) => {
+    player.baked = Math.min(BAKED_MAX, player.baked + n);
+    updateBakedHud();
+    return player.baked;
+  },
+  sproutFruits: (tries = 12) => {
+    const before = new Set(cactusFruits.keys());
+    for (let i = 0; i < tries; i++) trySproutFruit();
+    return [...cactusFruits.values()].filter((f) => !before.has(fruitKey(f.x, f.y, f.z)))
+      .map((f) => ({ x: f.x, y: f.y, z: f.z }));
+  },
+  fruitState: () => [...cactusFruits.values()].map((f) => ({ x: f.x, y: f.y, z: f.z })),
+  // Перенести гравця в найближчу пустелю (де кактуси родять)
+  tpToDesert: (maxR = 400) => {
+    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+    for (let r = 0; r <= maxR; r += 8) {
+      for (let a = 0; a < 16; a++) {
+        const ang = (a / 16) * Math.PI * 2;
+        const x = px + Math.round(Math.cos(ang) * r);
+        const z = pz + Math.round(Math.sin(ang) * r);
+        if (biomeAt(x, z) !== BIOME.DESERT) continue;
+        player.pos.set(x + 0.5, safeSpawnY(x, z) + 1, z + 0.5);
+        player.vel.set(0, 0, 0);
+        return { x, z };
+      }
+    }
+    return null;
+  },
+  // Перенести гравця до найближчого плоду на кактусі
+  tpToFruit: () => {
+    let best = null, bestD = Infinity;
+    for (const f of cactusFruits.values()) {
+      const d = Math.hypot(f.x + 0.5 - player.pos.x, f.z + 0.5 - player.pos.z);
+      if (d < bestD) { bestD = d; best = f; }
+    }
+    if (!best) return null;
+    player.pos.set(best.x + 0.5 + 2, safeSpawnY(best.x + 2, best.z) + 1, best.z + 0.5);
+    player.vel.set(0, 0, 0);
+    return { x: best.x, y: best.y, z: best.z };
+  },
+  // Збити найближчий плід (в обхід прицілювання снарядом)
+  knockNearestFruit: () => {
+    let bestKey = null, bestD = Infinity;
+    for (const [key, f] of cactusFruits) {
+      const d = Math.hypot(f.x + 0.5 - player.pos.x, f.z + 0.5 - player.pos.z);
+      if (d < bestD) { bestD = d; bestKey = key; }
+    }
+    if (!bestKey) return null;
+    const f = cactusFruits.get(bestKey);
+    knockFruitDown(bestKey, f.x + 0.5 - player.pos.x, f.z + 0.5 - player.pos.z);
+    return { onGround: groundFruits.length, left: cactusFruits.size };
+  },
+  // Зірвати найближчий плід голіруч (колючки жалять — для тесту шкоди)
+  pickNearestFruit: () => {
+    let bestKey = null, bestD = Infinity;
+    for (const [key, f] of cactusFruits) {
+      const d = Math.hypot(f.x + 0.5 - player.pos.x, f.z + 0.5 - player.pos.z);
+      if (d < bestD) { bestD = d; bestKey = key; }
+    }
+    if (!bestKey) return null;
+    pickFruitByHand(bestKey);
+    return { fruit: player.fruit, health: player.health, left: cactusFruits.size };
+  },
+  // Покласти плід на найближче багаття й одразу допекти (наступний кадр)
+  bakeFruit: (fast = true) => {
+    let best = null, bestD = Infinity;
+    for (const c of campfires.values()) {
+      const d = Math.hypot(c.x + 0.5 - player.pos.x, c.z + 0.5 - player.pos.z);
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    if (!best) return 'багаття немає — MCDebug.campfireNear()';
+    if (!best.baking && player.fruit <= 0) return 'немає плодів — MCDebug.giveFruit()';
+    if (!best.baking && (best.steaming)) return 'камені зайняті устрицею';
+    if (!best.baking) tryBakeAt(best);
+    if (fast) best.bakeT = FRUIT_BAKE_TIME;
+    return { baking: best.baking, fruit: player.fruit, baked: player.baked };
+  },
+  get fruitInfo() {
+    return {
+      world: cactusFruits.size, onGround: groundFruits.length,
+      bag: player.fruit, baked: player.baked,
+    };
+  },
   // Мандрівний торговець (для тестів)
   forceTrader: () => {
     if (!trader) {
@@ -15259,6 +15813,7 @@ function animate() {
     updateSaplings(dt);
     updateMushrooms(dt);
     updateOysters(dt);
+    updateCactusFruits(dt);
     updateDoors(dt);
     updateGates(dt);
     if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
@@ -15267,6 +15822,7 @@ function animate() {
     updateThrownEggs(dt);
     updateGroundBones(dt);
     updateGroundSilk(dt);
+    updateGroundFruits(dt);
     updateGrapple(dt);
     updateSnowballs(dt);
     updateFallingBlocks(dt);
