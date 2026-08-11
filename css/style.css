@@ -285,7 +285,9 @@ kbd {
 #gapple-badge,
 #oyster-badge,
 #mollusk-badge,
-#pearl-badge {
+#pearl-badge,
+#fruit-badge,
+#baked-badge {
   position: fixed;
   right: 16px;
   bottom: 90px;
@@ -341,6 +343,14 @@ kbd {
 
 #pearl-badge {
   bottom: 618px;
+}
+
+#fruit-badge {
+  bottom: 662px;
+}
+
+#baked-badge {
+  bottom: 706px;
 }
 
 /* Руди в торбі: один бейдж із чотирма чипами (⚫⛓🟡💎), порожні чипи зникають */
