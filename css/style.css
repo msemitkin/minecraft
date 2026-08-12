@@ -287,7 +287,8 @@ kbd {
 #mollusk-badge,
 #pearl-badge,
 #fruit-badge,
-#baked-badge {
+#baked-badge,
+#truffle-badge {
   position: fixed;
   right: 16px;
   bottom: 90px;
@@ -351,6 +352,10 @@ kbd {
 
 #baked-badge {
   bottom: 706px;
+}
+
+#truffle-badge {
+  bottom: 750px;
 }
 
 /* Руди в торбі: один бейдж із чотирма чипами (⚫⛓🟡💎), порожні чипи зникають */
