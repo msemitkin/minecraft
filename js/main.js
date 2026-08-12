@@ -179,6 +179,13 @@ const FRUIT_FOOD = 4;           // скільки голоду відновлю�
 const BAKED_MAX = 32;           // максимум печених опунцій у торбі
 const BAKED_FOOD = 8;           // скільки голоду відновлює печена опунція (4 ніжки)
 
+// Трюфелі — лісова здобич із нюху свині: свиня на повідці, виведена в ліс,
+// винюхує під деревами сховані трюфелі й викопує їх п'ятачком. Трюфель —
+// делікатес: з'їдається (F) або міняється в ятці торговця за найвищою ціною.
+// Трюфелі не ставляться з меню: їх дарує лише свинячий ніс.
+const TRUFFLE_MAX = 8;          // максимум трюфелів у торбі (рідкісний крам)
+const TRUFFLE_FOOD = 6;         // скільки голоду відновлює трюфель (3 ніжки)
+
 // Ковадло — предмет-сутність (як опудало, не воксель): чавунна колода на
 // підставці, ставиться ПКМ на тверду землю. Видобута киркою руда (вугілля,
 // залізо, золото, алмази) тепер збирається в торбу, а ПКМ по ковадлу
@@ -506,6 +513,7 @@ function saveGame() {
         pearlDry: player.pearlDry,
         fruit: player.fruit,
         baked: player.baked,
+        truffle: player.truffle,
         coal: player.coal,
         iron: player.iron,
         gold: player.gold,
@@ -841,6 +849,16 @@ const Sound = (() => {
     bonePop() {
       noise({ dur: 0.06, gain: 0.12, type: 'bandpass', freq: 2100, q: 3, attack: 0.002 });
       tone({ freq: 660, dur: 0.09, type: 'triangle', gain: 0.09, slideTo: 990 });
+    },
+    // Свиняче нюшіння: низьке носове «хрю-хрю» з придихом
+    snort() {
+      noise({ dur: 0.09, gain: 0.13, type: 'bandpass', freq: 420, q: 1.7 });
+      tone({ freq: 175, dur: 0.1, type: 'sawtooth', gain: 0.045, slideTo: 115 });
+      setTimeout(() => {
+        if (!enabled) return;
+        noise({ dur: 0.07, gain: 0.1, type: 'bandpass', freq: 360, q: 1.7 });
+        tone({ freq: 150, dur: 0.08, type: 'sawtooth', gain: 0.04, slideTo: 100 });
+      }, 130);
     },
     // Повідець накинуто: пружний скрип натягнутої мотузки
     leashOn() {
@@ -2261,6 +2279,7 @@ const player = {
   pearl: 0,             // перлини з мушель (найкращий крам для торговця)
   fruit: 0,             // збиті з кактусів плоди опунції (соковитий харч пустелі)
   baked: 0,             // печені на багатті опунції (солодка ситна страва)
+  truffle: 0,           // викопані свинею трюфелі (лісовий делікатес і крам)
   pearlDry: 0,          // порожніх мушель поспіль (гарантія перлини згодом)
   coal: 0,              // видобуте вугілля (паливо кузні)
   iron: 0,              // видобуте залізо (сировина кування)
@@ -2349,6 +2368,9 @@ if (savedGame && savedGame.player) {
   }
   if (Number.isFinite(p.baked)) {
     player.baked = THREE.MathUtils.clamp(Math.floor(p.baked), 0, BAKED_MAX);
+  }
+  if (Number.isFinite(p.truffle)) {
+    player.truffle = THREE.MathUtils.clamp(Math.floor(p.truffle), 0, TRUFFLE_MAX);
   }
   for (const k of Object.keys(ORE_MAX)) {
     if (Number.isFinite(p[k])) {
@@ -2813,7 +2835,8 @@ function eatFood() {
     updateHoneyHud();
     return;
   }
-  const rawAny = player.food > 0 || player.fruit > 0 || player.mush > 0;
+  const rawAny = player.food > 0 || player.fruit > 0 || player.mush > 0 ||
+    player.truffle > 0;
   const cookedAny = player.cooked > 0 || player.roast > 0 || player.mollusk > 0 ||
     player.baked > 0;
   if (player.hunger >= MAX_HUNGER) return;
@@ -2852,9 +2875,15 @@ function eatFood() {
   } else if (player.fruit > 0) {
     player.fruit -= 1;
     player.hunger = Math.min(MAX_HUNGER, player.hunger + FRUIT_FOOD);
-  } else {
+  } else if (player.mush > 0) {
     player.mush -= 1;
     player.hunger = Math.min(MAX_HUNGER, player.hunger + MUSH_FOOD);
+  } else {
+    // Трюфель їмо останнім: він найцінніший крам у ятці торговця
+    player.truffle -= 1;
+    player.hunger = Math.min(MAX_HUNGER, player.hunger + TRUFFLE_FOOD);
+    flashItemName('🌰 Трюфель — земляний делікатес');
+    unlockAch('truffle_eat');
   }
   player.eatTimer = EAT_COOLDOWN;
   Sound.eat();
@@ -2866,6 +2895,7 @@ function eatFood() {
   updateMolluskHud();
   updateFruitHud();
   updateBakedHud();
+  updateTruffleHud();
 }
 
 // ============================================================
@@ -3181,6 +3211,13 @@ function spawnAnimal(type, x, y, z, opts = {}) {
     // Повідець: тварина на поводі йде за гравцем; leashLine — мотузка в сцені
     leashed: false,
     leashLine: null,
+    // Свиня на повідці нюшить лісову землю: пауза між знахідками, місце
+    // копання й прогрес риття п'ятачком
+    sniffCd: 10 + Math.random() * 10,
+    digSpot: null,
+    digT: 0,
+    digWalkT: 0,
+    digging: false,
   });
 }
 
@@ -3262,16 +3299,19 @@ function updateAnimal(a, dt) {
     a.stateTimer = 1;
     a.targetYaw = Math.atan2(-(player.pos.x - a.pos.x), -(player.pos.z - a.pos.z));
   } else if (a.leashed) {
-    // На повідці: слухняно йде за гравцем (повід сильніший за «настрій»)
+    // На повідці: слухняно йде за гравцем (повід сильніший за «настрій»);
+    // свиня дорогою нюшить лісову землю й може звернути до трюфеля
     a.pursuing = false;
-    const d = Math.hypot(player.pos.x - a.pos.x, player.pos.z - a.pos.z);
-    if (d > LEASH_FOLLOW_MIN) {
-      a.state = 'walk';
-      a.stateTimer = 0.5;
-      a.targetYaw = Math.atan2(a.pos.x - player.pos.x, a.pos.z - player.pos.z);
-    } else {
-      a.state = 'idle';
-      a.stateTimer = 0.5;
+    if (!(a.type === 'pig' && updateTrufflePig(a, dt))) {
+      const d = Math.hypot(player.pos.x - a.pos.x, player.pos.z - a.pos.z);
+      if (d > LEASH_FOLLOW_MIN) {
+        a.state = 'walk';
+        a.stateTimer = 0.5;
+        a.targetYaw = Math.atan2(a.pos.x - player.pos.x, a.pos.z - player.pos.z);
+      } else {
+        a.state = 'idle';
+        a.stateTimer = 0.5;
+      }
     }
   } else {
     // «У настрої» після годування: крокує до найближчої такої самої
@@ -3409,8 +3449,9 @@ function updateAnimal(a, dt) {
 
   a.group.position.copy(a.pos);
   a.group.rotation.y = a.yaw;
-  // Поза сидіння: легкий нахил корпуса назад (ніс догори, зад до землі)
-  a.group.rotation.x = a.tamed && a.sitting ? 0.26 : 0;
+  // Поза сидіння: легкий нахил корпуса назад (ніс догори, зад до землі);
+  // свиня, що риє трюфель, навпаки пхає п'ятачок у землю
+  a.group.rotation.x = a.tamed && a.sitting ? 0.26 : a.digging ? -0.22 : 0;
 
   // Мотузка повідця тягнеться за грудьми гравця й шиєю тварини щокадру
   if (a.leashed) updateLeashLine(a);
@@ -3783,6 +3824,7 @@ function disposeLeashLine(a) {
 // Повідець урвався (задалеко чи паніка занесла): павутину втрачено
 function snapLeash(a) {
   a.leashed = false;
+  cancelDig(a);
   disposeLeashLine(a);
   Sound.leashSnap();
   flashItemName('🕸 Повідець урвався!');
@@ -3798,6 +3840,7 @@ function tryLeashAnimal() {
   if (!a) return false;   // тварини в прицілі нема — клік іде далі (двері тощо)
   if (a.leashed) {
     a.leashed = false;
+    cancelDig(a);
     disposeLeashLine(a);
     if (player.silk < SILK_MAX) { player.silk++; updateSilkHud(); }
     Sound.leashOff();
@@ -4149,11 +4192,12 @@ const TRADE_GOODS = {
   gapple: { icon: '🍏', name: 'золоте яблуко' },
   pearl:  { icon: '⚪', name: 'перлина' },
   fruit:  { icon: '🌵', name: 'плоди опунції' },
+  truffle: { icon: '🌰', name: 'трюфелі' },
 };
 const GOODS_MAX = {
   food: FOOD_MAX, eggs: EGG_MAX, mush: MUSH_MAX,
   honey: HONEY_MAX, bones: BONES_MAX, gapple: GAPPLE_MAX,
-  pearl: PEARL_MAX, fruit: FRUIT_MAX,
+  pearl: PEARL_MAX, fruit: FRUIT_MAX, truffle: TRUFFLE_MAX,
 };
 // Пул пропозицій: [віддати, скільки, отримати, скільки]. Головний приз —
 // золоте яблуко; кістки — запасний крам для тих, хто не б'ється зі скелетами;
@@ -4169,6 +4213,8 @@ const TRADE_POOL = [
   ['pearl', 1, 'honey', 3],
   ['fruit', 5, 'gapple', 1],
   ['fruit', 3, 'honey', 2],
+  ['truffle', 2, 'gapple', 1],
+  ['truffle', 1, 'honey', 2],
 ];
 
 let trader = null;                          // сутність торговця серед animals (або null)
@@ -4265,6 +4311,8 @@ function doTrade(offer) {
   updateMushHud();
   updateGappleHud();
   updatePearlHud();
+  updateFruitHud();
+  updateTruffleHud();
   renderTradePanel();
   saveGame();
   return true;
@@ -4300,7 +4348,7 @@ function renderTradePanel() {
     tradeListEl.appendChild(row);
   }
   tradeBagEl.textContent = 'У торбі: ' +
-    ['food', 'eggs', 'mush', 'honey', 'bones', 'fruit', 'gapple', 'pearl']
+    ['food', 'eggs', 'mush', 'honey', 'bones', 'fruit', 'truffle', 'gapple', 'pearl']
       .map((k) => `${TRADE_GOODS[k].icon} ${player[k] || 0}`).join('  ');
 }
 
@@ -4660,6 +4708,221 @@ function updateGroundSilk(dt) {
 }
 
 // Посипати кістяним борошном посів чи саджанець у клітинці перед прицілом (ПКМ)
+// ============================================================
+// Трюфелі — лісова здобич із нюху свині: свиня на повідці, виведена в ліс,
+// час від часу винюхує під деревами сховане місце, риє його п'ятачком і
+// викопує трюфель — той погойдується на землі й підбирається впритул у
+// торбу (🌰). Делікатес: з'їдається (F, коли решта харчу скінчилась) або
+// міняється в ятці торговця за найвищою ціною, як перлина
+// ============================================================
+const TRUFFLE_DESPAWN = 120;      // секунд, поки невзятий трюфель зникне
+const TRUFFLE_PICKUP_R = 1.25;    // радіус підбирання трюфеля, бл
+const TRUFFLE_SNIFF_R = 7;        // радіус, у якому свиня винюхує місце
+const TRUFFLE_DIG_TIME = 2.6;     // секунд риття п'ятачком
+const TRUFFLE_DIG_REACH = 0.9;    // дистанція до місця, з якої свиня риє
+const TRUFFLE_FIND_CD_MIN = 40;   // пауза між знахідками однієї свині...
+const TRUFFLE_FIND_CD_VAR = 25;   // ...+ випадкова добавка
+const TRUFFLE_RETRY_CD = 9;       // місця не знайшлося — понюхати згодом
+const TRUFFLE_ABANDON_D = 9;      // гравець відійшов — свиня кидає риття
+const TRUFFLE_WALK_TIMEOUT = 8;   // с дороги до місця без успіху — облишити
+const TRUFFLE_COLOR = new THREE.Color(0x5c4834);
+const TRUFFLE_DIRT_COLOR = new THREE.Color(0x6b4f33);
+
+// Спільні ресурси моделі трюфеля (одні геометрії/матеріали на всі трюфелі)
+const TRUFFLE_BODY_GEO = new THREE.BoxGeometry(0.22, 0.17, 0.2);
+const TRUFFLE_BUMP_GEO = new THREE.BoxGeometry(0.11, 0.1, 0.11);
+const TRUFFLE_MAT = new THREE.MeshLambertMaterial({ color: 0x5c4834 });
+const TRUFFLE_BUMP_MAT = new THREE.MeshLambertMaterial({ color: 0x74593c });
+
+const groundTruffles = [];        // викопані трюфелі, що лежать на землі
+
+let hintSniffShown = false;       // разові підказки нюху (на сесію)
+let hintForestShown = false;
+let hintTruffleUseShown = false;
+
+function makeTruffleModel() {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(TRUFFLE_BODY_GEO, TRUFFLE_MAT);
+  const b1 = new THREE.Mesh(TRUFFLE_BUMP_GEO, TRUFFLE_BUMP_MAT);
+  const b2 = new THREE.Mesh(TRUFFLE_BUMP_GEO, TRUFFLE_BUMP_MAT);
+  b1.position.set(0.08, 0.08, 0.05);
+  b2.position.set(-0.07, 0.06, -0.06);
+  g.add(body, b1, b2);
+  return g;
+}
+
+// Свиня дорила: лишити трюфель на землі там, де щойно летіла земля
+function dropTruffle(x, y, z) {
+  if (groundTruffles.length >= 8) return;
+  const mesh = makeTruffleModel();
+  mesh.position.set(x, y + 0.14, z);
+  mesh.rotation.y = Math.random() * Math.PI * 2;
+  scene.add(mesh);
+  groundTruffles.push({ mesh, x, y, z, life: 0, bob: Math.random() * Math.PI * 2 });
+}
+
+function removeGroundTruffle(i) {
+  scene.remove(groundTruffles[i].mesh);   // спільні геометрії/матеріали — не чіпаємо
+  groundTruffles.splice(i, 1);
+}
+
+// Трюфелі на землі: погойдуються, підбираються впритул, зникають з часом
+function updateGroundTruffles(dt) {
+  for (let i = groundTruffles.length - 1; i >= 0; i--) {
+    const t = groundTruffles[i];
+    t.life += dt;
+    t.bob += dt * 3;
+    t.mesh.position.y = t.y + 0.16 + Math.sin(t.bob) * 0.03;
+    t.mesh.rotation.y += dt * 1.0;
+    if (t.life > TRUFFLE_DESPAWN) { removeGroundTruffle(i); continue; }
+    if (player.dead || player.truffle >= TRUFFLE_MAX) continue;
+    const dx = t.x - player.pos.x, dz = t.z - player.pos.z;
+    const dy = t.y - player.pos.y;
+    if (dx * dx + dz * dz <= TRUFFLE_PICKUP_R * TRUFFLE_PICKUP_R && dy > -1.6 && dy < 2) {
+      player.truffle = Math.min(TRUFFLE_MAX, player.truffle + 1);
+      updateTruffleHud();
+      spawnParticles(t.x, t.y + 0.2, t.z, TRUFFLE_COLOR, 4,
+        { radius: 0.15, speed: 1, upBias: 1.2, life: 0.4, size: 0.07, gravity: -5 });
+      Sound.bonePop();
+      if (!hintTruffleUseShown) {
+        hintTruffleUseShown = true;
+        flashItemName('🌰 Трюфель — делікатес: з\'їж (F) чи обміняй у торговця');
+      }
+      removeGroundTruffle(i);
+    }
+  }
+}
+
+// Скинути стан риття (повідець знято/урвався чи свиня облишила місце)
+function cancelDig(a) {
+  a.digSpot = null;
+  a.digT = 0;
+  a.digWalkT = 0;
+  a.digging = false;
+}
+
+// Винюхати місце трюфеля неподалік свині: лісова земля (трава/ґрунт) із
+// вільною клітинкою над нею, обов'язково поблизу стовбура дерева
+function truffleSpotNear(a) {
+  for (let i = 0; i < 12; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const dist = 2 + Math.random() * (TRUFFLE_SNIFF_R - 2);
+    const x = Math.floor(a.pos.x + Math.cos(ang) * dist);
+    const z = Math.floor(a.pos.z + Math.sin(ang) * dist);
+    if (biomeAt(x, z) !== BIOME.FOREST) continue;
+    // Вікно пошуку землі центруємо на поверхні САМОЇ колони (рельєф у лісі
+    // горбистий — від висоти свині схили відпадали б), але не далі 4 блоків
+    // по висоті від свині, щоб місце лишалося досяжним пішки
+    let y = null;
+    for (let dy = 2; dy >= -2; dy--) {
+      const yy = heightAt(x, z) + 1 + dy;
+      if (Math.abs(yy - a.pos.y) > 4) continue;
+      const ground = blockAt(x, yy - 1, z);
+      if ((ground === GRASS || ground === DIRT) &&
+          !isSolid(blockAt(x, yy, z)) && !isFluid(blockAt(x, yy, z))) {
+        y = yy;
+        break;
+      }
+    }
+    if (y === null) continue;
+    // Трюфель ховається між коренів: поряд має рости стовбур
+    let tree = false;
+    for (let dx = -3; dx <= 3 && !tree; dx++) {
+      for (let dz = -3; dz <= 3 && !tree; dz++) {
+        for (let dy = -1; dy <= 2 && !tree; dy++) {
+          if (blockAt(x + dx, y + dy, z + dz) === LOG) tree = true;
+        }
+      }
+    }
+    if (!tree) continue;
+    // Стовбур просто на прямій від свині до місця — свиня вперлася б у
+    // нього: таке місце пропускаємо (перевірка колони на півдорозі)
+    const mx = Math.floor((a.pos.x + x + 0.5) / 2);
+    const mz = Math.floor((a.pos.z + z + 0.5) / 2);
+    if (blockAt(mx, y, mz) === LOG || blockAt(mx, y + 1, mz) === LOG) continue;
+    return { x, y, z };
+  }
+  return null;
+}
+
+// Нюх свині на повідці: тікає таймер, обирається місце, свиня йде до нього
+// й риє. Повертає true, поки свиня зайнята нюхом і керує собою сама
+function updateTrufflePig(a, dt) {
+  if (a.baby) return false;
+  if (a.digSpot) {
+    // Гравець пішов геть — трюфель почекає, свиня поспішає за поводирем
+    if (Math.hypot(player.pos.x - a.pos.x, player.pos.z - a.pos.z) > TRUFFLE_ABANDON_D) {
+      cancelDig(a);
+      a.sniffCd = TRUFFLE_RETRY_CD;
+      return false;
+    }
+    const sx = a.digSpot.x + 0.5, sz = a.digSpot.z + 0.5;
+    const d = Math.hypot(sx - a.pos.x, sz - a.pos.z);
+    a.targetYaw = Math.atan2(a.pos.x - sx, a.pos.z - sz);
+    if (d > TRUFFLE_DIG_REACH) {
+      // Дорога до місця; застрягла об рельєф — облишити й нюхати далі
+      a.digging = false;
+      a.digWalkT += dt;
+      if (a.digWalkT > TRUFFLE_WALK_TIMEOUT) {
+        cancelDig(a);
+        a.sniffCd = TRUFFLE_RETRY_CD;
+        return false;
+      }
+      a.state = 'walk';
+      a.stateTimer = 0.5;
+      return true;
+    }
+    // Риє: тупцює на місці, п'ятачок у землі, летить земля
+    a.state = 'idle';
+    a.stateTimer = 0.5;
+    a.digging = true;
+    a.digT += dt;
+    if (Math.random() < dt * 9) {
+      spawnParticles(sx, a.digSpot.y + 0.15, sz, TRUFFLE_DIRT_COLOR, 2,
+        { radius: 0.22, speed: 1.1, upBias: 1.4, life: 0.45, size: 0.08, gravity: 9 });
+    }
+    if (Math.random() < dt * 1.4) Sound.snort();
+    if (a.digT >= TRUFFLE_DIG_TIME) {
+      dropTruffle(sx, a.digSpot.y, sz);
+      spawnParticles(sx, a.digSpot.y + 0.25, sz, TRUFFLE_DIRT_COLOR, 8,
+        { radius: 0.3, speed: 1.5, upBias: 1.3, life: 0.6, size: 0.09, gravity: 7 });
+      Sound.bonePop();
+      unlockAch('truffle');
+      sleepToast('🌰 Свиня винюхала трюфель!');
+      cancelDig(a);
+      a.sniffCd = TRUFFLE_FIND_CD_MIN + Math.random() * TRUFFLE_FIND_CD_VAR;
+    }
+    return true;
+  }
+  a.digging = false;
+  if (!a.onGround) return false;
+  a.sniffCd -= dt;
+  if (a.sniffCd > 0) return false;
+  if (biomeAt(Math.floor(a.pos.x), Math.floor(a.pos.z)) !== BIOME.FOREST) {
+    // Поза лісом нюх мовчить: разова підказка, куди вести свиню
+    a.sniffCd = TRUFFLE_RETRY_CD;
+    if (!hintForestShown) {
+      hintForestShown = true;
+      flashItemName('🐽 Свиня нюшить дарма: трюфелі ховаються в лісі під деревами');
+    }
+    return false;
+  }
+  const spot = truffleSpotNear(a);
+  if (!spot) {
+    a.sniffCd = TRUFFLE_RETRY_CD;
+    return false;
+  }
+  a.digSpot = spot;
+  a.digT = 0;
+  a.digWalkT = 0;
+  Sound.snort();
+  if (!hintSniffShown) {
+    hintSniffShown = true;
+    flashItemName('🐽 Свиня щось винюхала!');
+  }
+  return true;
+}
+
 function useBonemeal(hit) {
   if (player.bones <= 0) {
     flashItemName('Немає кісток — їх лишають скелети');
@@ -12270,6 +12533,8 @@ const fruitBadgeEl = document.getElementById('fruit-badge');
 const fruitCountEl = document.getElementById('fruit-count');
 const bakedBadgeEl = document.getElementById('baked-badge');
 const bakedCountEl = document.getElementById('baked-count');
+const truffleBadgeEl = document.getElementById('truffle-badge');
+const truffleCountEl = document.getElementById('truffle-count');
 const oysterBadgeEl = document.getElementById('oyster-badge');
 const oysterCountEl = document.getElementById('oyster-count');
 const molluskBadgeEl = document.getElementById('mollusk-badge');
@@ -12401,6 +12666,8 @@ function buildSurvivalHud() {
   if (fruitIcon) drawFruitIcon(fruitIcon);
   const bakedIcon = document.getElementById('baked-icon');
   if (bakedIcon) drawBakedIcon(bakedIcon);
+  const truffleIcon = document.getElementById('truffle-icon');
+  if (truffleIcon) drawTruffleIcon(truffleIcon);
   const oysterIcon = document.getElementById('oyster-icon');
   if (oysterIcon) drawOysterIcon(oysterIcon);
   const molluskIcon = document.getElementById('mollusk-icon');
@@ -12617,6 +12884,38 @@ function drawFruitIcon(canvas) {
   ctx.fillRect(5, 3, 1, 1);
   ctx.fillRect(10, 2, 1, 1);
   ctx.fillRect(11, 7, 1, 1);
+}
+
+// Лічильник трюфелів (бейдж 🌰 — лісовий делікатес із нюху свині)
+let lastTruffleDrawn = -1;
+function updateTruffleHud() {
+  if (player.truffle === lastTruffleDrawn) return;
+  lastTruffleDrawn = player.truffle;
+  truffleCountEl.textContent = player.truffle;
+  truffleBadgeEl.hidden = player.truffle <= 0;
+}
+
+// Піксельна іконка трюфеля: темна горбкувата грудка в землі
+function drawTruffleIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#6b4f33';                          // грудочки землі
+  ctx.fillRect(2, 12, 4, 2);
+  ctx.fillRect(10, 13, 4, 2);
+  ctx.fillStyle = '#5c4834';                          // тіло трюфеля
+  ctx.beginPath();
+  ctx.ellipse(8, 8.5, 4.8, 4.2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#74593c';                          // горбки
+  ctx.fillRect(5, 5, 2, 2);
+  ctx.fillRect(9, 4, 2, 2);
+  ctx.fillRect(10, 9, 2, 2);
+  ctx.fillRect(5, 10, 2, 2);
+  ctx.fillStyle = '#8a6f4d';                          // світлі прожилки
+  ctx.fillRect(7, 7, 1, 1);
+  ctx.fillRect(9, 8, 1, 1);
 }
 
 // Піксельна іконка печеної опунції: карамельний плід із парою
@@ -13782,6 +14081,7 @@ updateMolluskHud();
 updatePearlHud();
 updateFruitHud();
 updateBakedHud();
+updateTruffleHud();
 updateOreHud();
 document.getElementById('respawn-btn').addEventListener('click', respawn);
 
@@ -14158,6 +14458,8 @@ const ACHIEVEMENTS = [
   { id: 'pearl',       icon: '⚪', title: 'Ловець перлин',      desc: 'Знайти перлину в розпареній мушлі' },
   { id: 'fruit_shot',  icon: '🎯', title: 'Влучний збір',       desc: 'Збити плід опунції з кактуса пострілом' },
   { id: 'fruit_bake',  icon: '🍠', title: 'Печена опунція',     desc: 'Спекти плід кактуса на багатті' },
+  { id: 'truffle',     icon: '🐽', title: 'Трюфельний нюх',     desc: 'Свиня на повідці винюхала трюфель у лісі' },
+  { id: 'truffle_eat', icon: '🌰', title: 'Лісовий делікатес',  desc: "З'їсти викопаний свинею трюфель" },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -15521,6 +15823,119 @@ window.MCDebug = {
       bag: player.fruit, baked: player.baked,
     };
   },
+  // Виставити голод (для тестів поїдання)
+  setHunger: (n = 10) => {
+    player.hunger = THREE.MathUtils.clamp(n, 0, MAX_HUNGER);
+    return player.hunger;
+  },
+  // Трюфелі та свиня-нюхачка (для тестів)
+  giveTruffles: (n = 3) => {
+    player.truffle = Math.min(TRUFFLE_MAX, player.truffle + n);
+    updateTruffleHud();
+    return player.truffle;
+  },
+  // Перенести гравця в найближчий ліс (де свиня чує трюфелі)
+  tpToForest: (maxR = 400) => {
+    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+    for (let r = 0; r <= maxR; r += 8) {
+      for (let a = 0; a < 16; a++) {
+        const ang = (a / 16) * Math.PI * 2;
+        const x = px + Math.round(Math.cos(ang) * r);
+        const z = pz + Math.round(Math.sin(ang) * r);
+        if (biomeAt(x, z) !== BIOME.FOREST) continue;
+        player.pos.set(x + 0.5, safeSpawnY(x, z) + 1, z + 0.5);
+        player.vel.set(0, 0, 0);
+        return { x, z };
+      }
+    }
+    return null;
+  },
+  // Свиня на повідці просто біля гравця (в обхід пошуку і павутини)
+  spawnLeashedPig: () => {
+    spawnAnimal('pig', player.pos.x + 1.5, player.pos.y + 0.1, player.pos.z);
+    const pig = animals[animals.length - 1];
+    pig.leashed = true;
+    return { x: +pig.pos.x.toFixed(1), y: +pig.pos.y.toFixed(1), z: +pig.pos.z.toFixed(1) };
+  },
+  // Змусити найближчу свиню на повідці нюхати просто зараз
+  sniffNow: () => {
+    let best = null, bestD = Infinity;
+    for (const a of animals) {
+      if (a.type !== 'pig' || !a.leashed) continue;
+      const d = Math.hypot(a.pos.x - player.pos.x, a.pos.z - player.pos.z);
+      if (d < bestD) { bestD = d; best = a; }
+    }
+    if (!best) return 'свині на повідці немає — MCDebug.spawnLeashedPig()';
+    best.sniffCd = 0;
+    if (!best.digSpot) {
+      const spot = truffleSpotNear(best);
+      if (spot) { best.digSpot = spot; best.digT = 0; best.digWalkT = 0; }
+      else return 'місця не знайшлося (не ліс чи нема дерев поруч)';
+    }
+    return { spot: best.digSpot };
+  },
+  // Домалювати риття: свиня докопує трюфель наступним кадром
+  digNow: () => {
+    for (const a of animals) {
+      if (a.type === 'pig' && a.leashed && a.digSpot) {
+        a.pos.x = a.digSpot.x + 0.5;
+        a.pos.z = a.digSpot.z + 0.5;
+        a.pos.y = a.digSpot.y + 0.05;
+        a.digT = TRUFFLE_DIG_TIME;
+        return { spot: a.digSpot };
+      }
+    }
+    return 'жодна свиня зараз не риє — MCDebug.sniffNow()';
+  },
+  get truffleInfo() {
+    return {
+      pigs: animals.filter((a) => a.type === 'pig' && a.leashed).map((a) => ({
+        x: +a.pos.x.toFixed(1), z: +a.pos.z.toFixed(1),
+        sniffCd: +a.sniffCd.toFixed(1), digging: a.digging,
+        spot: a.digSpot,
+      })),
+      onGround: groundTruffles.length,
+      bag: player.truffle,
+    };
+  },
+  // Розтин околиці: скільки колон довкола гравця годяться під трюфель і
+  // чому решта відпадає (не ліс / нема землі поруч по висоті / нема дерева)
+  probeTruffle: (r = 7) => {
+    const cx = Math.floor(player.pos.x), cy = Math.floor(player.pos.y),
+      cz = Math.floor(player.pos.z);
+    let total = 0, forest = 0, ground = 0, tree = 0;
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dz = -r; dz <= r; dz++) {
+        total++;
+        const x = cx + dx, z = cz + dz;
+        if (biomeAt(x, z) !== BIOME.FOREST) continue;
+        forest++;
+        let y = null;
+        for (let dy = 2; dy >= -2; dy--) {
+          const yy = heightAt(x, z) + 1 + dy;
+          if (Math.abs(yy - cy) > 4) continue;
+          const g = blockAt(x, yy - 1, z);
+          if ((g === GRASS || g === DIRT) &&
+              !isSolid(blockAt(x, yy, z)) && !isFluid(blockAt(x, yy, z))) {
+            y = yy;
+            break;
+          }
+        }
+        if (y === null) continue;
+        ground++;
+        let near = false;
+        for (let tx = -3; tx <= 3 && !near; tx++) {
+          for (let tz = -3; tz <= 3 && !near; tz++) {
+            for (let ty = -1; ty <= 2 && !near; ty++) {
+              if (blockAt(x + tx, y + ty, z + tz) === LOG) near = true;
+            }
+          }
+        }
+        if (near) tree++;
+      }
+    }
+    return { total, forest, ground, withTree: tree };
+  },
   // Мандрівний торговець (для тестів)
   forceTrader: () => {
     if (!trader) {
@@ -15823,6 +16238,7 @@ function animate() {
     updateGroundBones(dt);
     updateGroundSilk(dt);
     updateGroundFruits(dt);
+    updateGroundTruffles(dt);
     updateGrapple(dt);
     updateSnowballs(dt);
     updateFallingBlocks(dt);
