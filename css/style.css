@@ -288,7 +288,8 @@ kbd {
 #pearl-badge,
 #fruit-badge,
 #baked-badge,
-#truffle-badge {
+#truffle-badge,
+#crown-badge {
   position: fixed;
   right: 16px;
   bottom: 90px;
@@ -358,6 +359,10 @@ kbd {
   bottom: 750px;
 }
 
+#crown-badge {
+  bottom: 794px;
+}
+
 /* Руди в торбі: один бейдж із чотирма чипами (⚫⛓🟡💎), порожні чипи зникають */
 #ore-badge {
   position: fixed;
@@ -406,7 +411,11 @@ kbd {
 #gapple-badge[hidden],
 #oyster-badge[hidden],
 #mollusk-badge[hidden],
-#pearl-badge[hidden] {
+#pearl-badge[hidden],
+#fruit-badge[hidden],
+#baked-badge[hidden],
+#truffle-badge[hidden],
+#crown-badge[hidden] {
   display: none;
 }
 
@@ -426,6 +435,10 @@ kbd {
   #oyster-badge,
   #mollusk-badge,
   #pearl-badge,
+  #fruit-badge,
+  #baked-badge,
+  #truffle-badge,
+  #crown-badge,
   #ore-badge {
     right: 96px;
   }
@@ -462,6 +475,47 @@ kbd {
   height: 20px;
   image-rendering: pixelated;
   filter: drop-shadow(1px 1px 0 rgba(0, 0, 0, 0.6));
+}
+
+/* ===== Смуга здоров'я ватажка облоги (угорі екрана, поки бос поряд) ===== */
+#bossbar {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(420px, 60vw);
+  padding: 6px 12px 8px;
+  background: rgba(20, 0, 0, 0.5);
+  border: 1px solid rgba(208, 52, 31, 0.55);
+  border-radius: 8px;
+  text-align: center;
+  pointer-events: none;
+  z-index: 5;
+}
+
+#bossbar[hidden] {
+  display: none;
+}
+
+#bossbar-name {
+  color: #ffd7d0;
+  font: bold 13px/1.2 system-ui, sans-serif;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+#bossbar-track {
+  margin-top: 5px;
+  height: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+#bossbar-fill {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #a01818, #e04a2a);
+  transition: width 0.15s linear;
 }
 
 /* ===== Червоний спалах при отриманні шкоди ===== */

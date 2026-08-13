@@ -186,6 +186,11 @@ const BAKED_FOOD = 8;           // скільки голоду відновлю�
 const TRUFFLE_MAX = 8;          // максимум трюфелів у торбі (рідкісний крам)
 const TRUFFLE_FOOD = 6;         // скільки голоду відновлює трюфель (3 ніжки)
 
+// Корона ватажка — трофей кривавої ночі: повалений ватажок облоги лишає
+// корону, що підбирається впритул у торбу (👑) — найдорожчий крам для ятки
+// торговця. Корони не ставляться з меню: їх дає лише перемога над ватажком.
+const CROWN_MAX = 3;            // максимум корон у торбі (трофейний крам)
+
 // Ковадло — предмет-сутність (як опудало, не воксель): чавунна колода на
 // підставці, ставиться ПКМ на тверду землю. Видобута киркою руда (вугілля,
 // залізо, золото, алмази) тепер збирається в торбу, а ПКМ по ковадлу
@@ -514,6 +519,7 @@ function saveGame() {
         fruit: player.fruit,
         baked: player.baked,
         truffle: player.truffle,
+        crown: player.crown,
         coal: player.coal,
         iron: player.iron,
         gold: player.gold,
@@ -524,7 +530,10 @@ function saveGame() {
         flying: player.flying,
       },
       timeOfDay,
-      night: [nightNo, sinceBlood, bloodNight ? 1 : 0],
+      // Живий ватажок не зберігається серед нечисті — тож у сейві він «ще не
+      // приходив»: після завантаження облога знову його покличе
+      night: [nightNo, sinceBlood, bloodNight ? 1 : 0,
+              warlordDone && !mobs.some((m) => m.type === 'warlord') ? 1 : 0],
       weather: { state: weatherState, timer: weatherTimer, intensity: weatherIntensity },
       torches: [...torches.values()].map((t) => [t.x, t.y, t.z, t.face, t.dx, t.dz]),
       crops: [...crops.values()].map((c) => [c.x, c.y, c.z, c.stage, +c.growth.toFixed(2)]),
@@ -932,6 +941,17 @@ const Sound = (() => {
     spiderHiss() {
       noise({ dur: 0.35, gain: 0.2, type: 'highpass', freq: 3400, q: 0.6, attack: 0.03 });
       tone({ freq: 880, dur: 0.18, type: 'sawtooth', gain: 0.045, slideTo: 460 });
+    },
+    // Ватажок облоги реве: низький грізний рик із хрипом
+    warlordRoar() {
+      tone({ freq: 88, dur: 0.85, type: 'sawtooth', gain: 0.18, slideTo: 52, attack: 0.08 });
+      tone({ freq: 44, dur: 0.85, type: 'square', gain: 0.08, attack: 0.08 });
+      noise({ dur: 0.6, gain: 0.1, type: 'lowpass', freq: 500, q: 0.8, attack: 0.1 });
+    },
+    // Ватажок гатить по землі: важкий глухий струс
+    slam() {
+      tone({ freq: 70, dur: 0.4, type: 'sine', gain: 0.3, slideTo: 28 });
+      noise({ dur: 0.35, gain: 0.24, type: 'lowpass', freq: 300, q: 0.6 });
     },
     // Лук натягують: тиха висхідна «рипа» дерева й тятиви
     bowDraw() {
@@ -2280,6 +2300,7 @@ const player = {
   fruit: 0,             // збиті з кактусів плоди опунції (соковитий харч пустелі)
   baked: 0,             // печені на багатті опунції (солодка ситна страва)
   truffle: 0,           // викопані свинею трюфелі (лісовий делікатес і крам)
+  crown: 0,             // корони повалених ватажків облоги (трофей і найдорожчий крам)
   pearlDry: 0,          // порожніх мушель поспіль (гарантія перлини згодом)
   coal: 0,              // видобуте вугілля (паливо кузні)
   iron: 0,              // видобуте залізо (сировина кування)
@@ -2371,6 +2392,9 @@ if (savedGame && savedGame.player) {
   }
   if (Number.isFinite(p.truffle)) {
     player.truffle = THREE.MathUtils.clamp(Math.floor(p.truffle), 0, TRUFFLE_MAX);
+  }
+  if (Number.isFinite(p.crown)) {
+    player.crown = THREE.MathUtils.clamp(Math.floor(p.crown), 0, CROWN_MAX);
   }
   for (const k of Object.keys(ORE_MAX)) {
     if (Number.isFinite(p[k])) {
@@ -4193,11 +4217,13 @@ const TRADE_GOODS = {
   pearl:  { icon: '⚪', name: 'перлина' },
   fruit:  { icon: '🌵', name: 'плоди опунції' },
   truffle: { icon: '🌰', name: 'трюфелі' },
+  crown: { icon: '👑', name: 'корона ватажка' },
 };
 const GOODS_MAX = {
   food: FOOD_MAX, eggs: EGG_MAX, mush: MUSH_MAX,
   honey: HONEY_MAX, bones: BONES_MAX, gapple: GAPPLE_MAX,
   pearl: PEARL_MAX, fruit: FRUIT_MAX, truffle: TRUFFLE_MAX,
+  crown: CROWN_MAX,
 };
 // Пул пропозицій: [віддати, скільки, отримати, скільки]. Головний приз —
 // золоте яблуко; кістки — запасний крам для тих, хто не б'ється зі скелетами;
@@ -4215,6 +4241,7 @@ const TRADE_POOL = [
   ['fruit', 3, 'honey', 2],
   ['truffle', 2, 'gapple', 1],
   ['truffle', 1, 'honey', 2],
+  ['crown', 1, 'gapple', 2],
 ];
 
 let trader = null;                          // сутність торговця серед animals (або null)
@@ -4313,6 +4340,7 @@ function doTrade(offer) {
   updatePearlHud();
   updateFruitHud();
   updateTruffleHud();
+  updateCrownHud();
   renderTradePanel();
   saveGame();
   return true;
@@ -4348,7 +4376,7 @@ function renderTradePanel() {
     tradeListEl.appendChild(row);
   }
   tradeBagEl.textContent = 'У торбі: ' +
-    ['food', 'eggs', 'mush', 'honey', 'bones', 'fruit', 'truffle', 'gapple', 'pearl']
+    ['food', 'eggs', 'mush', 'honey', 'bones', 'fruit', 'truffle', 'crown', 'gapple', 'pearl']
       .map((k) => `${TRADE_GOODS[k].icon} ${player[k] || 0}`).join('  ');
 }
 
@@ -4703,6 +4731,77 @@ function updateGroundSilk(dt) {
       removeGroundSilk(i);
       unlockAch('silk');
       if (first) flashItemName('🕸 Павутина! Скрути повідець (Tab) і веди тварин');
+    }
+  }
+}
+
+// ============================================================
+// Корона ватажка — трофей кривавої ночі: повалений ватажок облоги лишає
+// корону, що виблискує на землі й підбирається впритул у торбу (👑) —
+// найдорожчий крам для ятки торговця
+// ============================================================
+const CROWN_DESPAWN = 240;       // корона лежить удвічі довше за кістки — трофей
+const CROWN_PICKUP_R = 1.3;      // радіус підбирання корони, бл
+const CROWN_COLOR = new THREE.Color(0xd8a927);
+
+// Спільні ресурси моделі корони (одні геометрії/матеріал на всі корони)
+const CROWN_MAT = new THREE.MeshLambertMaterial({ color: 0xd8a927 });
+const CROWN_BAND_GEO = new THREE.BoxGeometry(0.3, 0.07, 0.3);
+const CROWN_TOOTH_GEO = new THREE.BoxGeometry(0.05, 0.11, 0.04);
+
+const groundCrowns = [];         // корони, що лежать на землі
+
+function makeCrownModel() {
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(CROWN_BAND_GEO, CROWN_MAT));
+  for (const [cx, cz] of [[-0.12, -0.13], [0.12, -0.13], [-0.12, 0.13],
+                          [0.12, 0.13], [0, -0.14], [0, 0.14]]) {
+    const t = new THREE.Mesh(CROWN_TOOTH_GEO, CROWN_MAT);
+    t.position.set(cx, 0.08, cz);
+    g.add(t);
+  }
+  return g;
+}
+
+// Ватажок повалений: корона спадає з голови на землю
+function dropCrown(x, y, z) {
+  const mesh = makeCrownModel();
+  mesh.position.set(x, y + 0.2, z);
+  scene.add(mesh);
+  groundCrowns.push({ mesh, x, y, z, life: 0, bob: Math.random() * Math.PI * 2 });
+}
+
+function removeGroundCrown(i) {
+  scene.remove(groundCrowns[i].mesh);  // спільні геометрії/матеріал — не чіпаємо
+  groundCrowns.splice(i, 1);
+}
+
+// Корона на землі: погойдується, іскриться золотом, підбирається впритул
+function updateGroundCrowns(dt) {
+  for (let i = groundCrowns.length - 1; i >= 0; i--) {
+    const c = groundCrowns[i];
+    c.life += dt;
+    c.bob += dt * 2.4;
+    c.mesh.position.y = c.y + 0.24 + Math.sin(c.bob) * 0.04;
+    c.mesh.rotation.y += dt * 0.9;
+    if (Math.random() < dt * 3) {
+      spawnParticles(c.x, c.y + 0.32, c.z, CROWN_COLOR, 1,
+        { radius: 0.2, speed: 0.4, upBias: 1.2, life: 0.5, size: 0.06, gravity: -1 });
+    }
+    if (c.life > CROWN_DESPAWN) { removeGroundCrown(i); continue; }
+    if (player.dead || player.crown >= CROWN_MAX) continue;
+    const dx = c.x - player.pos.x, dz = c.z - player.pos.z;
+    const dy = c.y - player.pos.y;
+    if (dx * dx + dz * dz <= CROWN_PICKUP_R * CROWN_PICKUP_R && dy > -1.6 && dy < 2) {
+      const first = player.crown === 0 && !achUnlocked.has('crown');
+      player.crown = Math.min(CROWN_MAX, player.crown + 1);
+      updateCrownHud();
+      spawnParticles(c.x, c.y + 0.3, c.z, CROWN_COLOR, 8,
+        { radius: 0.2, speed: 1.4, upBias: 1.4, life: 0.5, size: 0.08, gravity: -4 });
+      Sound.trade();
+      removeGroundCrown(i);
+      unlockAch('crown');
+      if (first) flashItemName('👑 Корона ватажка! Торговець дасть за неї найвищу ціну');
     }
   }
 }
@@ -5293,6 +5392,25 @@ const BLOOD_MAX_CALM = 4;      // стільки спокійних ночей �
 const BLOOD_GUARD_R = 3.5;     // радіус захисту смолоскипа/багаття під час облоги (замість 7)
 const BLOOD_SPEED = 1.15;      // множник швидкості нечисті, спавненої кривавої ночі
 const BLOOD_HEALTH = 4;        // додаткове здоров'я такої нечисті
+
+// Ватажок облоги — бос кривавої ночі: раз на облогу, невдовзі після її
+// початку, з пітьми виходить здоровенний зомбі в короні. Його не спиняє ні
+// світло смолоскипів, ні відстань (не деспавниться); б'є важко, а зблизька
+// гатить по землі — ударна хвиля, яку не бере щит (єдиний порятунок —
+// відбігти за мить замаху). Повалений — лишає корону 👑 (найдорожчий крам
+// ятки) і жменю кісток.
+const WARLORD_DELAY_MIN = 25;  // секунд від початку облоги до появи ватажка...
+const WARLORD_DELAY_VAR = 15;  // ...+ випадкова добавка
+const WARLORD_HEALTH = 60;     // здоров'я ватажка (алмазний меч — 4 удари)
+const WARLORD_SPEED = 1.7;     // повільніший за зомбі, але невпинний
+const WARLORD_DMG = 6;         // шкода важкого удару
+const WARLORD_SLAM_R = 4.2;    // радіус ударної хвилі по землі
+const WARLORD_SLAM_DMG = 4;    // шкода хвилі (щит її не спиняє — тікай)
+const WARLORD_SLAM_CD = 7;     // перезарядка струсу, с (+ розкид)
+const WARLORD_SLAM_WINDUP = 0.7; // замах перед ударом — вікно, щоб відбігти
+let warlordTimer = 0;          // до появи ватажка цієї облоги (0 — не чекаємо)
+let warlordDone = false;       // ватажок цієї облоги вже приходив
+
 let nightNo = 0;               // скільки ночей уже западало в цьому світі
 let sinceBlood = 0;            // спокійних ночей від минулої облоги
 let bloodNight = false;
@@ -5304,12 +5422,17 @@ if (Array.isArray(savedGame?.night)) {
   sinceBlood = savedGame.night[1] | 0;
   bloodNight = !!savedGame.night[2];
   bloodSurvived = bloodNight;  // перервана сейвом облога продовжується
+  warlordDone = !!savedGame.night[3];
+  // ...і її ватажок (як його ще не повалено) повертається за хвилю
+  if (bloodNight && !warlordDone) warlordTimer = 20;
 }
 
 function startBloodNight() {
   bloodNight = true;
   bloodSurvived = true;
   sinceBlood = 0;
+  warlordTimer = WARLORD_DELAY_MIN + Math.random() * WARLORD_DELAY_VAR;
+  warlordDone = false;
   sleepToast('🌘 Кривава ніч! Нечисть суне звідусіль — протримайся до світанку!');
   Sound.bloodMoon();
 }
@@ -5318,6 +5441,7 @@ const ZOMBIE_COLOR = new THREE.Color(0x4f7a44);
 const CREEPER_COLOR = new THREE.Color(0x5fa64d);
 const SKELETON_COLOR = new THREE.Color(0xd8d6cc);
 const SPIDER_COLOR = new THREE.Color(0x2b2136);
+const WARLORD_COLOR = new THREE.Color(0x3d5c38);
 const SMOKE_COLOR = new THREE.Color(0x4a4a4a);
 const LAVA_FIRE_COLOR = new THREE.Color(0xff7a1a);
 const mobs = [];
@@ -5353,6 +5477,36 @@ function buildZombie(g) {
   const armR = animalLeg(g, 0.17, 0.62, skin, 0.345, 1.46, 0);
   const legL = animalLeg(g, 0.19, 0.8, pants, -0.13, 0.8, 0);
   const legR = animalLeg(g, 0.19, 0.8, pants, 0.13, 0.8, 0);
+  return { legs: [legL, legR], arms: [armL, armR] };
+}
+
+// Будує ватажка кривавої ночі: здоровенний зомбі з кістяними наплічниками
+// (трофеї з полеглих скелетів) і золотою короною. Очі жевріють багряним і не
+// беруть участі у спалаху болю. Дивиться в -Z (як гравець при yaw = 0).
+function buildWarlord(g) {
+  const skin = 0x3d5c38, cloth = 0x4a2430, pants = 0x26263e,
+        boneC = 0xd8d6cc, goldC = 0xd8a927;
+  animalBox(g, 0.78, 1.0, 0.44, cloth, 0, 1.62, 0);          // масивний тулуб
+  animalBox(g, 0.62, 0.62, 0.62, skin, 0, 2.5, 0);           // голова
+  for (const ex of [-0.15, 0.15]) {
+    const eye = animalBox(g, 0.13, 0.1, 0.04, 0x2a0808, ex, 2.55, -0.325);
+    eye.material.emissive.setHex(0xd0341f);
+    eye.userData.noFlash = true;
+  }
+  // Кістяні наплічники
+  animalBox(g, 0.26, 0.16, 0.5, boneC, -0.5, 2.18, 0);
+  animalBox(g, 0.26, 0.16, 0.5, boneC, 0.5, 2.18, 0);
+  // Золота корона: обруч і зубці по колу
+  animalBox(g, 0.5, 0.08, 0.5, goldC, 0, 2.85, 0);
+  for (const [cx, cz] of [[-0.2, -0.2], [0.2, -0.2], [-0.2, 0.2], [0.2, 0.2],
+                          [0, -0.22], [0, 0.22], [-0.22, 0], [0.22, 0]]) {
+    animalBox(g, 0.07, 0.16, 0.06, goldC, cx, 2.95, cz);
+  }
+  // Довгі важкі кінцівки, пивот угорі (як у зомбі)
+  const armL = animalLeg(g, 0.24, 0.94, skin, -0.51, 2.06, 0);
+  const armR = animalLeg(g, 0.24, 0.94, skin, 0.51, 2.06, 0);
+  const legL = animalLeg(g, 0.27, 1.12, pants, -0.2, 1.12, 0);
+  const legR = animalLeg(g, 0.27, 1.12, pants, 0.2, 1.12, 0);
   return { legs: [legL, legR], arms: [armL, armR] };
 }
 
@@ -5420,9 +5574,11 @@ function spawnMob(x, y, z, type = 'zombie') {
   const isCreeper = type === 'creeper';
   const isSkeleton = type === 'skeleton';
   const isSpider = type === 'spider';
+  const isWarlord = type === 'warlord';
   const built = isCreeper ? buildCreeper(group)
     : isSkeleton ? buildSkeleton(group)
-    : isSpider ? buildSpider(group) : buildZombie(group);
+    : isSpider ? buildSpider(group)
+    : isWarlord ? buildWarlord(group) : buildZombie(group);
   group.position.set(x, y, z);
   scene.add(group);
   const mats = [];
@@ -5433,14 +5589,17 @@ function spawnMob(x, y, z, type = 'zombie') {
     vel: new THREE.Vector3(),
     yaw: Math.random() * Math.PI * 2,
     targetYaw: 0,
-    halfW: isCreeper ? 0.28 : isSpider ? 0.45 : 0.3,
-    height: isCreeper ? 2.1 : isSpider ? 0.95 : 1.9,
+    halfW: isCreeper ? 0.28 : isSpider ? 0.45 : isWarlord ? 0.44 : 0.3,
+    height: isCreeper ? 2.1 : isSpider ? 0.95 : isWarlord ? 2.8 : 1.9,
     // Нечисть, що вилазить кривавої ночі, — швидша й міцніша
-    speed: (isCreeper ? 2.6 : isSkeleton ? 2.0 : isSpider ? 3.0 : 2.2) *
+    // (ватажок має власні сталі — багряні бонуси його не стосуються)
+    speed: isWarlord ? WARLORD_SPEED :
+           (isCreeper ? 2.6 : isSkeleton ? 2.0 : isSpider ? 3.0 : 2.2) *
            (bloodNight ? BLOOD_SPEED : 1),
     onGround: false,
     legPhase: 0,
-    health: (isCreeper ? 10 : isSkeleton ? 12 : isSpider ? 10 : 14) +
+    health: isWarlord ? WARLORD_HEALTH :
+            (isCreeper ? 10 : isSkeleton ? 12 : isSpider ? 10 : 14) +
             (bloodNight ? BLOOD_HEALTH : 0),
     hurt: 0,        // спалах при ударі (0..1)
     attackCD: 0,    // перезарядка атаки
@@ -5454,6 +5613,9 @@ function spawnMob(x, y, z, type = 'zombie') {
     pounceCD: 0,    // павук: перезарядка стрибка на гравця
     wanderT: 0,     // павук: таймер зміни напрямку блукання вдень
     wanderMove: false,
+    slamCD: 5,      // ватажок: перезарядка струсу землі
+    slamT: 0,       // ватажок: залишок замаху перед ударом (0 — не замахується)
+    roarT: 3 + Math.random() * 4,  // ватажок: до наступного рику
   });
 }
 
@@ -5481,6 +5643,28 @@ function trySpawnMob() {
   const r = Math.random();
   const type = r < 0.22 ? 'creeper' : r < 0.44 ? 'skeleton' : r < 0.66 ? 'spider' : 'zombie';
   spawnMob(x + 0.5, h + 1.01, z + 0.5, type);
+}
+
+// Поява ватажка облоги: як trySpawnMob, але понад стелею нечисті й без
+// огляду на смолоскипи чи багаття — ватажка світло не спиняє. Прихід
+// оголошується ревом і тостом.
+function trySpawnWarlord() {
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 12 + Math.random() * 10;
+    const x = Math.floor(player.pos.x + Math.cos(angle) * dist);
+    const z = Math.floor(player.pos.z + Math.sin(angle) * dist);
+    const h = heightAt(x, z);
+    if (h <= SEA + 1) continue;                 // не у воді й не на пляжі
+    if (!isSolid(blockAt(x, h, z))) continue;   // тверда опора
+    if (isSolid(blockAt(x, h + 1, z)) || isSolid(blockAt(x, h + 2, z)) ||
+        isSolid(blockAt(x, h + 3, z))) continue; // місце на весь зріст
+    spawnMob(x + 0.5, h + 1.01, z + 0.5, 'warlord');
+    sleepToast('🩸 Ватажок облоги суне на тебе — його не спиняє ні світло, ні мур!');
+    Sound.warlordRoar();
+    return true;
+  }
+  return false;
 }
 
 function removeMob(index) {
@@ -5530,6 +5714,7 @@ function updateMob(m, dt) {
   const isCreeper = m.type === 'creeper';
   const isSkeleton = m.type === 'skeleton';
   const isSpider = m.type === 'spider';
+  const isWarlord = m.type === 'warlord';
 
   // Лава палить будь-яку істоту (навіть кріпера) — швидка шкода й полум'я
   if (isLavaId(blockAt(Math.floor(m.pos.x), Math.floor(m.pos.y + 0.3), Math.floor(m.pos.z)))) {
@@ -5560,7 +5745,8 @@ function updateMob(m, dt) {
   const dz = player.pos.z - m.pos.z;
   const distH = Math.hypot(dx, dz);
   const hostile = !isSpider || dayNightSun <= 0.15 || m.angry;
-  const chase = distH < 26 && !player.dead && hostile;
+  // Ватажок чує гравця вдвічі далі — від нього не сховатися за пагорбом
+  const chase = distH < (isWarlord ? 48 : 26) && !player.dead && hostile;
   if (chase) m.targetYaw = Math.atan2(-dx, -dz); // дивиться в -Z
 
   // Нейтральний павук неквапом блукає, час від часу міняючи напрямок
@@ -5630,6 +5816,43 @@ function updateMob(m, dt) {
     Sound.spiderHiss();
   }
 
+  // Ватажок: час від часу реве, а зблизька гатить по землі — здіймає руки
+  // (замах — мить, щоб відбігти) і б'є: ударна хвиля ранить і підкидає
+  // гравця поряд. Щит хвилю не спиняє — рятує лише дистанція.
+  if (isWarlord) {
+    m.roarT -= dt;
+    if (m.roarT <= 0) {
+      if (chase && distH < 30) Sound.warlordRoar();
+      m.roarT = 6 + Math.random() * 6;
+    }
+    if (m.slamCD > 0) m.slamCD -= dt;
+    if (m.slamT > 0) {
+      m.slamT -= dt;
+      if (m.slamT <= 0) {                        // удар: хвиля по землі
+        Sound.slam();
+        spawnParticles(m.pos.x, m.pos.y + 0.2, m.pos.z, SMOKE_COLOR, 26,
+          { radius: WARLORD_SLAM_R * 0.7, speed: 5, upBias: 0.5, life: 0.6,
+            size: 0.16, gravity: -8 });
+        const pdx = player.pos.x - m.pos.x, pdz = player.pos.z - m.pos.z;
+        const pd = Math.hypot(pdx, pdz);
+        if (!player.dead && pd < WARLORD_SLAM_R &&
+            Math.abs(player.pos.y - m.pos.y) < 2.5) {
+          damagePlayer(WARLORD_SLAM_DMG, 'warlord');
+          const k = pd || 1;
+          player.vel.x += (pdx / k) * 7;
+          player.vel.z += (pdz / k) * 7;
+          player.vel.y += 8;
+        }
+        m.slamCD = WARLORD_SLAM_CD + Math.random() * 3;
+      }
+    } else if (chase && m.onGround && m.slamCD <= 0 &&
+               distH < WARLORD_SLAM_R * 0.9) {
+      m.slamT = WARLORD_SLAM_WINDUP;             // замах
+      Sound.warlordRoar();
+    }
+  }
+  const slamming = isWarlord && m.slamT > 0;
+
   let moving, sp;
   if (isSkeleton) {
     moving = chase && skelMove !== 0;
@@ -5638,7 +5861,7 @@ function updateMob(m, dt) {
     moving = (chase && distH > 0.9) || wander;
     sp = moving ? (chase ? m.speed : m.speed * 0.35) : 0;
   } else {
-    moving = chase && distH > 1.0 && !fusing;
+    moving = chase && distH > 1.0 && !fusing && !slamming;
     sp = moving ? m.speed : 0;
   }
   m.vel.x = -Math.sin(m.yaw) * sp;
@@ -5660,8 +5883,8 @@ function updateMob(m, dt) {
 
   // Атака при контакті (зомбі та павук; кріпер шкодить вибухом, скелет — стрілами)
   if (m.attackCD > 0) m.attackCD -= dt;
-  if (!isCreeper && !isSkeleton) {
-    const reach = isSpider ? 1.5 : 1.2;
+  if (!isCreeper && !isSkeleton && !slamming) {
+    const reach = isSpider ? 1.5 : isWarlord ? 1.9 : 1.2;
     const vOverlap = player.pos.y < m.pos.y + m.height &&
                      player.pos.y + player.height > m.pos.y;
     if (chase && distH < reach && vOverlap && m.attackCD <= 0 && !player.dead) {
@@ -5676,12 +5899,14 @@ function updateMob(m, dt) {
         m.attackCD = 1.2;
         m.attackAnim = 1;
       } else {
-        damagePlayer(isSpider ? 2 : 3, isSpider ? 'spider' : 'zombie');
+        damagePlayer(isSpider ? 2 : isWarlord ? WARLORD_DMG : 3,
+          isSpider ? 'spider' : isWarlord ? 'warlord' : 'zombie');
         const k = distH || 1;
-        player.vel.x += (dx / k) * 4;
-        player.vel.z += (dz / k) * 4;
-        player.vel.y += 3;
-        m.attackCD = 1.0;
+        const kb = isWarlord ? 7 : 4;            // важкий удар відкидає далі
+        player.vel.x += (dx / k) * kb;
+        player.vel.z += (dz / k) * kb;
+        player.vel.y += isWarlord ? 4.5 : 3;
+        m.attackCD = isWarlord ? 1.6 : 1.0;
         m.attackAnim = 1;
       }
     }
@@ -5712,7 +5937,9 @@ function updateMob(m, dt) {
     m.legs[0].rotation.x = legSwing;
     m.legs[1].rotation.x = -legSwing;
     if (m.attackAnim > 0) m.attackAnim = Math.max(0, m.attackAnim - dt * 3);
-    const armBase = -1.35;                       // витягнуті вперед
+    // Замах ватажка: обидві руки здіймаються над головою й падають ударом
+    const raise = slamming ? (WARLORD_SLAM_WINDUP - m.slamT) / WARLORD_SLAM_WINDUP : 0;
+    const armBase = -1.35 - raise * 1.5;         // витягнуті вперед (чи над головою)
     const armSwing = Math.sin(m.legPhase) * 0.18 + m.attackAnim * 0.6;
     m.arms[0].rotation.x = armBase - armSwing;
     m.arms[1].rotation.x = armBase + armSwing;
@@ -5749,6 +5976,14 @@ function updateMobs(dt) {
     trySpawnMob();
     mobSpawnTimer = bloodNight ? 1 : 3; // облога: нечисть суне втричі частіше
   }
+  // Ватажок облоги: раз на криваву ніч, трохи згодом після її початку
+  if (bloodNight && !warlordDone && warlordTimer > 0) {
+    warlordTimer -= dt;
+    if (warlordTimer <= 0) {
+      if (trySpawnWarlord()) warlordDone = true;
+      else warlordTimer = 4;                    // місця не знайшлося — ще спроба
+    }
+  }
   // Випадкові стогони, коли неподалік є зомбі (частіше — коли їх більше)
   if (mobs.length > 0) {
     groanTimer -= dt;
@@ -5764,7 +5999,8 @@ function updateMobs(dt) {
       if (!m.detonated) {                            // кріпер, що вибухнув, уже дав ефекти
         const deathColor = m.type === 'creeper' ? CREEPER_COLOR
           : m.type === 'skeleton' ? SKELETON_COLOR
-          : m.type === 'spider' ? SPIDER_COLOR : ZOMBIE_COLOR;
+          : m.type === 'spider' ? SPIDER_COLOR
+          : m.type === 'warlord' ? WARLORD_COLOR : ZOMBIE_COLOR;
         spawnParticles(m.pos.x, m.pos.y + 0.9, m.pos.z, deathColor, 16,
           { radius: 0.4, speed: 3, upBias: 1.2, life: 0.7, size: 0.13 });
         Sound.mobDeath();
@@ -5772,15 +6008,28 @@ function updateMobs(dt) {
       if (m.type === 'creeper') unlockAch('creeper');
       else if (m.type === 'skeleton') unlockAch('skeleton');
       else if (m.type === 'spider') unlockAch('spider');
+      else if (m.type === 'warlord') unlockAch('warlord');
       else unlockAch('zombie');
       // Скелет лишає по собі кістки — сировину кістяного борошна
       if (m.type === 'skeleton') dropBones(m.pos.x, m.pos.y, m.pos.z);
       // Павук лишає по собі павутину — сировину повідця
       if (m.type === 'spider') dropSilk(m.pos.x, m.pos.y, m.pos.z);
+      // Ватажок полишає корону (найдорожчий крам) і жменю кісток
+      if (m.type === 'warlord') {
+        dropCrown(m.pos.x, m.pos.y, m.pos.z);
+        dropBones(m.pos.x + 0.5, m.pos.y, m.pos.z);
+        dropBones(m.pos.x - 0.5, m.pos.y, m.pos.z + 0.4);
+        spawnParticles(m.pos.x, m.pos.y + 1.3, m.pos.z, GAPPLE_COLOR, 20,
+          { radius: 0.8, speed: 4, upBias: 1.5, life: 0.9, size: 0.12 });
+        sleepToast('🩸 Ватажок облоги повалений!');
+        Sound.warlordRoar();
+      }
       removeMob(i);
       continue;
     }
-    if (m.pos.distanceTo(player.pos) > MOB_DESPAWN_DIST || m.pos.y < -10) {
+    // Ватажок не деспавниться на відстані — від нього не втекти
+    if ((m.pos.distanceTo(player.pos) > MOB_DESPAWN_DIST && m.type !== 'warlord') ||
+        m.pos.y < -10) {
       removeMob(i);
       continue;
     }
@@ -12535,6 +12784,8 @@ const bakedBadgeEl = document.getElementById('baked-badge');
 const bakedCountEl = document.getElementById('baked-count');
 const truffleBadgeEl = document.getElementById('truffle-badge');
 const truffleCountEl = document.getElementById('truffle-count');
+const crownBadgeEl = document.getElementById('crown-badge');
+const crownCountEl = document.getElementById('crown-count');
 const oysterBadgeEl = document.getElementById('oyster-badge');
 const oysterCountEl = document.getElementById('oyster-count');
 const molluskBadgeEl = document.getElementById('mollusk-badge');
@@ -12668,6 +12919,8 @@ function buildSurvivalHud() {
   if (bakedIcon) drawBakedIcon(bakedIcon);
   const truffleIcon = document.getElementById('truffle-icon');
   if (truffleIcon) drawTruffleIcon(truffleIcon);
+  const crownIcon = document.getElementById('crown-icon');
+  if (crownIcon) drawCrownIcon(crownIcon);
   const oysterIcon = document.getElementById('oyster-icon');
   if (oysterIcon) drawOysterIcon(oysterIcon);
   const molluskIcon = document.getElementById('mollusk-icon');
@@ -12893,6 +13146,52 @@ function updateTruffleHud() {
   lastTruffleDrawn = player.truffle;
   truffleCountEl.textContent = player.truffle;
   truffleBadgeEl.hidden = player.truffle <= 0;
+}
+
+// Лічильник корон (бейдж 👑 — трофей повергнутого ватажка облоги)
+let lastCrownDrawn = -1;
+function updateCrownHud() {
+  if (player.crown === lastCrownDrawn) return;
+  lastCrownDrawn = player.crown;
+  crownCountEl.textContent = player.crown;
+  crownBadgeEl.hidden = player.crown <= 0;
+}
+
+// Піксельна іконка корони: золотий обруч із зубцями й самоцвітом
+function drawCrownIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#d8a927';                          // обруч
+  ctx.fillRect(3, 9, 10, 4);
+  ctx.fillRect(3, 5, 2, 4);                           // зубці
+  ctx.fillRect(7, 4, 2, 5);
+  ctx.fillRect(11, 5, 2, 4);
+  ctx.fillStyle = '#f1d24a';                          // відблиски
+  ctx.fillRect(4, 10, 1, 2);
+  ctx.fillRect(7, 5, 1, 2);
+  ctx.fillStyle = '#c0392b';                          // самоцвіт
+  ctx.fillRect(7, 10, 2, 2);
+}
+
+// ===== Смуга здоров'я ватажка (угорі екрана, поки він поряд і живий) =====
+const bossbarEl = document.getElementById('bossbar');
+const bossbarFillEl = document.getElementById('bossbar-fill');
+let bossbarShown = false;
+function updateBossBar() {
+  if (!bossbarEl) return;
+  const w = mobs.find((mm) => mm.type === 'warlord' && mm.health > 0);
+  const show = !!w && !player.dead && gameActive() &&
+               w.pos.distanceTo(player.pos) < 56;
+  if (show !== bossbarShown) {
+    bossbarShown = show;
+    bossbarEl.hidden = !show;
+  }
+  if (show) {
+    const k = Math.max(0, Math.min(1, w.health / WARLORD_HEALTH));
+    bossbarFillEl.style.width = `${(k * 100).toFixed(1)}%`;
+  }
 }
 
 // Піксельна іконка трюфеля: темна горбкувата грудка в землі
@@ -13212,6 +13511,7 @@ const DEATH_CAUSES = {
   fire: 'Згорів у багатті',
   meteor: 'Розчавлений метеоритом',
   bees: 'Зажалений розлюченими бджолами',
+  warlord: 'Розчавлений ватажком облоги',
 };
 
 function showDeathScreen(cause) {
@@ -14082,6 +14382,7 @@ updatePearlHud();
 updateFruitHud();
 updateBakedHud();
 updateTruffleHud();
+updateCrownHud();
 updateOreHud();
 document.getElementById('respawn-btn').addEventListener('click', respawn);
 
@@ -14460,6 +14761,8 @@ const ACHIEVEMENTS = [
   { id: 'fruit_bake',  icon: '🍠', title: 'Печена опунція',     desc: 'Спекти плід кактуса на багатті' },
   { id: 'truffle',     icon: '🐽', title: 'Трюфельний нюх',     desc: 'Свиня на повідці винюхала трюфель у лісі' },
   { id: 'truffle_eat', icon: '🌰', title: 'Лісовий делікатес',  desc: "З'їсти викопаний свинею трюфель" },
+  { id: 'warlord',     icon: '🩸', title: 'Ватажка повалено',   desc: 'Здолати ватажка кривавої ночі' },
+  { id: 'crown',       icon: '👑', title: 'Корона облоги',      desc: 'Підібрати корону полеглого ватажка' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -14584,6 +14887,43 @@ window.MCDebug = {
     return MCDebug.bloodInfo;
   },
   endBloodNight: () => { bloodNight = false; return MCDebug.bloodInfo; },
+  // Ватажок облоги просто зараз: спавн упритул (для тестів, без черги облоги)
+  spawnWarlord: (dist = 6) => {
+    const a = Math.random() * Math.PI * 2;
+    const x = Math.floor(player.pos.x + Math.cos(a) * dist);
+    const z = Math.floor(player.pos.z + Math.sin(a) * dist);
+    const h = heightAt(x, z);
+    spawnMob(x + 0.5, h + 1.01, z + 0.5, 'warlord');
+    warlordDone = true;
+    return MCDebug.warlordInfo;
+  },
+  killWarlord: () => {
+    const w = mobs.find((m) => m.type === 'warlord');
+    if (w) w.health = 0;
+    return !!w;
+  },
+  slamNow: () => {
+    const w = mobs.find((m) => m.type === 'warlord');
+    if (!w) return false;
+    w.slamCD = 0;
+    return true;
+  },
+  giveCrown: (n = 1) => {
+    player.crown = Math.min(CROWN_MAX, player.crown + n);
+    updateCrownHud();
+    return player.crown;
+  },
+  get warlordInfo() {
+    const w = mobs.find((m) => m.type === 'warlord');
+    return {
+      alive: !!w,
+      health: w ? +w.health.toFixed(1) : 0,
+      pos: w ? { x: +w.pos.x.toFixed(1), y: +w.pos.y.toFixed(1), z: +w.pos.z.toFixed(1) } : null,
+      slamCD: w ? +w.slamCD.toFixed(1) : 0,
+      timer: +warlordTimer.toFixed(1), done: warlordDone,
+      crowns: player.crown, groundCrowns: groundCrowns.length,
+    };
+  },
   // Метеорит просто зараз: ніч + негайний спавн (за замовчуванням — ближче)
   forceMeteor: (distMin = 14, distVar = 8) => {
     if (dayNightSun > -0.05) timeOfDay = DAY_LENGTH * 0.75;   // північ
@@ -16237,6 +16577,7 @@ function animate() {
     updateThrownEggs(dt);
     updateGroundBones(dt);
     updateGroundSilk(dt);
+    updateGroundCrowns(dt);
     updateGroundFruits(dt);
     updateGroundTruffles(dt);
     updateGrapple(dt);
@@ -16300,6 +16641,7 @@ function animate() {
     (weatherState !== 'clear' ? `\n${weatherState === 'rain' ? '🌧' : '🌨'} ${weatherState}` : '');
 
   updateSurvivalHud();
+  updateBossBar();
 
   // Мінімапа: важкий ресемплінг поля throttle-имо (~5 Гц), маркери — щокадру.
   if (gameActive() && minimapOn) {
