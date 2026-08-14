@@ -2711,6 +2711,7 @@ function armorAbsorb(amount, cause) {
     Sound.armorClank();
   }
   updateArmorHud();
+  if (forgeOpen) renderForgePanel();  // живий рядок лагодження, якщо кузня відкрита
   return reduced;
 }
 
