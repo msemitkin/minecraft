@@ -257,6 +257,26 @@ const SHIELD_TIERS = [
     dot: 0.17, kb: 10, face: 0x5fd8d2, cost: { coal: 3, diam: 2 } },
 ];
 
+// Обладунок — пасивний захист тіла, четвертий розділ кузні: кожен удар,
+// стріла чи вибух б'є на absorb слабше (але не менш як 1 шкоди), а панцир
+// втрачає 1 міцності за прийнятий удар. На нулі міцності захист зникає,
+// доки обладунок не полагоджено на ковадлі (mend — ціна лагодження).
+// Стихій не спиняє: падіння, вогонь, голод і вода б'ють повз панцир.
+const ARMOR_TIERS = [
+  { name: 'Без обладунку',       icon: '🙅', stat: 'нема захисту', absorb: 0, hp: 0 },
+  { name: 'Залізний обладунок',  icon: '🦺', absorb: 2, hp: 20, plate: 0x9aa3ad,
+    cost: { coal: 3, iron: 4 }, mend: { iron: 2 } },
+  { name: 'Золотий обладунок',   icon: '🦺', absorb: 3, hp: 28, plate: 0xe8b820,
+    cost: { coal: 3, gold: 4 }, mend: { gold: 2 } },
+  { name: 'Алмазний обладунок',  icon: '🦺', absorb: 4, hp: 36, plate: 0x5fd8d2,
+    cost: { coal: 4, diam: 3 }, mend: { diam: 1 } },
+];
+
+// Від чого обладунок захищає: удари нечисті, стріли, вибухи, метеорит,
+// бджоли — тобто все, що б'є по тілу ззовні (стихії — ні)
+const ARMOR_CAUSES = new Set(['zombie', 'spider', 'warlord', 'arrow',
+  'creeper', 'tnt', 'meteor', 'bees']);
+
 const BLOCK_NAMES = {
   [GRASS]: 'Трава', [DIRT]: 'Земля', [STONE]: 'Камінь', [SAND]: 'Пісок',
   [LOG]: 'Колода', [LEAVES]: 'Листя', [PLANK]: 'Дошки', [WATER]: 'Вода',
@@ -527,6 +547,8 @@ function saveGame() {
         pickTier: player.pickTier,
         swordTier: player.swordTier,
         shieldTier: player.shieldTier,
+        armorTier: player.armorTier,
+        armorHp: player.armorHp,
         flying: player.flying,
       },
       timeOfDay,
@@ -1044,6 +1066,20 @@ const Sound = (() => {
       noise({ dur: 0.12, gain: 0.14, type: 'highpass', freq: 2600, q: 1.1 });
       tone({ freq: 980, dur: 0.18, type: 'square', gain: 0.05, slideTo: 740 });
       tone({ freq: 420, dur: 0.3, type: 'triangle', gain: 0.1, slideTo: 300 });
+    },
+    // Обладунок приймає удар: глухий металевий брязкіт пластин
+    armorClank() {
+      if (!ctx || !enabled) return;
+      noise({ dur: 0.1, gain: 0.12, type: 'bandpass', freq: 1900, q: 1.4 });
+      tone({ freq: 620, dur: 0.16, type: 'square', gain: 0.05, slideTo: 480 });
+      tone({ freq: 300, dur: 0.22, type: 'triangle', gain: 0.09, slideTo: 220 });
+    },
+    // Обладунок розколюється: брязкіт + низхідний скрегіт втрати захисту
+    armorBreak() {
+      if (!ctx || !enabled) return;
+      noise({ dur: 0.24, gain: 0.16, type: 'highpass', freq: 1700, q: 1 });
+      tone({ freq: 700, dur: 0.3, type: 'square', gain: 0.06, slideTo: 240 });
+      tone({ freq: 340, dur: 0.4, type: 'triangle', gain: 0.1, slideTo: 120 });
     },
     // Помах меча: короткий металевий свист клинка в повітрі
     sword() {
@@ -2309,6 +2345,8 @@ const player = {
   pickTier: 0,          // рівень кирки (0..3): кується на ковадлі з руд
   swordTier: 0,         // рівень меча (0..3): 0 — голіруч, далі кується на ковадлі
   shieldTier: 0,        // рівень щита (0..2): 0 — без щита, далі кується на ковадлі
+  armorTier: 0,         // рівень обладунку (0..3): 0 — без захисту, кується на ковадлі
+  armorHp: 0,           // міцність обладунку: -1 за прийнятий удар, 0 — розбитий
   blocking: false,      // стійка оборони: щит піднято (утримується C чи кнопка 🛡)
   starveTick: 0,        // таймер шкоди від голоду
   eatTimer: 0,          // перезарядка поїдання
@@ -2409,6 +2447,12 @@ if (savedGame && savedGame.player) {
   }
   if (Number.isFinite(p.shieldTier)) {
     player.shieldTier = THREE.MathUtils.clamp(Math.floor(p.shieldTier), 0, SHIELD_TIERS.length - 1);
+  }
+  if (Number.isFinite(p.armorTier)) {
+    player.armorTier = THREE.MathUtils.clamp(Math.floor(p.armorTier), 0, ARMOR_TIERS.length - 1);
+    player.armorHp = Number.isFinite(p.armorHp)
+      ? THREE.MathUtils.clamp(Math.floor(p.armorHp), 0, ARMOR_TIERS[player.armorTier].hp)
+      : ARMOR_TIERS[player.armorTier].hp;
   }
   player.flying = !!p.flying;
 }
@@ -2648,9 +2692,32 @@ function updatePlayer(dt) {
 }
 
 // ===== Виживання: повітря, регенерація, шкода, смерть =====
+// Обладунок гасить частину шкоди від зовнішнього удару (див. ARMOR_CAUSES),
+// втрачаючи 1 міцності; удар завжди лишає бодай 1 шкоди. Розбитий панцир
+// (міцність 0) не захищає, доки не полагоджений на ковадлі.
+function armorAbsorb(amount, cause) {
+  if (player.armorTier <= 0 || player.armorHp <= 0 ||
+      !ARMOR_CAUSES.has(cause)) return amount;
+  const tier = ARMOR_TIERS[player.armorTier];
+  const reduced = Math.max(1, amount - tier.absorb);
+  if (reduced >= amount) return amount;
+  player.armorHp -= 1;
+  spawnParticles(player.pos.x, player.pos.y + 1.1, player.pos.z, ANVIL_SPARK, 6,
+    { radius: 0.35, speed: 1.8, upBias: 0.8, life: 0.4, size: 0.07, gravity: 4 });
+  if (player.armorHp <= 0) {
+    Sound.armorBreak();
+    flashItemName('🦺 Обладунок розбито — полагодь на ковадлі!');
+  } else {
+    Sound.armorClank();
+  }
+  updateArmorHud();
+  return reduced;
+}
+
 function damagePlayer(amount, cause) {
   if (player.dead || amount <= 0) return;
   if (player.invuln > 0 && cause !== 'drown') return;
+  amount = armorAbsorb(amount, cause);
   player.health = Math.max(0, player.health - amount);
   player.hurtFlash = 1;
   Sound.hurt();
@@ -10577,6 +10644,14 @@ function renderForgePanel() {
     { cur: player.shieldTier === 0 ? 'прикритися нічим' : 'на лівій руці',
       done: 'уже перекутий', doneBase: 'замінено міцнішим',
       prev: ' • спершу попередній' });
+  renderForgeTrack('🦺 Обладунок', ARMOR_TIERS, player.armorTier, doForgeArmor,
+    (tier) => tier.cost
+      ? `−${tier.absorb} шкоди з удару, міцність ${tier.hp}`
+      : tier.stat,
+    { cur: player.armorTier === 0 ? 'тіло беззахисне' : 'на плечах',
+      done: 'уже перекутий', doneBase: 'замінено міцнішим',
+      prev: ' • спершу попередній' });
+  renderArmorMendRow();
   forgeBagEl.textContent = 'У торбі: ' + Object.keys(ORE_MAX)
     .map((k) => `${ORE_GOODS[k].icon} ${player[k] || 0}`).join('  ');
 }
@@ -10643,6 +10718,82 @@ function doForgeShield(t) {
   }
   flashItemName(`🛡 ${tier.name} скуто — тримай ${IS_TOUCH ? 'кнопку 🛡' : 'C'}, щоб прикритися!`);
   unlockAch('shieldsmith');
+  updateOreHud();
+  renderForgePanel();
+  saveGame();
+  return true;
+}
+
+// Рядок лагодження обладунку: показує міцність і кнопку «Полагодити»
+// (за mend-ціну поточного рівня), коли панцир пошарпаний чи розбитий
+function renderArmorMendRow() {
+  if (player.armorTier <= 0) return;
+  const tier = ARMOR_TIERS[player.armorTier];
+  const worn = player.armorHp < tier.hp;
+  const row = document.createElement('div');
+  row.className = 'trade-row' + (worn ? '' : ' forged');
+  const goods = document.createElement('div');
+  goods.className = 'trade-goods';
+  const line = document.createElement('div');
+  line.textContent = player.armorHp <= 0
+    ? `🧰 Лагодження — обладунок розбитий (0/${tier.hp})`
+    : `🧰 Лагодження — міцність ${player.armorHp}/${tier.hp}`;
+  const status = document.createElement('div');
+  status.className = 'trade-stock';
+  status.textContent = worn ? forgeCostText(tier.mend) : 'обладунок цілий';
+  goods.append(line, status);
+  row.append(goods);
+  if (worn) {
+    const btn = document.createElement('button');
+    btn.className = 'trade-btn';
+    btn.textContent = 'Полагодити';
+    btn.disabled = !canAffordForge(tier.mend);
+    btn.addEventListener('click', doMendArmor);
+    row.append(btn);
+  }
+  forgeListEl.appendChild(row);
+}
+
+// Скувати обладунок рівня t (наступного за поточним). Повертає true, якщо вдалося.
+function doForgeArmor(t) {
+  const tier = ARMOR_TIERS[t];
+  if (!tier || t !== player.armorTier + 1 || !tier.cost) return false;
+  if (!canAffordForge(tier.cost)) return false;
+  for (const [k, n] of Object.entries(tier.cost)) player[k] -= n;
+  player.armorTier = t;
+  player.armorHp = tier.hp;
+  Sound.forge();
+  const at = forgeAnvil;
+  if (at) {
+    spawnParticles(at.x + 0.5, at.y + 0.7, at.z + 0.5, ANVIL_SPARK, 14,
+      { radius: 0.3, speed: 2.4, upBias: 1.4, life: 0.6, size: 0.08, gravity: 6 });
+  }
+  flashItemName(`🦺 ${tier.name} скуто — удари м'якші на ${tier.absorb}!`);
+  unlockAch('armorsmith');
+  updateArmorHud();
+  updateOreHud();
+  renderForgePanel();
+  saveGame();
+  return true;
+}
+
+// Полагодити обладунок поточного рівня до повної міцності. true — якщо вдалося.
+function doMendArmor() {
+  if (player.armorTier <= 0) return false;
+  const tier = ARMOR_TIERS[player.armorTier];
+  if (player.armorHp >= tier.hp) return false;
+  if (!canAffordForge(tier.mend)) return false;
+  for (const [k, n] of Object.entries(tier.mend)) player[k] -= n;
+  player.armorHp = tier.hp;
+  Sound.forge();
+  const at = forgeAnvil;
+  if (at) {
+    spawnParticles(at.x + 0.5, at.y + 0.7, at.z + 0.5, ANVIL_SPARK, 14,
+      { radius: 0.3, speed: 2.4, upBias: 1.4, life: 0.6, size: 0.08, gravity: 6 });
+  }
+  flashItemName(`🧰 ${tier.name} полагоджено — міцність ${tier.hp}!`);
+  unlockAch('mend');
+  updateArmorHud();
   updateOreHud();
   renderForgePanel();
   saveGame();
@@ -12786,6 +12937,8 @@ const truffleBadgeEl = document.getElementById('truffle-badge');
 const truffleCountEl = document.getElementById('truffle-count');
 const crownBadgeEl = document.getElementById('crown-badge');
 const crownCountEl = document.getElementById('crown-count');
+const armorBadgeEl = document.getElementById('armor-badge');
+const armorCountEl = document.getElementById('armor-count');
 const oysterBadgeEl = document.getElementById('oyster-badge');
 const oysterCountEl = document.getElementById('oyster-count');
 const molluskBadgeEl = document.getElementById('mollusk-badge');
@@ -13155,6 +13308,40 @@ function updateCrownHud() {
   lastCrownDrawn = player.crown;
   crownCountEl.textContent = player.crown;
   crownBadgeEl.hidden = player.crown <= 0;
+}
+
+// Бейдж обладунку (🦺 — лічильник показує залишок міцності панцира);
+// розбитий обладунок тьмяніє, доки не полагоджений на ковадлі
+let lastArmorDrawn = '';
+function updateArmorHud() {
+  const sig = `${player.armorTier},${player.armorHp}`;
+  if (sig === lastArmorDrawn) return;
+  lastArmorDrawn = sig;
+  if (!armorBadgeEl) return;
+  armorCountEl.textContent = player.armorHp;
+  armorBadgeEl.hidden = player.armorTier <= 0;
+  armorBadgeEl.classList.toggle('broken', player.armorTier > 0 && player.armorHp <= 0);
+  const icon = document.getElementById('armor-icon');
+  if (icon && player.armorTier > 0) drawArmorIcon(icon);
+}
+
+// Піксельна іконка обладунку: нагрудник у кольорі металу поточного рівня
+function drawArmorIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  const tier = ARMOR_TIERS[player.armorTier];
+  const base = '#' + (tier.plate || 0x9aa3ad).toString(16).padStart(6, '0');
+  ctx.fillStyle = base;                               // плечі
+  ctx.fillRect(2, 3, 4, 3);
+  ctx.fillRect(10, 3, 4, 3);
+  ctx.fillRect(4, 5, 8, 8);                           // нагрудник
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';              // виріз коміра й тінь
+  ctx.fillRect(6, 3, 4, 2);
+  ctx.fillRect(4, 11, 8, 2);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';        // відблиск пластини
+  ctx.fillRect(5, 6, 2, 3);
 }
 
 // Піксельна іконка корони: золотий обруч із зубцями й самоцвітом
@@ -14383,6 +14570,7 @@ updateFruitHud();
 updateBakedHud();
 updateTruffleHud();
 updateCrownHud();
+updateArmorHud();
 updateOreHud();
 document.getElementById('respawn-btn').addEventListener('click', respawn);
 
@@ -14750,6 +14938,8 @@ const ACHIEVEMENTS = [
   { id: 'swordsmith',  icon: '⚔', title: 'Зброяр',             desc: 'Скувати меч на ковадлі' },
   { id: 'diamond_sword',icon: '🗡', title: 'Алмазний клинок',   desc: 'Скувати алмазний меч' },
   { id: 'shieldsmith', icon: '🛡', title: 'Щитоносець',         desc: 'Скувати щит на ковадлі' },
+  { id: 'armorsmith',  icon: '🦺', title: 'Броньований',        desc: 'Скувати обладунок на ковадлі' },
+  { id: 'mend',        icon: '🧰', title: 'Лагодій',            desc: 'Полагодити пошарпаний обладунок на ковадлі' },
   { id: 'block_hit',   icon: '🔰', title: 'Несхитна стіна',     desc: 'Відбити напад піднятим щитом' },
   { id: 'silk',        icon: '🕸', title: 'Павучий шовк',       desc: 'Підібрати павутину, що лишив павук' },
   { id: 'leash',       icon: '🐄', title: 'Поводир',            desc: 'Узяти свійську тварину на повідець' },
@@ -16474,9 +16664,43 @@ window.MCDebug = {
       dmg: SWORD_TIERS[player.swordTier].dmg,
       shieldTier: player.shieldTier,
       shield: SHIELD_TIERS[player.shieldTier].name,
+      armorTier: player.armorTier,
+      armor: ARMOR_TIERS[player.armorTier].name,
+      armorHp: player.armorHp,
       ores: { coal: player.coal, iron: player.iron, gold: player.gold, diam: player.diam },
       anvils: anvils.size,
       forgeOpen,
+    };
+  },
+  // Обладунок (для тестів): скувати наступний рівень, полагодити, зносити
+  forgeArmorNext: () => {
+    const t = player.armorTier + 1;
+    if (t >= ARMOR_TIERS.length) return 'уже алмазний — далі нікуди';
+    return { ok: doForgeArmor(t), ...MCDebug.armorInfo };
+  },
+  mendArmor: () => ({ ok: doMendArmor(), ...MCDebug.armorInfo }),
+  setArmorHp: (n = 0) => {
+    if (player.armorTier <= 0) return 'обладунку немає — MCDebug.forgeArmorNext()';
+    player.armorHp = THREE.MathUtils.clamp(Math.floor(n), 0,
+      ARMOR_TIERS[player.armorTier].hp);
+    updateArmorHud();
+    return MCDebug.armorInfo;
+  },
+  hurtBy: (n = 3, cause = 'zombie') => {
+    player.invuln = 0;
+    damagePlayer(n, cause);
+    return { health: player.health, ...MCDebug.armorInfo };
+  },
+  get armorInfo() {
+    const tier = ARMOR_TIERS[player.armorTier];
+    return {
+      armorTier: player.armorTier,
+      armor: tier.name,
+      absorb: tier.absorb,
+      armorHp: player.armorHp,
+      armorMax: tier.hp,
+      broken: player.armorTier > 0 && player.armorHp <= 0,
+      health: player.health,
     };
   },
   // Багаття та смаженина (для тестів)
