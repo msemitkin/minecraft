@@ -289,7 +289,8 @@ kbd {
 #fruit-badge,
 #baked-badge,
 #truffle-badge,
-#crown-badge {
+#crown-badge,
+#armor-badge {
   position: fixed;
   right: 16px;
   bottom: 90px;
@@ -363,6 +364,15 @@ kbd {
   bottom: 794px;
 }
 
+#armor-badge {
+  bottom: 838px;
+}
+
+/* Розбитий обладунок: бейдж тьмяніє, доки панцир не полагоджено */
+#armor-badge.broken {
+  opacity: 0.55;
+}
+
 /* Руди в торбі: один бейдж із чотирма чипами (⚫⛓🟡💎), порожні чипи зникають */
 #ore-badge {
   position: fixed;
@@ -415,7 +425,8 @@ kbd {
 #fruit-badge[hidden],
 #baked-badge[hidden],
 #truffle-badge[hidden],
-#crown-badge[hidden] {
+#crown-badge[hidden],
+#armor-badge[hidden] {
   display: none;
 }
 
@@ -439,6 +450,7 @@ kbd {
   #baked-badge,
   #truffle-badge,
   #crown-badge,
+  #armor-badge,
   #ore-badge {
     right: 96px;
   }
