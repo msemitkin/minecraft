@@ -214,6 +214,15 @@ const LEASH = 53;
 // рахується як звичайне).
 const GRAPPLE = 54;
 
+// Громовідвід — предмет-сутність (як опудало, не воксель): залізна щогла з
+// золотим вістрям, ставиться ПКМ на тверду землю за метал із торби (залізо +
+// золото). Відтепер гроза б'є по-справжньому: блискавка влучає в найвищу
+// точку поблизу, б'є все живе довкола і лишає по собі скло на піску та
+// випалену землю. Громовідвід перехоплює розряди в радіусі кількох блоків і
+// безпечно заземлює їх — вістря після удару ще довго жевріє. ЛКМ — розібрати
+// (метал вертається в торбу).
+const LIGHTNING_ROD = 55;
+
 // Руди в торбі: лічильники та капи (сировина для кування кирок)
 const ORE_MAX = { coal: 64, iron: 32, gold: 16, diam: 8 };
 const ORE_OF_BLOCK_ID = {};      // заповнюється нижче, коли відомі id руд
@@ -304,6 +313,7 @@ const BLOCK_NAMES = {
   [ANVIL]: 'Ковадло',
   [LEASH]: 'Повідець',
   [GRAPPLE]: 'Гак-кішка',
+  [LIGHTNING_ROD]: 'Громовідвід',
 };
 
 // Яка руда з торби відповідає воксельному блоку руди
@@ -319,7 +329,7 @@ const ALL_BLOCKS = [
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
-  GRAPPLE,
+  GRAPPLE, LIGHTNING_ROD,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -576,6 +586,7 @@ function saveGame() {
       beehives: [...beehives.values()].map((h) => [h.x, h.y, h.z, +h.honey.toFixed(1)]),
       scarecrows: [...scarecrows.values()].map((s) => [s.x, s.y, s.z]),
       anvils: [...anvils.values()].map((a) => [a.x, a.y, a.z]),
+      lightningRods: [...lightningRods.values()].map((r) => [r.x, r.y, r.z]),
       mushrooms: [...mushrooms.values()].map((m) =>
         [m.x, m.y, m.z, m.kind, m.farmed ? 1 : 0]),
       oysters: [...oysters.values()].map((o) => [o.x, o.y, o.z]),
@@ -1127,6 +1138,19 @@ const Sound = (() => {
       noise({ dur: 1.6, gain: 0.4, type: 'lowpass', freq: 280, q: 0.5, attack: 0.03 });
       tone({ freq: 72, dur: 1.4, type: 'sine', gain: 0.3, slideTo: 30, attack: 0.04 });
       tone({ freq: 120, dur: 0.9, type: 'triangle', gain: 0.14, slideTo: 45, attack: 0.06 });
+    },
+    // Близький удар грому: різкий тріск і гуркіт без затримки (блискавка поруч)
+    thunderClose() {
+      if (!ctx || !enabled) return;
+      noise({ dur: 0.22, gain: 0.5, type: 'highpass', freq: 900, q: 0.6, attack: 0.002 });
+      noise({ dur: 1.8, gain: 0.42, type: 'lowpass', freq: 320, q: 0.5, attack: 0.02 });
+      tone({ freq: 92, dur: 1.6, type: 'sine', gain: 0.3, slideTo: 34, attack: 0.02 });
+    },
+    // Електричний тріск громовідводу, що приймає розряд на вістря
+    zap() {
+      if (!ctx || !enabled) return;
+      tone({ freq: 1800, dur: 0.18, type: 'sawtooth', gain: 0.09, slideTo: 480, attack: 0.004 });
+      noise({ dur: 0.22, gain: 0.16, type: 'bandpass', freq: 2200, q: 2, attack: 0.004 });
     },
     // Кривава ніч: низький дисонансний гул-передвістя на два детюнені голоси
     bloodMoon() {
@@ -6228,7 +6252,7 @@ function startBreakOrAttack() {
   if (torches.size > 0 || crops.size > 0 || ladders.size > 0 || saplings.size > 0 ||
       signs.size > 0 || rails.size > 0 || campfires.size > 0 || beehives.size > 0 ||
       scarecrows.size > 0 || mushrooms.size > 0 || anvils.size > 0 ||
-      oysters.size > 0 || cactusFruits.size > 0) {
+      oysters.size > 0 || cactusFruits.size > 0 || lightningRods.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -6264,6 +6288,11 @@ function startBreakOrAttack() {
       }
       if (scarecrows.has(key)) {
         breakScarecrow(key);
+        triggerSwing();
+        return;
+      }
+      if (lightningRods.has(key)) {
+        breakLightningRod(key);
         triggerSwing();
         return;
       }
@@ -6885,6 +6914,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateBeehives();  // ... і опору вуликів
   validateScarecrows(); // ... і опору опудал
   validateAnvils();    // ... і опору ковадел
+  validateLightningRods(); // ... і опору громовідводів
   validateMushrooms(); // ... і ґрунт грибів
   validateOysters();   // ... і дно устриць
   validateCactusFruits(); // ... і кактус під плодом
@@ -7037,6 +7067,7 @@ function updateFallingBlocks(dt) {
       validateBeehives();
       validateScarecrows();
       validateAnvils();
+      validateLightningRods();
       validateMushrooms();
       validateOysters();
       validateCactusFruits(); // ... і кактус під плодом
@@ -7379,6 +7410,7 @@ function placeTorch(hit) {
       rails.has(torchKey(x, y, z)) || campfires.has(torchKey(x, y, z)) ||
       beehives.has(torchKey(x, y, z)) ||
       scarecrows.has(torchKey(x, y, z)) || anvils.has(torchKey(x, y, z)) ||
+      lightningRods.has(torchKey(x, y, z)) ||
       mushrooms.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
@@ -7541,6 +7573,7 @@ function placeLadder(hit) {
       signs.has(ladderKey(x, y, z)) || rails.has(ladderKey(x, y, z)) ||
       campfires.has(ladderKey(x, y, z)) || beehives.has(ladderKey(x, y, z)) ||
       scarecrows.has(ladderKey(x, y, z)) || anvils.has(ladderKey(x, y, z)) ||
+      lightningRods.has(ladderKey(x, y, z)) ||
       mushrooms.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
@@ -7751,6 +7784,7 @@ function placeDoor(hit) {
         beds.has(k) || ladders.has(k) || fences.has(k) || gates.has(k) ||
         saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
         beehives.has(k) || scarecrows.has(k) || anvils.has(k) ||
+        lightningRods.has(k) ||
         mushrooms.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
@@ -8017,6 +8051,7 @@ function fenceCellFree(x, y, z) {
          !torches.has(k) && !crops.has(k) && !beds.has(k) && !ladders.has(k) &&
          !saplings.has(k) && !signs.has(k) && !rails.has(k) && !campfires.has(k) &&
          !beehives.has(k) && !scarecrows.has(k) && !anvils.has(k) &&
+         !lightningRods.has(k) &&
          !mushrooms.has(k);
 }
 
@@ -8188,7 +8223,7 @@ function plantCrop(hit) {
       saplings.has(cropKey(x, y, z)) || signs.has(cropKey(x, y, z)) ||
       rails.has(cropKey(x, y, z)) || campfires.has(cropKey(x, y, z)) ||
       beehives.has(cropKey(x, y, z)) || scarecrows.has(cropKey(x, y, z)) ||
-      anvils.has(cropKey(x, y, z)) ||
+      anvils.has(cropKey(x, y, z)) || lightningRods.has(cropKey(x, y, z)) ||
       mushrooms.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
@@ -8349,6 +8384,7 @@ function plantSapling(hit) {
       signs.has(saplingKey(x, y, z)) || rails.has(saplingKey(x, y, z)) ||
       campfires.has(saplingKey(x, y, z)) || beehives.has(saplingKey(x, y, z)) ||
       scarecrows.has(saplingKey(x, y, z)) || anvils.has(saplingKey(x, y, z)) ||
+      lightningRods.has(saplingKey(x, y, z)) ||
       mushrooms.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
@@ -8403,6 +8439,7 @@ function growSaplingTree(s) {
   validateBeehives();
   validateScarecrows();
   validateAnvils();
+  validateLightningRods();
   validateMushrooms();
   validateOysters();
   validateCactusFruits(); // ... і кактус під плодом
@@ -8507,6 +8544,7 @@ function placeBed(hit) {
       signs.has(bedKey(x, y, z)) || rails.has(bedKey(x, y, z)) ||
       campfires.has(bedKey(x, y, z)) || beehives.has(bedKey(x, y, z)) ||
       scarecrows.has(bedKey(x, y, z)) || anvils.has(bedKey(x, y, z)) ||
+      lightningRods.has(bedKey(x, y, z)) ||
       mushrooms.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
@@ -8736,7 +8774,7 @@ function signCellFree(x, y, z) {
   const k = signKey(x, y, z);
   return blockAt(x, y, z) === AIR && !signs.has(k) && !torches.has(k) && !rails.has(k) &&
          !campfires.has(k) && !beehives.has(k) && !scarecrows.has(k) &&
-         !anvils.has(k) &&
+         !anvils.has(k) && !lightningRods.has(k) &&
          !crops.has(k) && !beds.has(k) && !ladders.has(k) && !doorAtCell(x, y, z) &&
          !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k);
 }
@@ -8937,6 +8975,7 @@ function updateMining(dt, hit) {
     validateBeehives();  // ... або опору вулика
     validateScarecrows(); // ... або опору опудала
     validateAnvils();    // ... або опору ковадла
+    validateLightningRods(); // ... або опору громовідводу
     validateMushrooms(); // ... або ґрунт гриба
     validateOysters();   // ... або воду чи дно устриці
     validateCactusFruits(); // ... і кактус під плодом
@@ -9298,6 +9337,7 @@ function placeRail(hit) {
   if (rails.has(k) || torches.has(k) || crops.has(k) || beds.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mushrooms.has(k) ||
+      lightningRods.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
   for (const d of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -9846,6 +9886,7 @@ function placeCampfire(hit) {
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
       rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) ||
+      lightningRods.has(k) ||
       mushrooms.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
@@ -10248,6 +10289,7 @@ function placeBeehive(hit) {
       torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) ||
       gates.has(k) || crops.has(k) || beds.has(k) || saplings.has(k) ||
       signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) ||
+      lightningRods.has(k) ||
       mushrooms.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addBeehive(x, y, z)) return false;
@@ -10436,6 +10478,7 @@ function placeScarecrow(hit) {
       campfires.has(k) || torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) ||
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) ||
+      lightningRods.has(k) ||
       mushrooms.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addScarecrow(x, y, z)) return false;
@@ -10461,6 +10504,284 @@ if (savedGame && Array.isArray(savedGame.scarecrows)) {
   for (const e of savedGame.scarecrows) {
     if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
       addScarecrow(e[0], e[1], e[2]);
+    }
+  }
+}
+
+// ============================================================
+// Гроза б'є по-справжньому: удари блискавки та громовідвід
+// ============================================================
+// Під час сильного дощу частина спалахів — це справжні розряди: блискавка
+// цілить у найвищу точку поблизу гравця, б'є все живе в радіусі, обертає
+// пісок на скло, а траву — на випалену землю. Громовідвід (щогла з торбового
+// металу) перехоплює розряд у своєму радіусі й безпечно заземлює його.
+const lightningRods = new Map();   // "x,y,z" -> { x, y, z, group, tip, charge }
+const LROD_MAX = 24;               // межа, щоб збереження не розросталося
+const LROD_ATTRACT_R = 12;         // радіус, у якому щогла перехоплює розряд
+const LROD_COST = { iron: 2, gold: 1 };  // метал із торби за встановлення
+const LROD_GLOW_TIME = 60;         // секунд жевріння вістря після удару
+const LIGHTNING_DMG = 6;           // шкода прямого удару (стихія — повз панцир)
+const LIGHTNING_HIT_R = 3;         // радіус ураження довкола місця удару
+const LROD_POLE = 0x9aa3ad;
+const LROD_BASE = 0x6f767e;
+const LROD_TIP = 0xf3c645;
+const LIGHTNING_SPARK = new THREE.Color(0xfff2ae);
+const lrodKey = (x, y, z) => x + ',' + y + ',' + z;
+
+function makeLightningRodModel() {
+  const g = new THREE.Group();
+  animalBox(g, 0.42, 0.1, 0.42, LROD_BASE, 0, 0.05, 0);    // опорна плита
+  animalBox(g, 0.12, 0.12, 0.12, LROD_BASE, 0, 0.14, 0);   // кріплення
+  animalBox(g, 0.07, 1.5, 0.07, LROD_POLE, 0, 0.92, 0);    // щогла
+  // Вістря — окремий меш із власним матеріалом: жевріє після впійманого розряду
+  const tip = new THREE.Mesh(
+    new THREE.BoxGeometry(0.15, 0.24, 0.15),
+    new THREE.MeshLambertMaterial({ color: LROD_TIP })
+  );
+  tip.position.set(0, 1.76, 0);
+  g.add(tip);
+  return { g, tip };
+}
+
+function addLightningRod(x, y, z) {
+  const key = lrodKey(x, y, z);
+  if (lightningRods.has(key) || lightningRods.size >= LROD_MAX) return false;
+  const { g, tip } = makeLightningRodModel();
+  g.position.set(x + 0.5, y, z + 0.5);
+  scene.add(g);
+  lightningRods.set(key, { x, y, z, group: g, tip, charge: 0 });
+  return true;
+}
+
+function removeLightningRod(key) {
+  const r = lightningRods.get(key);
+  if (!r) return;
+  scene.remove(r.group);
+  r.group.traverse((o) => {
+    if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
+  });
+  lightningRods.delete(key);
+}
+
+// Розібрати громовідвід (ударом чи втратою опори): метал вертається в торбу
+function breakLightningRod(key) {
+  const r = lightningRods.get(key);
+  if (!r) return;
+  for (const [ore, n] of Object.entries(LROD_COST)) {
+    player[ore] = Math.min(ORE_MAX[ore], (player[ore] || 0) + n);
+  }
+  updateOreHud();
+  spawnParticles(r.x + 0.5, r.y + 0.9, r.z + 0.5, new THREE.Color(LROD_POLE), 8,
+    { radius: 0.25, speed: 1.8, upBias: 0.8, life: 0.5, size: 0.08, gravity: 8 });
+  Sound.breakBlock(STONE);
+  removeLightningRod(key);
+}
+
+// Зняти громовідводи, що втратили опору або клітинку яких зайняв блок
+function validateLightningRods() {
+  if (lightningRods.size === 0) return;
+  for (const [key, r] of lightningRods) {
+    const occupied = isSolid(blockAt(r.x, r.y, r.z));
+    const supported = isSolid(blockAt(r.x, r.y - 1, r.z));
+    if (occupied || !supported) breakLightningRod(key);
+  }
+}
+
+// Чи відкрите небо над клітинкою (розряд не проб'є дах)
+function skyOpenAt(x, y, z) {
+  for (let yy = y; yy < HEIGHT; yy++) {
+    if (isSolid(blockAt(x, yy, z))) return false;
+  }
+  return true;
+}
+
+// Найближчий громовідвід під відкритим небом у радіусі r від точки
+function lightningRodNearXZ(x, z, r) {
+  const r2 = r * r;
+  let best = null, bestD = Infinity;
+  for (const rod of lightningRods.values()) {
+    const dx = rod.x + 0.5 - x, dz = rod.z + 0.5 - z;
+    const d = dx * dx + dz * dz;
+    if (d < r2 && d < bestD && skyOpenAt(rod.x, rod.y + 2, rod.z)) {
+      best = rod; bestD = d;
+    }
+  }
+  return best;
+}
+
+// Поставити громовідвід у клітинку перед прицілом (тверда підлога, метал із торби)
+function placeLightningRod(hit) {
+  const [x, y, z] = hit.prev;
+  const k = lrodKey(x, y, z);
+  if (blockAt(x, y, z) !== AIR || lightningRods.has(k) || scarecrows.has(k) ||
+      beehives.has(k) || campfires.has(k) || torches.has(k) || ladders.has(k) ||
+      doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
+      beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
+      anvils.has(k) || mushrooms.has(k)) return false;
+  if (!isSolid(blockAt(x, y - 1, z))) return false;
+  if (!Object.entries(LROD_COST).every(([ore, n]) => (player[ore] || 0) >= n)) {
+    flashItemName('Потрібно ⛓ 2 × залізо + 🟡 1 × золото з торби');
+    return false;
+  }
+  if (!addLightningRod(x, y, z)) return false;
+  for (const [ore, n] of Object.entries(LROD_COST)) player[ore] -= n;
+  updateOreHud();
+  Sound.place(STONE);
+  spawnParticles(x + 0.5, y + 0.6, z + 0.5, new THREE.Color(LROD_POLE), 7,
+    { radius: 0.3, speed: 1.4, upBias: 0.8, life: 0.45, size: 0.08, gravity: 8 });
+  return true;
+}
+
+// Верхній твердий блок стовпця (куди цілить розряд); -1 — порожній стовпець
+function surfaceYAt(x, z) {
+  for (let y = HEIGHT - 1; y >= 0; y--) {
+    if (isSolid(blockAt(x, y, z))) return y;
+  }
+  return -1;
+}
+
+// ===== Візуал розряду: зиґзаґ білих сегментів + короткий спалах світла =====
+const lightningBolts = [];
+const BOLT_LIFE = 0.28;
+
+function spawnBoltVisual(tx, ty, tz) {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xeaf2ff, transparent: true, opacity: 1, fog: false, depthWrite: false,
+  });
+  const top = Math.min(HEIGHT + 10, ty + 30);
+  for (let y = ty; y < top; y += 2.2) {
+    const sway = Math.min(1, (y - ty) / 6);   // при землі рівно, вище — гуляє
+    const seg = new THREE.Mesh(new THREE.BoxGeometry(0.14, 2.5, 0.14), mat);
+    seg.position.set(
+      tx + (Math.random() * 2 - 1) * 0.8 * sway,
+      y + 1.1,
+      tz + (Math.random() * 2 - 1) * 0.8 * sway);
+    g.add(seg);
+  }
+  const light = new THREE.PointLight(0xcfe0ff, 4, 28);
+  light.position.set(tx, ty + 2, tz);
+  g.add(light);
+  scene.add(g);
+  lightningBolts.push({ group: g, mat, life: BOLT_LIFE });
+}
+
+function updateLightningBolts(dt) {
+  for (let i = lightningBolts.length - 1; i >= 0; i--) {
+    const b = lightningBolts[i];
+    b.life -= dt;
+    b.mat.opacity = Math.max(0, b.life / BOLT_LIFE) * (0.6 + Math.random() * 0.4);
+    if (b.life <= 0) {
+      scene.remove(b.group);
+      b.group.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
+      b.mat.dispose();
+      lightningBolts.splice(i, 1);
+    }
+  }
+}
+
+// ===== Сам удар: вибір цілі, перехоплення громовідводом, шкода й сліди =====
+function strikeLightning(forceX, forceZ) {
+  let tx, ty, tz;
+  if (Number.isFinite(forceX) && Number.isFinite(forceZ)) {
+    tx = Math.floor(forceX); tz = Math.floor(forceZ);
+    const sy = surfaceYAt(tx, tz);
+    if (sy < 0) return false;
+    ty = sy + 1;
+  } else {
+    // Три випадкові точки довкола гравця — блискавка обирає найвищу
+    let best = null;
+    for (let i = 0; i < 3; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const r = 5 + Math.random() * 21;
+      const x = Math.floor(player.pos.x + Math.cos(ang) * r);
+      const z = Math.floor(player.pos.z + Math.sin(ang) * r);
+      const sy = surfaceYAt(x, z);
+      if (sy < 0) continue;
+      if (!best || sy > best.y) best = { x, y: sy, z };
+    }
+    if (!best) return false;
+    tx = best.x; ty = best.y + 1; tz = best.z;
+  }
+
+  skyFlash = 1;
+  Sound.thunderClose();
+
+  // Громовідвід поблизу перехоплює розряд на вістря — безпечне заземлення
+  const rod = lightningRodNearXZ(tx + 0.5, tz + 0.5, LROD_ATTRACT_R);
+  if (rod) {
+    const rx = rod.x + 0.5, ry = rod.y + 1.8, rz = rod.z + 0.5;
+    spawnBoltVisual(rx, ry, rz);
+    rod.charge = LROD_GLOW_TIME;
+    Sound.zap();
+    spawnParticles(rx, ry, rz, LIGHTNING_SPARK, 14,
+      { radius: 0.3, speed: 3, upBias: 0.6, life: 0.6, size: 0.09, gravity: 6 });
+    if (rod.group.position.distanceToSquared(player.pos) < 48 * 48) {
+      unlockAch('rod_guard');
+    }
+    return true;
+  }
+
+  // Удар у землю: спалах, сліди на блоках і шкода всьому живому поруч
+  const cx = tx + 0.5, cz = tz + 0.5;
+  spawnBoltVisual(cx, ty, cz);
+  const ground = blockAt(tx, ty - 1, tz);
+  if (ground === SAND) setBlock(tx, ty - 1, tz, GLASS);        // фульгурит!
+  else if (ground === GRASS) setBlock(tx, ty - 1, tz, DIRT);   // випалена земля
+  spawnParticles(cx, ty + 0.3, cz, LIGHTNING_SPARK, 16,
+    { radius: 0.5, speed: 3.4, upBias: 0.9, life: 0.6, size: 0.1, gravity: 7 });
+  spawnParticles(cx, ty + 0.2, cz, new THREE.Color(0x555b63), 8,
+    { radius: 0.5, speed: 1.2, upBias: 1.4, life: 0.9, size: 0.14, gravity: -2 });
+
+  const r2 = LIGHTNING_HIT_R * LIGHTNING_HIT_R;
+  const near = (p, lift) => {
+    const dx = p.x - cx, dy = p.y + (lift || 0) - ty, dz = p.z - cz;
+    return dx * dx + dy * dy + dz * dz <= r2;
+  };
+  for (let i = mobs.length - 1; i >= 0; i--) {
+    const m = mobs[i];
+    if (near(m.pos, 0.5)) {
+      damageEntity(m, false, LIGHTNING_DMG, m.pos.x - cx, m.pos.z - cz, 4);
+    }
+  }
+  for (let i = animals.length - 1; i >= 0; i--) {
+    const an = animals[i];
+    if (near(an.pos, 0.5)) {
+      damageEntity(an, true, LIGHTNING_DMG, an.pos.x - cx, an.pos.z - cz, 4);
+    }
+  }
+  if (!player.dead && near(player.pos, player.height * 0.5)) {
+    damagePlayer(LIGHTNING_DMG, 'lightning');
+    if (!player.dead) unlockAch('struck');
+  }
+  return true;
+}
+
+// Вістря зарядженого громовідводу пульсує жовтим жевривом, доки заряд не згасне
+let lrodClock = 0;
+function updateLightningRods(dt) {
+  if (lightningRods.size === 0) return;
+  lrodClock += dt;
+  for (const r of lightningRods.values()) {
+    if (r.charge > 0) {
+      r.charge -= dt;
+      const pulse = 0.55 + 0.45 * Math.sin(lrodClock * 7);
+      r.tip.material.emissive.setHex(0xffdf6e);
+      r.tip.material.emissiveIntensity = Math.min(1, r.charge / 6 + 0.25) * pulse;
+      if (Math.random() < dt * 2.5) {
+        spawnParticles(r.x + 0.5, r.y + 1.8, r.z + 0.5, LIGHTNING_SPARK, 1,
+          { radius: 0.12, speed: 0.8, upBias: 0.8, life: 0.4, size: 0.06, gravity: 3 });
+      }
+      if (r.charge <= 0) r.tip.material.emissive.setHex(0x000000);
+    }
+  }
+}
+
+// Відновити збережені громовідводи (формат: [x, y, z])
+if (savedGame && Array.isArray(savedGame.lightningRods)) {
+  for (const e of savedGame.lightningRods) {
+    if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
+      addLightningRod(e[0], e[1], e[2]);
     }
   }
 }
@@ -10545,6 +10866,7 @@ function placeAnvil(hit) {
       beehives.has(k) || campfires.has(k) || torches.has(k) || ladders.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
+      lightningRods.has(k) ||
       mushrooms.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addAnvil(x, y, z)) return false;
@@ -10909,6 +11231,7 @@ function mushCellFree(x, y, z) {
   if (mushrooms.has(k) || torches.has(k) || crops.has(k) || ladders.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || beds.has(k) ||
+      lightningRods.has(k) ||
       fences.has(k) || gates.has(k) || doorAtCell(x, y, z)) return false;
   if (blockAt(x, y, z) !== AIR) return false;
   return mushSupportable(blockAt(x, y - 1, z));
@@ -11335,7 +11658,8 @@ function fruitCellOk(x, y, z) {
   const k = fruitKey(x, y, z);
   if (cactusFruits.has(k) || mushrooms.has(k) || crops.has(k) || saplings.has(k) ||
       torches.has(k) || ladders.has(k) || rails.has(k) || campfires.has(k) ||
-      scarecrows.has(k) || anvils.has(k) || beehives.has(k)) return false;
+      scarecrows.has(k) || anvils.has(k) || beehives.has(k) ||
+      lightningRods.has(k)) return false;
   if (blockAt(x, y, z) !== AIR || blockAt(x, y - 1, z) !== CACTUS) return false;
   return biomeAt(x, z) === BIOME.DESERT;
 }
@@ -12035,6 +12359,12 @@ function placeBlock() {
     return;
   }
 
+  // Громовідвід — сутність на твердій підлозі, перехоплює блискавки грози
+  if (id === LIGHTNING_ROD) {
+    placeLightningRod(hit);
+    return;
+  }
+
   // Рейки — сутність на твердій опорі, сама з'єднується із сусідніми рейками
   if (id === RAIL) {
     placeRail(hit);
@@ -12126,6 +12456,7 @@ function placeBlock() {
   validateBeehives();  // ... або клітинку вулика
   validateScarecrows(); // ... або клітинку опудала
   validateAnvils();    // ... або клітинку ковадла
+  validateLightningRods(); // ... або клітинку громовідводу
   validateMushrooms(); // ... або клітинку гриба
   validateOysters();   // ... або воду чи дно устриці
   validateCactusFruits(); // ... і кактус під плодом
@@ -12450,13 +12781,18 @@ function updateWeather(dt) {
   // Ambient-звук дощу (сніг беззвучний)
   Sound.setRain(weatherState === 'rain' ? weatherIntensity : 0);
 
-  // Блискавка під час сильного дощу під відкритим небом
+  // Блискавка під час сильного дощу під відкритим небом: частина спалахів —
+  // далекі зірниці (грім із затримкою), решта — справжні удари поблизу
   if (weatherState === 'rain' && exposed && weatherIntensity > 0.5) {
     lightningTimer -= dt;
     if (lightningTimer <= 0) {
-      skyFlash = 1;
-      lightningTimer = 10 + Math.random() * 18;
-      setTimeout(() => Sound.thunder(), 400 + Math.random() * 2200);
+      lightningTimer = 9 + Math.random() * 16;
+      if (Math.random() < 0.55) {
+        strikeLightning();
+      } else {
+        skyFlash = 1;
+        setTimeout(() => Sound.thunder(), 400 + Math.random() * 2200);
+      }
     }
   }
   if (skyFlash > 0) skyFlash = Math.max(0, skyFlash - dt * 5);
@@ -13700,6 +14036,7 @@ const DEATH_CAUSES = {
   meteor: 'Розчавлений метеоритом',
   bees: 'Зажалений розлюченими бджолами',
   warlord: 'Розчавлений ватажком облоги',
+  lightning: 'Уражений блискавкою',
 };
 
 function showDeathScreen(cause) {
@@ -13844,6 +14181,22 @@ function drawBlockIcon(canvas, id) {
     ctx.stroke();
     ctx.fillStyle = '#e8e4d8';
     ctx.fillRect(10, 6, 2, 2);                                  // обмотка
+    return;
+  }
+  if (id === LIGHTNING_ROD) {
+    // Процедурна іконка громовідводу: плита, щогла, золоте вістря та розряд
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#6f767e';
+    ctx.fillRect(4, 13, 8, 2);                 // опорна плита
+    ctx.fillStyle = '#9aa3ad';
+    ctx.fillRect(7, 4, 2, 9);                  // щогла
+    ctx.fillStyle = '#f3c645';
+    ctx.fillRect(6, 2, 4, 3);                  // золоте вістря
+    ctx.fillStyle = '#ffe98a';                 // зиґзаґ розряду збоку
+    ctx.fillRect(11, 3, 2, 2);
+    ctx.fillRect(12, 5, 2, 2);
+    ctx.fillRect(11, 7, 2, 2);
     return;
   }
   if (id === SEEDS) {
@@ -14954,6 +15307,8 @@ const ACHIEVEMENTS = [
   { id: 'truffle_eat', icon: '🌰', title: 'Лісовий делікатес',  desc: "З'їсти викопаний свинею трюфель" },
   { id: 'warlord',     icon: '🩸', title: 'Ватажка повалено',   desc: 'Здолати ватажка кривавої ночі' },
   { id: 'crown',       icon: '👑', title: 'Корона облоги',      desc: 'Підібрати корону полеглого ватажка' },
+  { id: 'struck',      icon: '🌩', title: 'Іскра в жилах',      desc: 'Пережити удар блискавки' },
+  { id: 'rod_guard',   icon: '⚡', title: 'Приборкувач грози',  desc: 'Громовідвід упіймав блискавку' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -15216,6 +15571,27 @@ window.MCDebug = {
     return s;
   },
   get weather() { return { state: weatherState, intensity: +weatherIntensity.toFixed(2) }; },
+  // Примусовий удар блискавки (за замовчуванням — за правилами вибору цілі)
+  strikeNow: (x, z) => strikeLightning(x, z),
+  // Метал на громовідвід у торбу (2 залізо + 1 золото за штуку)
+  giveRodMetal: (n = 1) => {
+    player.iron = Math.min(ORE_MAX.iron, player.iron + LROD_COST.iron * n);
+    player.gold = Math.min(ORE_MAX.gold, player.gold + LROD_COST.gold * n);
+    updateOreHud();
+    return { iron: player.iron, gold: player.gold };
+  },
+  giveLightningRod: () => { assignBlockToSlot(LIGHTNING_ROD); return BLOCK_NAMES[LIGHTNING_ROD]; },
+  // Поставити громовідвід на поверхню поруч із гравцем (без прицілу й металу)
+  spawnRodNear: (dx = 3, dz = 0) => {
+    const x = Math.floor(player.pos.x + dx), z = Math.floor(player.pos.z + dz);
+    const sy = surfaceYAt(x, z);
+    if (sy < 0) return null;
+    return addLightningRod(x, sy + 1, z) ? { x, y: sy + 1, z } : null;
+  },
+  get rodInfo() {
+    return [...lightningRods.values()].map((r) =>
+      ({ x: r.x, y: r.y, z: r.z, charge: +r.charge.toFixed(1) }));
+  },
   get mobs() { return mobs; },
   get player() { return player; },
   get torches() { return torches.size; },
@@ -16785,6 +17161,8 @@ function animate() {
     updateCampfires(dt);
     updateBeehives(dt);
     updateScarecrows(dt);
+    updateLightningRods(dt);
+    updateLightningBolts(dt);
     updateCrows(dt);
     updateLavaLights(dt);
     updateStarLights(dt);
