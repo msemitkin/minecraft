@@ -613,6 +613,15 @@ function saveGame() {
         ? trader.offers.map((o) => [o.give, o.giveN, o.get, o.getN, o.stock])
         : null,
       traderTimer: +traderTimer.toFixed(1),
+      villagerAt: villager
+        ? [+villager.pos.x.toFixed(1), +villager.pos.y.toFixed(1), +villager.pos.z.toFixed(1)]
+        : null,
+      villagerOffers: villager
+        ? villager.offers.map((o) => [o.give, o.giveN, o.get, o.getN, o.stock])
+        : null,
+      villagerHome: villagerHome
+        ? [+villagerHome.x.toFixed(1), +villagerHome.z.toFixed(1)]
+        : null,
       spawn: spawnPoint,
       selectedSlot,
       hotbar: [...hotbar],
@@ -1059,6 +1068,13 @@ const Sound = (() => {
         if (!enabled) return;
         tone({ freq: 1560, dur: 0.1, type: 'triangle', gain: 0.1, slideTo: 1240 });
       }, 75);
+    },
+    // Зцілення завершено: висхідний передзвін — прокляття спадає
+    cure() {
+      if (!ctx || !enabled) return;
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => setTimeout(() => {
+        if (enabled) tone({ freq: f, dur: 0.22, type: 'triangle', gain: 0.16 });
+      }, i * 110));
     },
     // Кування на ковадлі: два дзвінкі удари молота по металу
     forge() {
@@ -3261,6 +3277,30 @@ const ANIMAL_TYPES = {
       ];
     },
   },
+  // Зцілений селянин: колишній зомбі, якому золоте яблуко повернуло людську
+  // подобу. Оселяється там, де завершилося зцілення (updateVillager), тримає
+  // крамницю зі свіжими щоранку пропозиціями (ПКМ) і не блукає далеко від дому
+  villager: {
+    speed: 0.9, halfW: 0.3, height: 1.9, hp: 20, food: 0,
+    build(g) {
+      const tunic = 0x5a7a3a, trim = 0x46612e, skin = 0xc9976f,
+        dark = 0x2b2b2b, straw = 0xd8b74a;
+      animalBox(g, 0.52, 0.5, 0.36, trim, 0, 0.55, 0);      // поділ сорочки
+      animalBox(g, 0.48, 0.6, 0.32, tunic, 0, 1.1, 0);      // тулуб
+      animalBox(g, 0.14, 0.5, 0.14, tunic, -0.31, 1.15, 0); // руки
+      animalBox(g, 0.14, 0.5, 0.14, tunic, 0.31, 1.15, 0);
+      animalBox(g, 0.38, 0.38, 0.36, skin, 0, 1.6, 0);      // голова
+      animalBox(g, 0.09, 0.2, 0.09, skin, 0, 1.52, -0.21);  // ніс селянської вдачі
+      animalBox(g, 0.3, 0.05, 0.03, dark, 0, 1.7, -0.185);  // брова
+      // Солом'яний бриль — знак мирного ремесла (криси й наголовок)
+      animalBox(g, 0.56, 0.06, 0.54, straw, 0, 1.8, 0);
+      animalBox(g, 0.3, 0.12, 0.28, straw, 0, 1.88, 0);
+      return [
+        animalLeg(g, 0.14, 0.34, dark, -0.12, 0.34, 0),
+        animalLeg(g, 0.14, 0.34, dark, 0.12, 0.34, 0),
+      ];
+    },
+  },
 };
 
 // Час відростання вовни після стрижки, с
@@ -3360,7 +3400,8 @@ function trySpawnAnimal() {
     type = 'horse';   // коні пасуться на відкритих рівнинах
   } else {
     const types = Object.keys(ANIMAL_TYPES)
-      .filter((t) => t !== 'wolf' && t !== 'horse' && t !== 'golem' && t !== 'trader');
+      .filter((t) => t !== 'wolf' && t !== 'horse' && t !== 'golem' &&
+                     t !== 'trader' && t !== 'villager');
     type = types[Math.floor(Math.random() * types.length)];
   }
   spawnAnimal(type, x + 0.5, h + 1.01, z + 0.5);
@@ -3409,8 +3450,8 @@ function updateAnimal(a, dt) {
     a.pursuing = false;
     // Дивиться геть від гравця: «до гравця» — atan2(a−p); напрям утечі — протилежний
     a.targetYaw = Math.atan2(player.pos.x - a.pos.x, player.pos.z - a.pos.z);
-  } else if (a === trader && tradeOpen) {
-    // Поки відкрита ятка — торговець стоїть, обернувшись до покупця
+  } else if (tradeOpen && a === shopKeeper) {
+    // Поки відкрита ятка чи крамниця — крамар стоїть, обернувшись до покупця
     a.state = 'idle';
     a.stateTimer = 1;
     a.targetYaw = Math.atan2(-(player.pos.x - a.pos.x), -(player.pos.z - a.pos.z));
@@ -3455,6 +3496,13 @@ function updateAnimal(a, dt) {
           a.state = 'walk';
           a.stateTimer = 2 + Math.random() * 4;
           a.targetYaw = Math.random() * Math.PI * 2;
+          // Селянин не блукає далеко від садиби: задалеко — вертає додому
+          if (a === villager && villagerHome) {
+            const hd = Math.hypot(villagerHome.x - a.pos.x, villagerHome.z - a.pos.z);
+            if (hd > VILLAGER_HOME_R) {
+              a.targetYaw = Math.atan2(a.pos.x - villagerHome.x, a.pos.z - villagerHome.z);
+            }
+          }
         }
       }
     }
@@ -3592,14 +3640,15 @@ function updateAnimals(dt) {
       updateAnimal(a, dt);
       continue;
     }
-    // Торговець не деспавниться на відстані (гість, а не дика звірина);
-    // випав за межі світу — повертається до гравця, як приручений вовк
-    if (a.type === 'trader' && a.pos.y < -10) {
+    // Торговець і зцілений селянин не деспавняться на відстані (гості й
+    // сусіди, а не дика звірина); випали за межі світу — повертаються до
+    // гравця, як приручений вовк
+    if ((a.type === 'trader' || a.type === 'villager') && a.pos.y < -10) {
       wolfWarpToPlayer(a);
       updateAnimal(a, dt);
       continue;
     }
-    if (!a.tamed && !a.leashed && a.type !== 'trader' &&
+    if (!a.tamed && !a.leashed && a.type !== 'trader' && a.type !== 'villager' &&
         (a.pos.distanceTo(player.pos) > ANIMAL_DESPAWN_DIST || a.pos.y < -10)) {
       removeAnimal(i);
     } else {
@@ -3667,8 +3716,10 @@ function updateTamedWolf(a, dt) {
   }
 
   // Охорона: найближчий ворог поблизу гравця чи самого вовка
+  // (зомбі посеред зцілення вовк не чіпає — господар сплатив за нього яблуком)
   let target = null, bestDist = Infinity;
   for (const m of mobs) {
+    if (m.curing > 0) continue;
     const d = Math.min(m.pos.distanceTo(player.pos), m.pos.distanceTo(a.pos));
     if (d < WOLF_GUARD_R && d < bestDist) { bestDist = d; target = m; }
   }
@@ -4024,8 +4075,10 @@ function updateGolem(a, dt) {
   a.attackCD = Math.max(0, a.attackCD - dt);
   let target = null, bestDist = Infinity;
   for (const m of mobs) {
-    // Нейтрального денного павука не чіпаємо — не варто його злити
+    // Нейтрального денного павука не чіпаємо — не варто його злити;
+    // зомбі посеред зцілення теж недоторканний (за нього сплачено яблуком)
     if (m.type === 'spider' && dayNightSun > 0.15 && !m.angry) continue;
+    if (m.curing > 0) continue;
     const d = m.pos.distanceTo(a.pos);
     if (d < GOLEM_GUARD_R && d < bestDist) { bestDist = d; target = m; }
   }
@@ -4338,9 +4391,11 @@ const TRADE_POOL = [
 
 let trader = null;                          // сутність торговця серед animals (або null)
 let traderTimer = TRADER_FIRST_DELAY;       // до наступного візиту, с
+let shopKeeper = null;                      // чия ятка зараз відкрита: торговець чи селянин
 
 // 3 різні пропозиції на візит; щонайменше одна — із золотим яблуком
-function rollTraderOffers() {
+// (stock — скільки разів діє кожна: у гостя-торговця й осілого селянина різний)
+function rollTraderOffers(stock = TRADER_STOCK) {
   const idx = TRADE_POOL.map((_, i) => i);
   for (let i = idx.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -4352,7 +4407,7 @@ function rollTraderOffers() {
   }
   return pick.map((i) => {
     const [give, giveN, get, getN] = TRADE_POOL[i];
-    return { give, giveN, get, getN, stock: TRADER_STOCK };
+    return { give, giveN, get, getN, stock };
   });
 }
 
@@ -4390,7 +4445,8 @@ function traderLeave(farewell) {
   }
   trader = null;
   traderTimer = TRADER_PERIOD_MIN + Math.random() * TRADER_PERIOD_VAR;
-  closeTradePanel();
+  // Крамниця селянина живе своїм життям — закривається лише ятка гостя
+  if (!shopKeeper || shopKeeper !== villager) closeTradePanel();
   if (farewell) sleepToast('🧳 Торговець пішов далі своєю дорогою');
 }
 
@@ -4408,9 +4464,10 @@ function updateTrader(dt) {
   if (dayNightSun <= 0.15 || !spawnTrader()) traderTimer = TRADER_RETRY;
 }
 
-// Здійснити обмін за пропозицією ятки. Повертає true, якщо обмін відбувся.
+// Здійснити обмін за пропозицією ятки чи крамниці. Повертає true, якщо
+// обмін відбувся (shopKeeper — той, чия панель зараз відкрита).
 function doTrade(offer) {
-  if (!trader || !offer || offer.stock <= 0) return false;
+  if (!shopKeeper || !offer || offer.stock <= 0) return false;
   if ((player[offer.give] || 0) < offer.giveN) return false;
   if ((player[offer.get] || 0) >= GOODS_MAX[offer.get]) {
     flashItemName('Торба повна — нікуди класти');
@@ -4420,9 +4477,16 @@ function doTrade(offer) {
   player[offer.get] = Math.min(GOODS_MAX[offer.get], player[offer.get] + offer.getN);
   offer.stock -= 1;
   Sound.trade();
-  spawnParticles(trader.pos.x, trader.pos.y + 1.4, trader.pos.z, GAPPLE_COLOR, 8,
+  spawnParticles(shopKeeper.pos.x, shopKeeper.pos.y + 1.4, shopKeeper.pos.z,
+    GAPPLE_COLOR, 8,
     { radius: 0.35, speed: 1.2, upBias: 1.4, life: 0.7, size: 0.1, gravity: -2 });
   unlockAch('trade');
+  if (shopKeeper === villager && villager) unlockAch('neighbor');
+  // Підказка: запас яблук чималий — золотим яблуком можна зцілити зомбі
+  if (offer.get === 'gapple' && player.gapple >= 2 && !villager && !cureHintShown) {
+    cureHintShown = true;
+    sleepToast('🍏 Золотим яблуком можна зцілити зомбі (ПКМ) — зцілений оселиться поруч!');
+  }
   updateFoodHud();
   updateEggHud();
   updateHoneyHud();
@@ -4445,9 +4509,9 @@ const tradeBagEl = document.getElementById('trade-bag');
 let tradeOpen = false;
 
 function renderTradePanel() {
-  if (!trader || !tradeListEl) return;
+  if (!shopKeeper || !tradeListEl) return;
   tradeListEl.innerHTML = '';
-  for (const o of trader.offers) {
+  for (const o of shopKeeper.offers) {
     const row = document.createElement('div');
     row.className = 'trade-row' + (o.stock <= 0 ? ' soldout' : '');
     const goods = document.createElement('div');
@@ -4472,11 +4536,17 @@ function renderTradePanel() {
       .map((k) => `${TRADE_GOODS[k].icon} ${player[k] || 0}`).join('  ');
 }
 
-function openTradePanel() {
-  if (tradeOpen || !trader) return;
+function openTradePanel(keeper = trader) {
+  if (tradeOpen || !keeper) return;
   if (blockMenuOpen) closeBlockMenu();
   if (achPanelOpen) closeAchPanel();
   if (forgeOpen) closeForgePanel();
+  shopKeeper = keeper;
+  const titleEl = document.getElementById('trade-title');
+  if (titleEl) {
+    titleEl.textContent = keeper === villager
+      ? '🏘 Крамниця сусіда' : '🧳 Мандрівний торговець';
+  }
   tradeOpen = true;
   mining = false;
   cancelBowDraw();
@@ -4488,6 +4558,7 @@ function openTradePanel() {
 function closeTradePanel() {
   if (!tradeOpen) return;
   tradeOpen = false;
+  shopKeeper = null;
   tradePanelEl.hidden = true;
   if (!IS_TOUCH && !mobilePlaying && renderer.domElement.requestPointerLock) {
     renderer.domElement.requestPointerLock();
@@ -4514,6 +4585,122 @@ if (savedGame) {
                        stock: Math.max(0, Math.min(TRADER_STOCK, o[4])) }))
       : [];
     trader.offers = offers.length === 3 ? offers : rollTraderOffers();
+  }
+}
+
+// ============================================================
+// Зцілення зомбі: золоте яблуко повертає нечисті людську подобу
+// ============================================================
+// ПКМ по зомбі, коли в торбі є золоте яблуко 🍏, згодовує його: зомбі
+// здригається на місці (не полює, не горить удосвіта), а за кілька секунд
+// перетворюється на зціленого селянина. Той оселяється на місці зцілення,
+// не деспавниться, зберігається зі світом і тримає крамницю (ПКМ) — три
+// пропозиції з того самого пулу, що в мандрівного гостя, свіжі щоранку.
+// Сусід смертний: блискавка чи лава його не милують (громовідвід і тут
+// вартовий), а вбитого не повернути — хіба зцілити іншого зомбі.
+const CURE_TIME = 8;             // секунд дрожі від яблука до перетворення
+const CURE_REACH = 3.2;          // дальність зцілювального ПКМ
+const VILLAGER_STOCK = 2;        // запас кожної пропозиції крамниці на день
+const VILLAGER_HOME_R = 8;       // радіус блукання селянина від дому
+
+let villager = null;             // зцілений селянин серед animals (або null)
+let villagerHome = null;         // {x,z} — садиба: де завершилося зцілення
+let cureHintShown = false;       // разова підказка про зцілення (за сесію)
+
+const _cureDir = new THREE.Vector3();
+
+// Зомбі в прицілі впритул (для зцілення) — як animalInSight, але серед нечисті
+function zombieInSight(reach = CURE_REACH) {
+  camera.getWorldDirection(_cureDir);
+  const ox = camera.position.x, oy = camera.position.y, oz = camera.position.z;
+  let best = null, bestDist = Infinity;
+  for (const m of mobs) {
+    if (m.type !== 'zombie') continue;
+    const tx = m.pos.x - ox;
+    const ty = m.pos.y + m.height * 0.5 - oy;
+    const tz = m.pos.z - oz;
+    const dist = Math.hypot(tx, ty, tz);
+    if (dist > reach) continue;
+    const dot = (tx * _cureDir.x + ty * _cureDir.y + tz * _cureDir.z) / (dist || 1);
+    if (dot < 0.55) continue;
+    if (dist < bestDist) { bestDist = dist; best = m; }
+  }
+  return best;
+}
+
+// ПКМ по зомбі з яблуком у торбі — почати зцілення. Повертає true, якщо
+// клік ужито (без яблука чи із сусідом, що вже є, клік іде далі за ланцюжком)
+function tryCureZombie() {
+  if (player.gapple <= 0 || villager) return false;
+  if (mobs.some((m) => m.curing > 0)) return false;   // одне зцілення за раз
+  const m = zombieInSight();
+  if (!m || m.curing > 0) return false;
+  player.gapple -= 1;
+  updateGappleHud();
+  m.curing = CURE_TIME;
+  triggerSwing();
+  Sound.drink();
+  spawnParticles(m.pos.x, m.pos.y + 1.3, m.pos.z, GAPPLE_COLOR, 10,
+    { radius: 0.4, speed: 1.4, upBias: 1.5, life: 0.8, size: 0.11, gravity: -2 });
+  sleepToast('💫 Зомбі здригається — золоте яблуко бореться з прокляттям!');
+  saveGame();
+  return true;
+}
+
+// Зцілення завершилось: зомбі стає селянином, що оселяється на цьому місці
+// (сам моб уже прибирається в updateMobs)
+function transformCuredZombie(m) {
+  spawnParticles(m.pos.x, m.pos.y + 1.2, m.pos.z, GAPPLE_COLOR, 22,
+    { radius: 0.6, speed: 3, upBias: 1.4, life: 0.9, size: 0.13 });
+  Sound.cure();
+  spawnAnimal('villager', m.pos.x, m.pos.y, m.pos.z);
+  villager = animals[animals.length - 1];
+  villager.offers = rollTraderOffers(VILLAGER_STOCK);
+  villagerHome = { x: m.pos.x, z: m.pos.z };
+  unlockAch('cure');
+  sleepToast('🏘 Зцілений селянин оселився тут — ПКМ по ньому: крамниця!');
+  saveGame();
+}
+
+// Світанок: селянин виставляє свіжі пропозиції дня (панель, як відкрита, —
+// перемальовується одразу)
+function refreshVillagerShop() {
+  if (!villager) return;
+  villager.offers = rollTraderOffers(VILLAGER_STOCK);
+  if (tradeOpen && shopKeeper === villager) renderTradePanel();
+}
+
+// Догляд за сусідом: загинув (блискавка, лава, рука гравця) — прибрати
+// посилання й попрощатися; крамниця, як була відкрита, зачиняється
+function updateVillager() {
+  if (!villager) return;
+  if (!animals.includes(villager)) {
+    if (shopKeeper === villager) closeTradePanel();
+    villager = null;
+    villagerHome = null;
+    sleepToast('🏘 Сусіда не стало… Зціли іншого зомбі — і хтось знову оселиться поруч');
+    saveGame();
+  }
+}
+
+// Відновлення селянина зі збереження (позиція, садиба, пропозиції)
+if (savedGame) {
+  const vat = savedGame.villagerAt;
+  if (Array.isArray(vat) && vat.length >= 3 && vat.every(Number.isFinite)) {
+    spawnAnimal('villager', vat[0], vat[1], vat[2]);
+    villager = animals[animals.length - 1];
+    const offers = Array.isArray(savedGame.villagerOffers)
+      ? savedGame.villagerOffers
+        .filter((o) => Array.isArray(o) && TRADE_GOODS[o[0]] && TRADE_GOODS[o[2]] &&
+          Number.isFinite(o[1]) && Number.isFinite(o[3]) && Number.isFinite(o[4]))
+        .map((o) => ({ give: o[0], giveN: o[1], get: o[2], getN: o[3],
+                       stock: Math.max(0, Math.min(VILLAGER_STOCK, o[4])) }))
+      : [];
+    villager.offers = offers.length === 3 ? offers : rollTraderOffers(VILLAGER_STOCK);
+    const vh = savedGame.villagerHome;
+    villagerHome = Array.isArray(vh) && vh.length >= 2 && vh.every(Number.isFinite)
+      ? { x: vh[0], z: vh[1] }
+      : { x: vat[0], z: vat[2] };
   }
 }
 
@@ -5705,6 +5892,7 @@ function spawnMob(x, y, z, type = 'zombie') {
     pounceCD: 0,    // павук: перезарядка стрибка на гравця
     wanderT: 0,     // павук: таймер зміни напрямку блукання вдень
     wanderMove: false,
+    curing: 0,      // зомбі: залишок зцілення золотим яблуком (0 — не зцілюється)
     slamCD: 5,      // ватажок: перезарядка струсу землі
     slamT: 0,       // ватажок: залишок замаху перед ударом (0 — не замахується)
     roarT: 3 + Math.random() * 4,  // ватажок: до наступного рику
@@ -5807,6 +5995,9 @@ function updateMob(m, dt) {
   const isSkeleton = m.type === 'skeleton';
   const isSpider = m.type === 'spider';
   const isWarlord = m.type === 'warlord';
+  // Зомбі під дією золотого яблука: стоїть і бореться з прокляттям —
+  // не полює, не б'є, не горить удосвіта (таймер веде updateMobs)
+  const curing = m.curing > 0;
 
   // Лава палить будь-яку істоту (навіть кріпера) — швидка шкода й полум'я
   if (isLavaId(blockAt(Math.floor(m.pos.x), Math.floor(m.pos.y + 0.3), Math.floor(m.pos.z)))) {
@@ -5818,8 +6009,9 @@ function updateMob(m, dt) {
     if (m.health <= 0) return;
   }
 
-  // Удень зомбі та скелети займаються вогнем і швидко гинуть; кріпери й павуки — ні
-  if (!isCreeper && !isSpider && dayNightSun > 0.15) {
+  // Удень зомбі та скелети займаються вогнем і швидко гинуть; кріпери й
+  // павуки — ні, а зомбі посеред зцілення береже золоте яблуко
+  if (!isCreeper && !isSpider && !curing && dayNightSun > 0.15) {
     m.burn += dt;
     if (Math.random() < dt * 7) {
       spawnParticles(m.pos.x, m.pos.y + 1.1, m.pos.z, SMOKE_COLOR, 1,
@@ -5838,7 +6030,7 @@ function updateMob(m, dt) {
   const distH = Math.hypot(dx, dz);
   const hostile = !isSpider || dayNightSun <= 0.15 || m.angry;
   // Ватажок чує гравця вдвічі далі — від нього не сховатися за пагорбом
-  const chase = distH < (isWarlord ? 48 : 26) && !player.dead && hostile;
+  const chase = distH < (isWarlord ? 48 : 26) && !player.dead && hostile && !curing;
   if (chase) m.targetYaw = Math.atan2(-dx, -dz); // дивиться в -Z
 
   // Нейтральний павук неквапом блукає, час від часу міняючи напрямок
@@ -6050,7 +6242,20 @@ function updateMob(m, dt) {
     }
   }
 
-  // Червоний спалах при отриманні удару (перекриває блимання ґноту)
+  // Зцілення: дрож, золотаве жевриво та іскри — людина бореться з прокляттям
+  if (curing) {
+    m.group.rotation.z = Math.sin(m.curing * 31) * 0.06;
+    const k = 0.5 + Math.sin(m.curing * 12) * 0.5;
+    for (const mat of m.mats) mat.emissive.setRGB(k * 0.45, k * 0.35, k * 0.05);
+    if (Math.random() < dt * 8) {
+      spawnParticles(m.pos.x, m.pos.y + 1.2, m.pos.z, GAPPLE_COLOR, 2,
+        { radius: 0.4, speed: 0.8, upBias: 1.4, life: 0.6, size: 0.1, gravity: -2 });
+    }
+  } else if (m.group.rotation.z !== 0) {
+    m.group.rotation.z = 0;
+  }
+
+  // Червоний спалах при отриманні удару (перекриває блимання ґноту й жевриво)
   if (m.hurt > 0) {
     m.hurt = Math.max(0, m.hurt - dt * 3);
     for (const mat of m.mats) mat.emissive.setRGB(m.hurt * 0.6, 0, 0);
@@ -6119,11 +6324,22 @@ function updateMobs(dt) {
       removeMob(i);
       continue;
     }
-    // Ватажок не деспавниться на відстані — від нього не втекти
-    if ((m.pos.distanceTo(player.pos) > MOB_DESPAWN_DIST && m.type !== 'warlord') ||
+    // Ватажок не деспавниться на відстані — від нього не втекти; зомбі
+    // посеред зцілення теж лишається (золоте яблуко вже сплачено)
+    if ((m.pos.distanceTo(player.pos) > MOB_DESPAWN_DIST &&
+         m.type !== 'warlord' && !(m.curing > 0)) ||
         m.pos.y < -10) {
       removeMob(i);
       continue;
+    }
+    // Зцілення: час дрожі спливає — зомбі перетворюється на селянина
+    if (m.curing > 0) {
+      m.curing -= dt;
+      if (m.curing <= 0) {
+        transformCuredZombie(m);
+        removeMob(i);
+        continue;
+      }
     }
     updateMob(m, dt);
   }
@@ -6211,8 +6427,8 @@ function damageEntity(entity, isAnimal, dmg, kx, kz, kup) {
       const idx = animals.indexOf(entity);
       if (idx >= 0) removeAnimal(idx);
       updateFoodHud();
-      // Убитий торговець — не «полювання», і м'яса з нього нема
-      if (entity.type !== 'trader') unlockAch('hunt');
+      // Убиті торговець чи селянин — не «полювання», і м'яса з них нема
+      if (entity.type !== 'trader' && entity.type !== 'villager') unlockAch('hunt');
     } else {
       Sound.mobHit();
     }
@@ -12251,7 +12467,13 @@ function placeBlock() {
   if (animals.length > 0 && tryInteractHorse()) return;
 
   // Торговець у прицілі (ПКМ) → відкрити ятку з пропозиціями дня
-  if (trader && animalInSight('trader')) { openTradePanel(); return; }
+  if (trader && animalInSight('trader')) { openTradePanel(trader); return; }
+
+  // Зцілений селянин у прицілі (ПКМ) → відкрити крамницю сусіда
+  if (villager && animalInSight('villager')) { openTradePanel(villager); return; }
+
+  // Зомбі в прицілі з золотим яблуком 🍏 у торбі (ПКМ) → почати зцілення
+  if (mobs.length > 0 && tryCureZombie()) return;
 
   // Повідець у руці (ПКМ) → узяти тварину на повід чи відпустити
   if (hotbar[selectedSlot] === LEASH && animals.length > 0 && tryLeashAnimal()) return;
@@ -12881,10 +13103,14 @@ function updateDayNight(dt) {
       sinceBlood++;
     }
     scheduleMeteorNight(); // жереб падаючої зорі — щоночі, незалежно від облоги
-  } else if (!nightNow && wasNight && bloodNight) {
-    bloodNight = false;
-    sleepToast('🌅 Кривава ніч минула!');
-    if (bloodSurvived && !player.dead) unlockAch('bloodmoon');
+  } else if (!nightNow && wasNight) {
+    if (bloodNight) {
+      bloodNight = false;
+      sleepToast('🌅 Кривава ніч минула!');
+      if (bloodSurvived && !player.dead) unlockAch('bloodmoon');
+    }
+    // Світанок: сусід-крамар виставляє свіжі пропозиції дня
+    refreshVillagerShop();
   }
   wasNight = nightNow;
   // Багряний тон плавно наростає в сутінках облоги й тане на світанку
@@ -15309,6 +15535,8 @@ const ACHIEVEMENTS = [
   { id: 'crown',       icon: '👑', title: 'Корона облоги',      desc: 'Підібрати корону полеглого ватажка' },
   { id: 'struck',      icon: '🌩', title: 'Іскра в жилах',      desc: 'Пережити удар блискавки' },
   { id: 'rod_guard',   icon: '⚡', title: 'Приборкувач грози',  desc: 'Громовідвід упіймав блискавку' },
+  { id: 'cure',        icon: '💊', title: 'Зцілитель',          desc: 'Зцілити зомбі золотим яблуком' },
+  { id: 'neighbor',    icon: '🏘', title: 'Добрий сусід',       desc: 'Обміняти крам у крамниці зціленого селянина' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -16871,15 +17099,67 @@ window.MCDebug = {
   },
   trade: (i = 0) => {
     if (!trader) return 'торговця немає — MCDebug.forceTrader()';
-    const o = trader.offers[i];
+    if (!shopKeeper) openTradePanel(trader);
+    const o = shopKeeper.offers[i];
     if (!o) return 'немає такої пропозиції';
     return { ok: doTrade(o), offer: { ...o },
              bag: { food: player.food, eggs: player.eggs, mush: player.mush,
                     honey: player.honey, bones: player.bones, silk: player.silk,
                     gapple: player.gapple } };
   },
-  openTrade: () => { openTradePanel(); return tradeOpen; },
+  openTrade: () => { openTradePanel(trader); return tradeOpen; },
   closeTrade: () => { closeTradePanel(); return tradeOpen; },
+  // Зцілення зомбі та сусід-крамар (для тестів)
+  spawnZombieNear: (dx = 3, dz = 0) => {
+    const x = Math.floor(player.pos.x) + dx, z = Math.floor(player.pos.z) + dz;
+    const h = heightAt(x, z);
+    spawnMob(x + 0.5, h + 1.01, z + 0.5, 'zombie');
+    return { mobs: mobs.length, x: x + 0.5, z: z + 0.5 };
+  },
+  cureNearest: () => {
+    if (villager) return 'сусід уже є — двох не оселити';
+    let best = null, bd = Infinity;
+    for (const m of mobs) {
+      if (m.type !== 'zombie' || m.curing > 0) continue;
+      const d = m.pos.distanceTo(player.pos);
+      if (d < bd) { bd = d; best = m; }
+    }
+    if (!best) return 'зомбі поблизу немає — MCDebug.spawnZombieNear()';
+    if (player.gapple <= 0) MCDebug.giveGapple(1);
+    player.gapple -= 1;
+    updateGappleHud();
+    best.curing = CURE_TIME;
+    return { curing: +best.curing.toFixed(1), dist: +bd.toFixed(1) };
+  },
+  cureNow: () => {
+    const m = mobs.find((x) => x.curing > 0);
+    if (!m) return 'ніхто не зцілюється — MCDebug.cureNearest()';
+    m.curing = 0.01;
+    return true;
+  },
+  get villagerInfo() {
+    return {
+      present: !!villager,
+      home: villagerHome
+        ? { x: +villagerHome.x.toFixed(1), z: +villagerHome.z.toFixed(1) } : null,
+      pos: villager
+        ? { x: +villager.pos.x.toFixed(1), y: +villager.pos.y.toFixed(1),
+            z: +villager.pos.z.toFixed(1) }
+        : null,
+      offers: villager ? villager.offers.map((o) => ({ ...o })) : null,
+      shopOpen: tradeOpen && shopKeeper === villager,
+      gapple: player.gapple,
+    };
+  },
+  openShop: () => { if (villager) openTradePanel(villager); return tradeOpen; },
+  shopTrade: (i = 0) => {
+    if (!villager) return 'сусіда немає — зціли зомбі (MCDebug.cureNearest())';
+    if (!shopKeeper) openTradePanel(villager);
+    const o = shopKeeper.offers[i];
+    if (!o) return 'немає такої пропозиції';
+    return { ok: doTrade(o), offer: { ...o } };
+  },
+  refreshShop: () => { refreshVillagerShop(); return MCDebug.villagerInfo; },
   giveGoods: (n = 12) => {
     player.food = Math.min(FOOD_MAX, player.food + n);
     player.eggs = Math.min(EGG_MAX, player.eggs + n);
@@ -17155,6 +17435,7 @@ function animate() {
     updateSurvival(dt);
     updateAnimals(dt);
     updateTrader(dt);
+    updateVillager();
     updateMobs(dt);
     updateTnt(dt);
     updateTorches(dt);
