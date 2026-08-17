@@ -373,6 +373,42 @@ kbd {
   opacity: 0.55;
 }
 
+/* Квіти в торбі: один бейдж із трьома чипами (мак/кульбаба/волошка),
+   порожні чипи зникають */
+#flower-badge {
+  position: fixed;
+  right: 16px;
+  bottom: 882px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 9px;
+  background: rgba(0, 0, 0, 0.42);
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+#flower-badge[hidden] {
+  display: none;
+}
+
+.flower-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.flower-chip[hidden] {
+  display: none;
+}
+
+.flower-chip canvas {
+  width: 22px;
+  height: 22px;
+  image-rendering: pixelated;
+}
+
 /* Руди в торбі: один бейдж із чотирма чипами (⚫⛓🟡💎), порожні чипи зникають */
 #ore-badge {
   position: fixed;
@@ -451,7 +487,8 @@ kbd {
   #truffle-badge,
   #crown-badge,
   #armor-badge,
-  #ore-badge {
+  #ore-badge,
+  #flower-badge {
     right: 96px;
   }
 }
