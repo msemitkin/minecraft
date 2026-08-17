@@ -223,6 +223,33 @@ const GRAPPLE = 54;
 // (метал вертається в торбу).
 const LIGHTNING_ROD = 55;
 
+// Квіти — лугова здобич: мак, кульбаба й волошка проростають на траві рівнин
+// і лісів (як гриби в печерах — світ засівається сам). ЛКМ зриває квітку в
+// торбу (свій лічильник на кожен вид), а з меню (Tab) квітка в руці робить
+// два діла: ПКМ на траву/землю — посадити в сад (посаджені не пересіваються),
+// ПКМ по блоку вовни — пофарбувати його в колір квітки (квітка витрачається).
+// Бджоли люблять квіти: вулик поряд із ними наповнюється медом швидше.
+const FLOWER_POPPY = 56, FLOWER_DANDELION = 57, FLOWER_CORNFLOWER = 58;
+// Фарбована вовна — звичайні воксельні блоки, але їх нема в меню: єдиний
+// шлях до кольору — квітка (зібрана на луках чи вирощена в саду).
+const WOOL_RED = 59, WOOL_YELLOW = 60, WOOL_BLUE = 61;
+const isFlowerItem = (id) => id === FLOWER_POPPY || id === FLOWER_DANDELION ||
+  id === FLOWER_CORNFLOWER;
+const isWoolBlock = (id) => id === WOOL || id === WOOL_RED ||
+  id === WOOL_YELLOW || id === WOOL_BLUE;
+const FLOWER_BAG_MAX = 16;      // максимум квітів кожного виду в торбі
+// Вид квітки (0 мак / 1 кульбаба / 2 волошка): предмет, назва, пелюстки,
+// осердя й вовна, у яку вона фарбує
+const FLOWER_KINDS = [
+  { item: FLOWER_POPPY,      bag: 'poppy', name: 'Мак',
+    petal: 0xc0392b, core: 0x2b2320, wool: WOOL_RED },
+  { item: FLOWER_DANDELION,  bag: 'dand',  name: 'Кульбаба',
+    petal: 0xe8c437, core: 0xb8860b, wool: WOOL_YELLOW },
+  { item: FLOWER_CORNFLOWER, bag: 'corn',  name: 'Волошка',
+    petal: 0x4f74c9, core: 0x2c3e70, wool: WOOL_BLUE },
+];
+const FLOWER_KIND_OF_ITEM = Object.fromEntries(FLOWER_KINDS.map((f, i) => [f.item, i]));
+
 // Руди в торбі: лічильники та капи (сировина для кування кирок)
 const ORE_MAX = { coal: 64, iron: 32, gold: 16, diam: 8 };
 const ORE_OF_BLOCK_ID = {};      // заповнюється нижче, коли відомі id руд
@@ -314,6 +341,10 @@ const BLOCK_NAMES = {
   [LEASH]: 'Повідець',
   [GRAPPLE]: 'Гак-кішка',
   [LIGHTNING_ROD]: 'Громовідвід',
+  [FLOWER_POPPY]: 'Мак', [FLOWER_DANDELION]: 'Кульбаба',
+  [FLOWER_CORNFLOWER]: 'Волошка',
+  [WOOL_RED]: 'Червона вовна', [WOOL_YELLOW]: 'Жовта вовна',
+  [WOOL_BLUE]: 'Синя вовна',
 };
 
 // Яка руда з торби відповідає воксельному блоку руди
@@ -329,7 +360,7 @@ const ALL_BLOCKS = [
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
-  GRAPPLE, LIGHTNING_ROD,
+  GRAPPLE, LIGHTNING_ROD, FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -363,6 +394,7 @@ const BLOCK_HARDNESS = {
   [LEAVES]: 0.3, [LOG]: 1.0, [PLANK]: 0.9, [STONE]: 1.6,
   [COAL]: 2.2, [IRON]: 2.8, [GOLD]: 2.8, [DIAMOND]: 3.6,
   [SNOW]: 0.4, [CACTUS]: 0.5, [GRAVEL]: 0.7, [GLASS]: 0.35, [WOOL]: 0.45,
+  [WOOL_RED]: 0.45, [WOOL_YELLOW]: 0.45, [WOOL_BLUE]: 0.45,
   [STARBLOCK]: 3.0, [TREASURE]: 1.2,
 };
 const DEFAULT_HARDNESS = 0.6;
@@ -550,6 +582,9 @@ function saveGame() {
         baked: player.baked,
         truffle: player.truffle,
         crown: player.crown,
+        poppy: player.poppy,
+        dand: player.dand,
+        corn: player.corn,
         coal: player.coal,
         iron: player.iron,
         gold: player.gold,
@@ -589,6 +624,8 @@ function saveGame() {
       lightningRods: [...lightningRods.values()].map((r) => [r.x, r.y, r.z]),
       mushrooms: [...mushrooms.values()].map((m) =>
         [m.x, m.y, m.z, m.kind, m.farmed ? 1 : 0]),
+      flowers: [...flowers.values()].map((f) =>
+        [f.x, f.y, f.z, f.kind, f.planted ? 1 : 0]),
       oysters: [...oysters.values()].map((o) => [o.x, o.y, o.z]),
       cactusFruits: [...cactusFruits.values()].map((f) => [f.x, f.y, f.z]),
       wolves: animals.filter((a) => a.type === 'wolf' && a.tamed)
@@ -721,7 +758,7 @@ const Sound = (() => {
     if (id === LOG || id === PLANK) return { freq: 520, q: 2.4, type: 'bandpass' };
     if (id === LEAVES) return { freq: 1700, q: 0.7, type: 'highpass' };
     if (id === GLASS) return { freq: 2600, q: 1.4, type: 'highpass' };   // дзвінкий кришталь
-    if (id === WOOL) return { freq: 280, q: 0.6, type: 'lowpass' };      // м'який приглушений
+    if (isWoolBlock(id)) return { freq: 280, q: 0.6, type: 'lowpass' };  // м'який приглушений
     if (id === GRASS || id === DIRT) return { freq: 620, q: 0.9, type: 'bandpass' };
     // камінь, руди, динаміт — твердий «цок»
     return { freq: 1100, q: 1.6, type: 'bandpass' };
@@ -1649,6 +1686,25 @@ function makeAtlas() {
     return vary(158, 116, 62, 8);                               // дубові дошки
   });                                                                            // 24 скриня скарбів
 
+  // Фарбована вовна: той самий кучерявий малюнок, що й у кремової (спільні
+  // детерміновані завитки), але в кольорі квітки-барвника
+  {
+    let s = 0x5eedb217 >>> 0;
+    const r = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+    const curls = new Set(), fluff = new Set();
+    for (let n = 0; n < 26; n++) curls.add(Math.floor(r() * TILE) * TILE + Math.floor(r() * TILE));
+    for (let n = 0; n < 20; n++) fluff.add(Math.floor(r() * TILE) * TILE + Math.floor(r() * TILE));
+    const dyedWool = (i, base, curl, light) => paint(i, (x, y) => {
+      const k = x * TILE + y;
+      if (curls.has(k)) return vary(curl[0], curl[1], curl[2], 6);   // тінь завитка
+      if (fluff.has(k)) return vary(light[0], light[1], light[2], 4); // світлий пух
+      return vary(base[0], base[1], base[2], 6);                     // фарбована основа
+    });
+    dyedWool(25, [186, 74, 66], [156, 54, 48], [206, 100, 92]);      // 25 червона вовна
+    dyedWool(26, [222, 186, 84], [192, 154, 58], [238, 210, 122]);   // 26 жовта вовна
+    dyedWool(27, [96, 126, 196], [72, 100, 168], [128, 156, 218]);   // 27 синя вовна
+  }
+
   const tex = new THREE.CanvasTexture(atlasCanvas);
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
@@ -1685,6 +1741,9 @@ const BLOCK_TILES = {
   [WOOL]:    { top: 22, bottom: 22, side: 22 },
   [STARBLOCK]: { top: 23, bottom: 23, side: 23 },
   [TREASURE]: { top: 24, bottom: 24, side: 24 },
+  [WOOL_RED]:    { top: 25, bottom: 25, side: 25 },
+  [WOOL_YELLOW]: { top: 26, bottom: 26, side: 26 },
+  [WOOL_BLUE]:   { top: 27, bottom: 27, side: 27 },
 };
 
 function tileUV(tile) {
@@ -2377,6 +2436,9 @@ const player = {
   baked: 0,             // печені на багатті опунції (солодка ситна страва)
   truffle: 0,           // викопані свинею трюфелі (лісовий делікатес і крам)
   crown: 0,             // корони повалених ватажків облоги (трофей і найдорожчий крам)
+  poppy: 0,             // зірвані маки (червоний барвник вовни)
+  dand: 0,              // зірвані кульбаби (жовтий барвник вовни)
+  corn: 0,              // зірвані волошки (синій барвник вовни)
   pearlDry: 0,          // порожніх мушель поспіль (гарантія перлини згодом)
   coal: 0,              // видобуте вугілля (паливо кузні)
   iron: 0,              // видобуте залізо (сировина кування)
@@ -2473,6 +2535,11 @@ if (savedGame && savedGame.player) {
   }
   if (Number.isFinite(p.crown)) {
     player.crown = THREE.MathUtils.clamp(Math.floor(p.crown), 0, CROWN_MAX);
+  }
+  for (const f of FLOWER_KINDS) {
+    if (Number.isFinite(p[f.bag])) {
+      player[f.bag] = THREE.MathUtils.clamp(Math.floor(p[f.bag]), 0, FLOWER_BAG_MAX);
+    }
   }
   for (const k of Object.keys(ORE_MAX)) {
     if (Number.isFinite(p[k])) {
@@ -6468,10 +6535,16 @@ function startBreakOrAttack() {
   if (torches.size > 0 || crops.size > 0 || ladders.size > 0 || saplings.size > 0 ||
       signs.size > 0 || rails.size > 0 || campfires.size > 0 || beehives.size > 0 ||
       scarecrows.size > 0 || mushrooms.size > 0 || anvils.size > 0 ||
-      oysters.size > 0 || cactusFruits.size > 0 || lightningRods.size > 0) {
+      oysters.size > 0 || cactusFruits.size > 0 || lightningRods.size > 0 ||
+      flowers.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+      if (flowers.has(key)) {
+        pickFlower(key);
+        triggerSwing();
+        return;
+      }
       if (mushrooms.has(key)) {
         pickMushroom(key);
         triggerSwing();
@@ -7132,6 +7205,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateAnvils();    // ... і опору ковадел
   validateLightningRods(); // ... і опору громовідводів
   validateMushrooms(); // ... і ґрунт грибів
+  validateFlowers();   // ... і ґрунт квітів
   validateOysters();   // ... і дно устриць
   validateCactusFruits(); // ... і кактус під плодом
   Sound.explosion();
@@ -7285,6 +7359,7 @@ function updateFallingBlocks(dt) {
       validateAnvils();
       validateLightningRods();
       validateMushrooms();
+      validateFlowers();
       validateOysters();
       validateCactusFruits(); // ... і кактус під плодом
       // Гравій, що впав просто на колону з двох блоків снігу, теж оживає
@@ -7627,7 +7702,8 @@ function placeTorch(hit) {
       beehives.has(torchKey(x, y, z)) ||
       scarecrows.has(torchKey(x, y, z)) || anvils.has(torchKey(x, y, z)) ||
       lightningRods.has(torchKey(x, y, z)) ||
-      mushrooms.has(torchKey(x, y, z))) return false;
+      mushrooms.has(torchKey(x, y, z)) ||
+      flowers.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -7790,7 +7866,8 @@ function placeLadder(hit) {
       campfires.has(ladderKey(x, y, z)) || beehives.has(ladderKey(x, y, z)) ||
       scarecrows.has(ladderKey(x, y, z)) || anvils.has(ladderKey(x, y, z)) ||
       lightningRods.has(ladderKey(x, y, z)) ||
-      mushrooms.has(ladderKey(x, y, z))) return false;
+      mushrooms.has(ladderKey(x, y, z)) ||
+      flowers.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -8001,7 +8078,7 @@ function placeDoor(hit) {
         saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
         beehives.has(k) || scarecrows.has(k) || anvils.has(k) ||
         lightningRods.has(k) ||
-        mushrooms.has(k)) return false;
+        mushrooms.has(k) || flowers.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -8268,7 +8345,7 @@ function fenceCellFree(x, y, z) {
          !saplings.has(k) && !signs.has(k) && !rails.has(k) && !campfires.has(k) &&
          !beehives.has(k) && !scarecrows.has(k) && !anvils.has(k) &&
          !lightningRods.has(k) &&
-         !mushrooms.has(k);
+         !mushrooms.has(k) && !flowers.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -8440,7 +8517,8 @@ function plantCrop(hit) {
       rails.has(cropKey(x, y, z)) || campfires.has(cropKey(x, y, z)) ||
       beehives.has(cropKey(x, y, z)) || scarecrows.has(cropKey(x, y, z)) ||
       anvils.has(cropKey(x, y, z)) || lightningRods.has(cropKey(x, y, z)) ||
-      mushrooms.has(cropKey(x, y, z))) return false;
+      mushrooms.has(cropKey(x, y, z)) ||
+      flowers.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -8601,7 +8679,8 @@ function plantSapling(hit) {
       campfires.has(saplingKey(x, y, z)) || beehives.has(saplingKey(x, y, z)) ||
       scarecrows.has(saplingKey(x, y, z)) || anvils.has(saplingKey(x, y, z)) ||
       lightningRods.has(saplingKey(x, y, z)) ||
-      mushrooms.has(saplingKey(x, y, z))) return false;
+      mushrooms.has(saplingKey(x, y, z)) ||
+      flowers.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -8657,6 +8736,7 @@ function growSaplingTree(s) {
   validateAnvils();
   validateLightningRods();
   validateMushrooms();
+  validateFlowers();
   validateOysters();
   validateCactusFruits(); // ... і кактус під плодом
   unlockAch('grow_tree');
@@ -8761,7 +8841,8 @@ function placeBed(hit) {
       campfires.has(bedKey(x, y, z)) || beehives.has(bedKey(x, y, z)) ||
       scarecrows.has(bedKey(x, y, z)) || anvils.has(bedKey(x, y, z)) ||
       lightningRods.has(bedKey(x, y, z)) ||
-      mushrooms.has(bedKey(x, y, z))) return false;
+      mushrooms.has(bedKey(x, y, z)) ||
+      flowers.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -8992,7 +9073,8 @@ function signCellFree(x, y, z) {
          !campfires.has(k) && !beehives.has(k) && !scarecrows.has(k) &&
          !anvils.has(k) && !lightningRods.has(k) &&
          !crops.has(k) && !beds.has(k) && !ladders.has(k) && !doorAtCell(x, y, z) &&
-         !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k);
+         !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k) &&
+         !flowers.has(k);
 }
 
 // ===== Редактор напису (створюється в JS — без правок HTML) =====
@@ -9193,6 +9275,7 @@ function updateMining(dt, hit) {
     validateAnvils();    // ... або опору ковадла
     validateLightningRods(); // ... або опору громовідводу
     validateMushrooms(); // ... або ґрунт гриба
+    validateFlowers();   // ... або ґрунт квітки
     validateOysters();   // ... або воду чи дно устриці
     validateCactusFruits(); // ... і кактус під плодом
     unlockAch('first_block');
@@ -9553,6 +9636,7 @@ function placeRail(hit) {
   if (rails.has(k) || torches.has(k) || crops.has(k) || beds.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mushrooms.has(k) ||
+      flowers.has(k) ||
       lightningRods.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
@@ -10103,7 +10187,7 @@ function placeCampfire(hit) {
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
       rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) ||
       lightningRods.has(k) ||
-      mushrooms.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
   Sound.torch(0.2);
@@ -10506,7 +10590,7 @@ function placeBeehive(hit) {
       gates.has(k) || crops.has(k) || beds.has(k) || saplings.has(k) ||
       signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) ||
       lightningRods.has(k) ||
-      mushrooms.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addBeehive(x, y, z)) return false;
   Sound.place(PLANK);
@@ -10545,14 +10629,21 @@ function updateBeehives(dt) {
       if (h.recount <= 0) {
         h.recount = 2;
         let n = 0;
+        const r2 = POLLINATE_R * POLLINATE_R;
         if (crops.size > 0) {
-          const r2 = POLLINATE_R * POLLINATE_R;
           for (const c of crops.values()) {
             const dx = c.x - h.x, dy = c.y - h.y, dz = c.z - h.z;
             if (dx * dx + dy * dy + dz * dz < r2 && ++n >= 8) break;
           }
         }
-        h.rate = 1 + 0.12 * n;   // кожна грядка поряд (до 8) — +12% швидкості
+        // Квіти для бджіл — як грядки: луг чи сад поряд теж живить вулик
+        if (n < 8 && flowers.size > 0) {
+          for (const f of flowers.values()) {
+            const dx = f.x - h.x, dy = f.y - h.y, dz = f.z - h.z;
+            if (dx * dx + dy * dy + dz * dz < r2 && ++n >= 8) break;
+          }
+        }
+        h.rate = 1 + 0.12 * n;   // кожна грядка чи квітка поряд (до 8) — +12% швидкості
       }
       h.honey = Math.min(HONEY_TIME, h.honey + dt * h.rate);
       if (h.honey >= HONEY_TIME &&
@@ -10695,7 +10786,7 @@ function placeScarecrow(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) ||
       lightningRods.has(k) ||
-      mushrooms.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addScarecrow(x, y, z)) return false;
   Sound.place(PLANK);
@@ -10833,7 +10924,7 @@ function placeLightningRod(hit) {
       beehives.has(k) || campfires.has(k) || torches.has(k) || ladders.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
-      anvils.has(k) || mushrooms.has(k)) return false;
+      anvils.has(k) || mushrooms.has(k) || flowers.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!Object.entries(LROD_COST).every(([ore, n]) => (player[ore] || 0) >= n)) {
     flashItemName('Потрібно ⛓ 2 × залізо + 🟡 1 × золото з торби');
@@ -11083,7 +11174,7 @@ function placeAnvil(hit) {
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) ||
-      mushrooms.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addAnvil(x, y, z)) return false;
   Sound.place(STONE);
@@ -12334,6 +12425,273 @@ function updateCrows(dt) {
 }
 
 // ============================================================
+// Квіти: лугова здобич і барвник вовни
+// ============================================================
+// Луки платять кольором, як печери грибами: на траві рівнин і лісів час від
+// часу проростають мак, кульбаба й волошка (світ засівається сам і не
+// вичерпується — дальні дикі квіти пересіваються ближче). ЛКМ зриває квітку
+// в торбу; з меню (Tab) квітка садиться ПКМ у сад (посаджені недоторканні
+// для пересіву) або фарбує ПКМ блок вовни в свій колір. Бджоли люблять
+// квіти — вулик поряд наповнюється медом швидше. Нуль зовнішніх ассетів.
+const flowers = new Map();             // "x,y,z" -> { x, y, z, kind, planted, group, phase }
+const FLOWER_WORLD_MAX = 140;          // глобальний запобіжник (розмір збереження)
+const FLOWER_LOCAL_MAX = 10;           // стеля диких квітів довкола гравця
+const FLOWER_SPROUT_INTERVAL = 3;      // секунд між спробами проростання
+const FLOWER_SPROUT_TRIES = 6;         // колонок-кандидатів за спробу
+const FLOWER_SPROUT_MIN_R = 5;         // проростає не впритул до гравця...
+const FLOWER_SPROUT_MAX_R = 26;        // ...і не далі за це
+const FLOWER_MIN_GAP = 4;              // дикі квіти не туляться купою
+const FLOWER_RECYCLE_DIST = 64;        // дальші дикі квіти «пересіваються» до гравця
+let flowerClock = 0;
+let flowerHintShown = false;
+
+const flowerKey = (x, y, z) => x + ',' + y + ',' + z;
+
+function makeFlowerModel(kind) {
+  const f = FLOWER_KINDS[kind];
+  const g = new THREE.Group();
+  animalBox(g, 0.05, 0.34, 0.05, 0x3e7d34, 0, 0.17, 0);          // стебло
+  animalBox(g, 0.14, 0.03, 0.05, 0x4f9440, 0.07, 0.14, 0.02);    // листок
+  if (kind === 1) {
+    // Кульбаба — пухнаста куля-суцвіття
+    animalBox(g, 0.16, 0.14, 0.16, f.petal, 0, 0.4, 0);
+    animalBox(g, 0.1, 0.06, 0.1, 0xf2df86, 0, 0.49, 0);
+  } else {
+    // Мак і волошка — чашечка пелюсток довкола осердя
+    animalBox(g, 0.2, 0.07, 0.2, f.petal, 0, 0.38, 0);           // пелюстки
+    animalBox(g, 0.12, 0.1, 0.12, f.petal, 0, 0.43, 0);
+    animalBox(g, 0.06, 0.05, 0.06, f.core, 0, 0.48, 0);          // осердя
+  }
+  g.rotation.y = Math.random() * Math.PI * 2;
+  g.scale.setScalar(0.9 + Math.random() * 0.25);
+  return g;
+}
+
+function addFlower(x, y, z, kind = 0, planted = false) {
+  const key = flowerKey(x, y, z);
+  if (flowers.has(key) || flowers.size >= FLOWER_WORLD_MAX) return false;
+  kind = THREE.MathUtils.clamp(Math.floor(kind) || 0, 0, FLOWER_KINDS.length - 1);
+  const group = makeFlowerModel(kind);
+  group.position.set(x + 0.5, y, z + 0.5);
+  scene.add(group);
+  flowers.set(key, {
+    x, y, z, kind, planted: !!planted, group,
+    phase: Math.random() * Math.PI * 2,
+  });
+  return true;
+}
+
+function removeFlower(key) {
+  const f = flowers.get(key);
+  if (!f) return;
+  scene.remove(f.group);
+  f.group.traverse((o) => {
+    if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
+  });
+  flowers.delete(key);
+}
+
+// Ґрунт, на якому квітка росте: дика — лише трава, посаджена — і земля
+const flowerSupportable = (id, planted) => id === GRASS || (planted && id === DIRT);
+
+// Клітинка вільна для квітки: повітря на ґрунті, без інших сутностей
+function flowerCellFree(x, y, z, planted = false) {
+  const k = flowerKey(x, y, z);
+  if (flowers.has(k) || mushrooms.has(k) || torches.has(k) || crops.has(k) ||
+      ladders.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
+      campfires.has(k) || beehives.has(k) || scarecrows.has(k) ||
+      anvils.has(k) || beds.has(k) || lightningRods.has(k) || fences.has(k) ||
+      gates.has(k) || doorAtCell(x, y, z)) return false;
+  if (blockAt(x, y, z) !== AIR) return false;
+  return flowerSupportable(blockAt(x, y - 1, z), planted);
+}
+
+// Над квіткою — відкрите небо (квіти живуть лише просто неба)
+function flowerOpenSky(x, y, z) {
+  const top = Math.min(HEIGHT - 1, heightAt(x, z) + 3);
+  for (let yy = y + 1; yy <= top; yy++) {
+    if (isSolid(blockAt(x, yy, z))) return false;
+  }
+  return true;
+}
+
+function flowerTooClose(x, y, z) {
+  const gap2 = FLOWER_MIN_GAP * FLOWER_MIN_GAP;
+  for (const f of flowers.values()) {
+    const dx = f.x - x, dy = f.y - y, dz = f.z - z;
+    if (dx * dx + dy * dy + dz * dz < gap2) return true;
+  }
+  return false;
+}
+
+// Диких квітів довкола гравця (у радіусі проростання)
+function wildFlowersNearPlayer() {
+  const r2 = FLOWER_SPROUT_MAX_R * FLOWER_SPROUT_MAX_R;
+  let n = 0;
+  for (const f of flowers.values()) {
+    if (f.planted) continue;
+    const dx = f.x + 0.5 - player.pos.x, dz = f.z + 0.5 - player.pos.z;
+    if (dx * dx + dz * dz <= r2) n++;
+  }
+  return n;
+}
+
+// Глобальна стеля — лише запобіжник розміру збереження: найдальша дика
+// квітка поза очима тихо пересівається ближче до гравця. Посаджені в саду —
+// недоторканні.
+function recycleFarFlower() {
+  let farKey = null, farD2 = FLOWER_RECYCLE_DIST * FLOWER_RECYCLE_DIST;
+  for (const [key, f] of flowers) {
+    if (f.planted) continue;
+    const dx = f.x + 0.5 - player.pos.x, dz = f.z + 0.5 - player.pos.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 > farD2) { farD2 = d2; farKey = key; }
+  }
+  if (!farKey) return false;
+  removeFlower(farKey);
+  return true;
+}
+
+// Одна спроба проростання: випадкова колонка лугу довкола гравця
+function trySproutFlower() {
+  if (wildFlowersNearPlayer() >= FLOWER_LOCAL_MAX) return false;
+  if (flowers.size >= FLOWER_WORLD_MAX && !recycleFarFlower()) return false;
+  for (let attempt = 0; attempt < FLOWER_SPROUT_TRIES; attempt++) {
+    const ang = Math.random() * Math.PI * 2;
+    const dist = FLOWER_SPROUT_MIN_R +
+      Math.random() * (FLOWER_SPROUT_MAX_R - FLOWER_SPROUT_MIN_R);
+    const x = Math.floor(player.pos.x + Math.cos(ang) * dist);
+    const z = Math.floor(player.pos.z + Math.sin(ang) * dist);
+    const b = biomeAt(x, z);
+    if (b !== BIOME.PLAINS && b !== BIOME.FOREST) continue;
+    // Квітка стоїть на поверхні: єдина клітинка-кандидат — над рельєфом
+    const h = heightAt(x, z);
+    if (h <= SEA) continue;                       // не на дні озера
+    let y = -1;
+    for (let yy = Math.min(HEIGHT - 2, h + 4); yy >= 2; yy--) {
+      if (blockAt(x, yy, z) !== AIR) { y = yy + 1; break; }
+    }
+    if (y < 0 || !flowerCellFree(x, y, z) || !flowerOpenSky(x, y, z) ||
+        flowerTooClose(x, y, z)) continue;
+    addFlower(x, y, z, Math.floor(Math.random() * FLOWER_KINDS.length));
+    return true;
+  }
+  return false;
+}
+
+function updateFlowers(dt) {
+  flowerClock += dt;
+  if (flowerClock >= FLOWER_SPROUT_INTERVAL) {
+    flowerClock = 0;
+    trySproutFlower();
+  }
+  // Легке погойдування під «вітром» — лише поблизу гравця
+  for (const f of flowers.values()) {
+    const dx = f.x + 0.5 - player.pos.x, dz = f.z + 0.5 - player.pos.z;
+    if (dx * dx + dz * dz > 40 * 40) continue;
+    f.group.rotation.z = Math.sin(performance.now() / 1000 * 1.7 + f.phase) * 0.07;
+  }
+}
+
+// Зірвати квітку в торбу (ЛКМ)
+function pickFlower(key) {
+  const f = flowers.get(key);
+  if (!f) return false;
+  const kind = FLOWER_KINDS[f.kind];
+  if (player[kind.bag] >= FLOWER_BAG_MAX) {
+    flashItemName(`Торба повна — ${kind.name.toLowerCase()} нікуди класти`);
+    return true;
+  }
+  player[kind.bag] += 1;
+  updateFlowerHud();
+  spawnParticles(f.x + 0.5, f.y + 0.35, f.z + 0.5, new THREE.Color(kind.petal), 8,
+    { radius: 0.25, speed: 1.6, upBias: 0.8, life: 0.5, size: 0.07, gravity: 7 });
+  Sound.breakBlock(LEAVES);
+  removeFlower(key);
+  unlockAch('flower');
+  if (!flowerHintShown) {
+    flowerHintShown = true;
+    flashItemName('🌼 Квітка в торбі — нею фарбують вовну (ПКМ) і саджають сад');
+  }
+  return true;
+}
+
+// ПКМ із квіткою в руці: пофарбувати вовну в прицілі або посадити в сад
+function useFlower(hit, id) {
+  const kindIdx = FLOWER_KIND_OF_ITEM[id];
+  const kind = FLOWER_KINDS[kindIdx];
+  const have = player[kind.bag] || 0;
+
+  // Блок вовни в прицілі — пофарбувати в колір квітки
+  const [bx, by, bz] = hit.block;
+  const targetId = blockAt(bx, by, bz);
+  if (isWoolBlock(targetId)) {
+    if (targetId === kind.wool) {
+      flashItemName('Ця вовна вже такого кольору');
+      return;
+    }
+    if (have <= 0) {
+      flashItemName(`Немає квітки — ${kind.name.toLowerCase()} росте на луках`);
+      return;
+    }
+    player[kind.bag] -= 1;
+    updateFlowerHud();
+    setBlock(bx, by, bz, kind.wool);
+    Sound.place(WOOL);
+    spawnParticles(bx + 0.5, by + 0.5, bz + 0.5, new THREE.Color(kind.petal), 12,
+      { radius: 0.45, speed: 1.8, upBias: 0.6, life: 0.55, size: 0.09, gravity: 6 });
+    flashItemName(`🎨 ${BLOCK_NAMES[kind.wool]}!`);
+    unlockAch('dye');
+    return;
+  }
+
+  // Інакше — посадити квітку в клітинку перед прицілом
+  if (have <= 0) {
+    flashItemName(`Немає квітки — ${kind.name.toLowerCase()} росте на луках`);
+    return;
+  }
+  const [x, y, z] = hit.prev;
+  if (!flowerCellFree(x, y, z, true)) {
+    flashItemName('Квітці треба вільна трава чи земля');
+    return;
+  }
+  if (!addFlower(x, y, z, kindIdx, true)) return;
+  player[kind.bag] -= 1;
+  updateFlowerHud();
+  Sound.dig(GRASS);
+  spawnParticles(x + 0.5, y + 0.1, z + 0.5, new THREE.Color(0x6b4a2b), 6,
+    { radius: 0.25, speed: 1.3, upBias: 0.5, life: 0.4, size: 0.08, gravity: 9 });
+}
+
+// Зняти квіти, чию клітинку зайняв блок або чия опора зникла
+function validateFlowers() {
+  if (flowers.size === 0) return;
+  for (const [key, f] of flowers) {
+    const occupied = blockAt(f.x, f.y, f.z) !== AIR;
+    const supported = flowerSupportable(blockAt(f.x, f.y - 1, f.z), f.planted);
+    if (occupied || !supported) {
+      spawnParticles(f.x + 0.5, f.y + 0.3, f.z + 0.5,
+        new THREE.Color(FLOWER_KINDS[f.kind].petal), 6,
+        { radius: 0.2, speed: 1.3, upBias: 0.6, life: 0.4, size: 0.07, gravity: 8 });
+      removeFlower(key);
+    }
+  }
+}
+
+// Відновити збережені квіти (формат: [x, y, z, kind, planted])
+if (savedGame && Array.isArray(savedGame.flowers)) {
+  for (const e of savedGame.flowers) {
+    if (Array.isArray(e) && e.length >= 4 && [e[0], e[1], e[2]].every(Number.isFinite)) {
+      addFlower(e[0], e[1], e[2], e[3], e[4] === 1);
+    }
+  }
+}
+// Новий світ (чи давній сейв без квітів): одразу засіяти луки довкола спавну
+if (flowers.size === 0) {
+  for (let i = 0; i < 24 && flowers.size < 8; i++) trySproutFlower();
+}
+
+// ============================================================
 // Відро: перенесення джерел води й лави
 // ============================================================
 // Порожнє відро набирає перше джерело (WATER/LAVA), у яке дивиться гравець,
@@ -12621,6 +12979,12 @@ function placeBlock() {
     return;
   }
 
+  // Квітка — пофарбувати вовну в прицілі або посадити в сад
+  if (isFlowerItem(id)) {
+    useFlower(hit, id);
+    return;
+  }
+
   // Повідець — не блок: чіпляється лише до свійської тварини в прицілі
   if (id === LEASH) {
     flashItemName(player.silk > 0
@@ -12680,6 +13044,7 @@ function placeBlock() {
   validateAnvils();    // ... або клітинку ковадла
   validateLightningRods(); // ... або клітинку громовідводу
   validateMushrooms(); // ... або клітинку гриба
+  validateFlowers();   // ... або клітинку квітки
   validateOysters();   // ... або воду чи дно устриці
   validateCactusFruits(); // ... і кактус під плодом
 
@@ -13514,6 +13879,12 @@ for (const k of ['coal', 'iron', 'gold', 'diam']) {
   oreChipEls[k] = document.getElementById('ore-chip-' + k);
   oreCountEls[k] = document.getElementById('ore-count-' + k);
 }
+const flowerBadgeEl = document.getElementById('flower-badge');
+const flowerChipEls = {}, flowerCountEls = {};
+for (const f of FLOWER_KINDS) {
+  flowerChipEls[f.bag] = document.getElementById('flower-chip-' + f.bag);
+  flowerCountEls[f.bag] = document.getElementById('flower-count-' + f.bag);
+}
 const vignetteEl = document.getElementById('damage-vignette');
 const fireVignetteEl = document.getElementById('fire-vignette');
 const deathOverlay = document.getElementById('death-overlay');
@@ -13647,6 +14018,10 @@ function buildSurvivalHud() {
     const oreIcon = document.getElementById('ore-icon-' + k);
     if (oreIcon) drawOreIcon(oreIcon, k);
   }
+  FLOWER_KINDS.forEach((f, i) => {
+    const flowerIcon = document.getElementById('flower-icon-' + f.bag);
+    if (flowerIcon) drawFlowerIcon(flowerIcon, i);
+  });
 }
 
 let lastHealthDrawn = -1;
@@ -14158,6 +14533,51 @@ function updateOreHud() {
   if (oreBadgeEl) oreBadgeEl.hidden = !any;
 }
 
+// Лічильники зірваних квітів: один бейдж із трьома чипами (мак/кульбаба/
+// волошка), порожні чипи зникають
+let lastFlowerDrawn = '';
+function updateFlowerHud() {
+  const sig = `${player.poppy},${player.dand},${player.corn}`;
+  if (sig === lastFlowerDrawn) return;
+  lastFlowerDrawn = sig;
+  let any = false;
+  for (const f of FLOWER_KINDS) {
+    const n = player[f.bag] || 0;
+    if (flowerCountEls[f.bag]) flowerCountEls[f.bag].textContent = n;
+    if (flowerChipEls[f.bag]) flowerChipEls[f.bag].hidden = n <= 0;
+    if (n > 0) any = true;
+  }
+  if (flowerBadgeEl) flowerBadgeEl.hidden = !any;
+}
+
+// Піксельна іконка квітки: стебло з листком і пелюстки кольору виду
+function drawFlowerIcon(canvas, kindIdx) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const f = FLOWER_KINDS[kindIdx];
+  const petal = '#' + f.petal.toString(16).padStart(6, '0');
+  const core = '#' + f.core.toString(16).padStart(6, '0');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#3e7d34';                          // стебло
+  ctx.fillRect(7, 7, 2, 8);
+  ctx.fillStyle = '#4f9440';                          // листок
+  ctx.fillRect(9, 10, 3, 2);
+  if (kindIdx === 1) {
+    ctx.fillStyle = petal;                            // куля кульбаби
+    ctx.beginPath(); ctx.arc(8, 5, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#f2df86';
+    ctx.beginPath(); ctx.arc(7, 4, 1.6, 0, Math.PI * 2); ctx.fill();
+  } else {
+    ctx.fillStyle = petal;                            // пелюстки хрестиком
+    ctx.fillRect(5, 2, 6, 6);
+    ctx.fillRect(3, 4, 10, 2);
+    ctx.fillRect(7, 1, 2, 8);
+    ctx.fillStyle = core;                             // осердя
+    ctx.fillRect(7, 4, 2, 2);
+  }
+}
+
 // Піксельна іконка шматка руди: сірий камінь із вкрапленнями свого кольору
 const ORE_SPECK_COLORS = {
   coal: ['#22252a', '#3a3f47'],
@@ -14627,6 +15047,10 @@ function drawBlockIcon(canvas, id) {
   }
   if (id === EGG) {
     drawEggIcon(canvas);
+    return;
+  }
+  if (isFlowerItem(id)) {
+    drawFlowerIcon(canvas, FLOWER_KIND_OF_ITEM[id]);
     return;
   }
   if (id === BONEMEAL) {
@@ -15152,6 +15576,7 @@ updateTruffleHud();
 updateCrownHud();
 updateArmorHud();
 updateOreHud();
+updateFlowerHud();
 document.getElementById('respawn-btn').addEventListener('click', respawn);
 
 // ===== Вимикач звуку =====
@@ -15218,6 +15643,8 @@ const MM_BLOCK_COLORS = {
   [COAL]: [60, 60, 64], [IRON]: [176, 150, 128], [GOLD]: [222, 188, 70],
   [DIAMOND]: [110, 208, 214], [SNOW]: [232, 238, 244], [CACTUS]: [78, 132, 66],
   [BED]: [196, 60, 60], [GLASS]: [205, 230, 242], [WOOL]: [233, 230, 223],
+  [WOOL_RED]: [186, 74, 66], [WOOL_YELLOW]: [222, 186, 84],
+  [WOOL_BLUE]: [96, 126, 196],
   [STARBLOCK]: [150, 216, 255], [TREASURE]: [198, 152, 66],
 };
 
@@ -15537,6 +15964,8 @@ const ACHIEVEMENTS = [
   { id: 'rod_guard',   icon: '⚡', title: 'Приборкувач грози',  desc: 'Громовідвід упіймав блискавку' },
   { id: 'cure',        icon: '💊', title: 'Зцілитель',          desc: 'Зцілити зомбі золотим яблуком' },
   { id: 'neighbor',    icon: '🏘', title: 'Добрий сусід',       desc: 'Обміняти крам у крамниці зціленого селянина' },
+  { id: 'flower',      icon: '🌼', title: 'Квітникар',          desc: 'Зірвати квітку на луках' },
+  { id: 'dye',         icon: '🎨', title: 'Фарбар',             desc: 'Пофарбувати вовну квіткою' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -16778,6 +17207,59 @@ window.MCDebug = {
   get mushroomCount() { return mushrooms.size; },
   get mushBag() { return { mush: player.mush, roast: player.roast }; },
   // Устриці та перли (для тестів)
+  // Квіти: барвник у торбу, примусове проростання, стан і телепорт до квітки
+  giveFlowers: (n = 5) => {
+    for (const f of FLOWER_KINDS) {
+      player[f.bag] = Math.min(FLOWER_BAG_MAX, (player[f.bag] || 0) + n);
+    }
+    updateFlowerHud();
+    return { poppy: player.poppy, dand: player.dand, corn: player.corn };
+  },
+  sproutFlowers: (tries = 20) => {
+    const before = new Set(flowers.keys());
+    for (let i = 0; i < tries; i++) trySproutFlower();
+    return [...flowers.values()].filter((f) => !before.has(flowerKey(f.x, f.y, f.z)))
+      .map((f) => ({ x: f.x, y: f.y, z: f.z, kind: FLOWER_KINDS[f.kind].name }));
+  },
+  flowerState: () => [...flowers.values()].map((f) =>
+    ({ x: f.x, y: f.y, z: f.z, kind: FLOWER_KINDS[f.kind].name, planted: f.planted })),
+  pickNearestFlower: () => {
+    let best = null, bestD = Infinity;
+    for (const f of flowers.values()) {
+      const d = (f.x + 0.5 - player.pos.x) ** 2 + (f.z + 0.5 - player.pos.z) ** 2;
+      if (d < bestD) { bestD = d; best = f; }
+    }
+    if (!best) return null;
+    pickFlower(flowerKey(best.x, best.y, best.z));
+    return { poppy: player.poppy, dand: player.dand, corn: player.corn };
+  },
+  // Посадити квітку з торби поряд із гравцем тим самим шляхом, що й ПКМ
+  plantFlowerNear: (kind = 0, dx = 2, dz = 0) => {
+    const f = FLOWER_KINDS[kind];
+    if (!f) return null;
+    const x = Math.floor(player.pos.x) + dx, z = Math.floor(player.pos.z) + dz;
+    for (let y = Math.min(HEIGHT - 2, Math.floor(player.pos.y) + 3); y >= 2; y--) {
+      if (blockAt(x, y, z) === AIR) continue;
+      useFlower({ block: [x, y, z], prev: [x, y + 1, z] }, f.item);
+      return { x, y: y + 1, z, planted: flowers.has(flowerKey(x, y + 1, z)) };
+    }
+    return null;
+  },
+  // Пофарбувати клітинку вовни напряму (для перевірок): kind 0/1/2
+  paintWoolAt: (x, y, z, kind = 0) => {
+    const f = FLOWER_KINDS[kind];
+    if (!f || !isWoolBlock(blockAt(x, y, z))) return false;
+    setBlock(x, y, z, f.wool);
+    unlockAch('dye');
+    return BLOCK_NAMES[f.wool];
+  },
+  get flowerInfo() {
+    return {
+      bag: { poppy: player.poppy, dand: player.dand, corn: player.corn },
+      world: flowers.size,
+      wild: [...flowers.values()].filter((f) => !f.planted).length,
+    };
+  },
   giveOysters: (n = 4) => {
     player.oyster = Math.min(OYSTER_MAX, player.oyster + n);
     updateOysterHud();
@@ -17453,6 +17935,7 @@ function animate() {
     updateMushrooms(dt);
     updateOysters(dt);
     updateCactusFruits(dt);
+    updateFlowers(dt);
     updateDoors(dt);
     updateGates(dt);
     if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
