@@ -409,6 +409,42 @@ kbd {
   image-rendering: pixelated;
 }
 
+/* Зерновий ланцюжок у торбі: один бейдж із трьома чипами
+   (колосок/борошно/хліб), порожні чипи зникають */
+#grain-badge {
+  position: fixed;
+  right: 16px;
+  bottom: 926px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 9px;
+  background: rgba(0, 0, 0, 0.42);
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+#grain-badge[hidden] {
+  display: none;
+}
+
+.grain-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.grain-chip[hidden] {
+  display: none;
+}
+
+.grain-chip canvas {
+  width: 22px;
+  height: 22px;
+  image-rendering: pixelated;
+}
+
 /* Руди в торбі: один бейдж із чотирма чипами (⚫⛓🟡💎), порожні чипи зникають */
 #ore-badge {
   position: fixed;
@@ -488,7 +524,8 @@ kbd {
   #crown-badge,
   #armor-badge,
   #ore-badge,
-  #flower-badge {
+  #flower-badge,
+  #grain-badge {
     right: 96px;
   }
 }

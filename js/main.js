@@ -237,6 +237,9 @@ const isFlowerItem = (id) => id === FLOWER_POPPY || id === FLOWER_DANDELION ||
   id === FLOWER_CORNFLOWER;
 const isWoolBlock = (id) => id === WOOL || id === WOOL_RED ||
   id === WOOL_YELLOW || id === WOOL_BLUE;
+// Вітряк — жорна зернової кухні: стиглий колос лишає колосок 🌾, три колоски
+// мелються в борошно 🥣, а борошно на багатті спікається в хліб 🍞
+const MILL = 62;
 const FLOWER_BAG_MAX = 16;      // максимум квітів кожного виду в торбі
 // Вид квітки (0 мак / 1 кульбаба / 2 волошка): предмет, назва, пелюстки,
 // осердя й вовна, у яку вона фарбує
@@ -345,6 +348,7 @@ const BLOCK_NAMES = {
   [FLOWER_CORNFLOWER]: 'Волошка',
   [WOOL_RED]: 'Червона вовна', [WOOL_YELLOW]: 'Жовта вовна',
   [WOOL_BLUE]: 'Синя вовна',
+  [MILL]: 'Вітряк',
 };
 
 // Яка руда з торби відповідає воксельному блоку руди
@@ -360,7 +364,7 @@ const ALL_BLOCKS = [
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
-  GRAPPLE, LIGHTNING_ROD, FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
+  GRAPPLE, LIGHTNING_ROD, MILL, FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -585,6 +589,9 @@ function saveGame() {
         poppy: player.poppy,
         dand: player.dand,
         corn: player.corn,
+        wheat: player.wheat,
+        flour: player.flour,
+        bread: player.bread,
         coal: player.coal,
         iron: player.iron,
         gold: player.gold,
@@ -617,10 +624,13 @@ function saveGame() {
       campfires: [...campfires.values()].map((c) =>
         [c.x, c.y, c.z, c.cooking ? 1 : 0, +c.cookT.toFixed(1),
          c.cookItem === 'mush' ? 1 : 0, c.steaming ? 1 : 0, +c.steamT.toFixed(1),
-         c.baking ? 1 : 0, +c.bakeT.toFixed(1)]),
+         c.baking ? 1 : 0, +c.bakeT.toFixed(1),
+         c.breadBaking ? 1 : 0, +c.breadT.toFixed(1)]),
       beehives: [...beehives.values()].map((h) => [h.x, h.y, h.z, +h.honey.toFixed(1)]),
       scarecrows: [...scarecrows.values()].map((s) => [s.x, s.y, s.z]),
       anvils: [...anvils.values()].map((a) => [a.x, a.y, a.z]),
+      mills: [...mills.values()].map((m) =>
+        [m.x, m.y, m.z, m.grinding ? 1 : 0, +m.grindT.toFixed(1)]),
       lightningRods: [...lightningRods.values()].map((r) => [r.x, r.y, r.z]),
       mushrooms: [...mushrooms.values()].map((m) =>
         [m.x, m.y, m.z, m.kind, m.farmed ? 1 : 0]),
@@ -855,6 +865,12 @@ const Sound = (() => {
     fruitPop() {
       tone({ freq: 520, dur: 0.09, type: 'sine', gain: 0.16, slideTo: 300 });
       noise({ dur: 0.08, gain: 0.07, type: 'lowpass', freq: 900, q: 0.7 });
+    },
+    // Жорна вітряка: низький кам'яний гуркіт із дерев'яним поскрипуванням
+    grind(gain = 0.09) {
+      noise({ dur: 0.45, gain, type: 'lowpass', freq: 260, q: 0.7, attack: 0.05 });
+      tone({ freq: 95, dur: 0.4, type: 'triangle', gain: gain * 0.5, slideTo: 70 });
+      noise({ dur: 0.12, gain: gain * 0.4, type: 'bandpass', freq: 820, q: 1.4 });
     },
     // Стрижка вівці: два швидкі «вжик»-клацання ножиць
     shear() {
@@ -2397,6 +2413,11 @@ const OYSTER_MAX = 16;          // максимум сирих устриць у
 const MOLLUSK_MAX = 32;         // максимум м'яса молюска в торбі
 const MOLLUSK_FOOD = 8;         // скільки голоду відновлює молюск (4 ніжки)
 const PEARL_MAX = 8;            // максимум перлин у торбі
+const WHEAT_MAX = 32;           // максимум колосків у торбі (сировина жорен)
+const WHEAT_PER_FLOUR = 3;      // скільки колосків меле одна засипка жорен
+const FLOUR_MAX = 16;           // максимум борошна в торбі
+const BREAD_MAX = 32;           // максимум хліба в торбі
+const BREAD_FOOD = 12;          // скільки голоду відновлює хліб (6 ніжок)
 const EAT_COOLDOWN = 0.9;       // пауза між поїданнями, с
 const HUNGER_PER_EXHAUSTION = 4; // одиниць виснаження на 1 одиницю голоду
 const FALL_SAFE = 3;            // блоки падіння без шкоди
@@ -2439,6 +2460,9 @@ const player = {
   poppy: 0,             // зірвані маки (червоний барвник вовни)
   dand: 0,              // зірвані кульбаби (жовтий барвник вовни)
   corn: 0,              // зірвані волошки (синій барвник вовни)
+  wheat: 0,             // колоски зі стиглих посівів (сировина жорен вітряка)
+  flour: 0,             // змелене на вітряку борошно (тісто для хліба)
+  bread: 0,             // спечений на багатті хліб (найситніша страва)
   pearlDry: 0,          // порожніх мушель поспіль (гарантія перлини згодом)
   coal: 0,              // видобуте вугілля (паливо кузні)
   iron: 0,              // видобуте залізо (сировина кування)
@@ -2535,6 +2559,15 @@ if (savedGame && savedGame.player) {
   }
   if (Number.isFinite(p.crown)) {
     player.crown = THREE.MathUtils.clamp(Math.floor(p.crown), 0, CROWN_MAX);
+  }
+  if (Number.isFinite(p.wheat)) {
+    player.wheat = THREE.MathUtils.clamp(Math.floor(p.wheat), 0, WHEAT_MAX);
+  }
+  if (Number.isFinite(p.flour)) {
+    player.flour = THREE.MathUtils.clamp(Math.floor(p.flour), 0, FLOUR_MAX);
+  }
+  if (Number.isFinite(p.bread)) {
+    player.bread = THREE.MathUtils.clamp(Math.floor(p.bread), 0, BREAD_MAX);
   }
   for (const f of FLOWER_KINDS) {
     if (Number.isFinite(p[f.bag])) {
@@ -3036,8 +3069,8 @@ function eatFood() {
   }
   const rawAny = player.food > 0 || player.fruit > 0 || player.mush > 0 ||
     player.truffle > 0;
-  const cookedAny = player.cooked > 0 || player.roast > 0 || player.mollusk > 0 ||
-    player.baked > 0;
+  const cookedAny = player.bread > 0 || player.cooked > 0 || player.roast > 0 ||
+    player.mollusk > 0 || player.baked > 0;
   if (player.hunger >= MAX_HUNGER) return;
   if (!rawAny && !cookedAny) {
     // Іншої їжі немає: голодному золоте яблуко рятує й без ран
@@ -3050,12 +3083,17 @@ function eatFood() {
   // У кожній парі м'ясо йде першим, гриби — запасним: печений гриб трохи
   // менш ситний за смаженину, сирий — за сире м'ясо
   const deficit = MAX_HUNGER - player.hunger;
-  const cookedBest = player.cooked > 0 ? COOKED_FOOD
+  // Хліб — вершина зернового ланцюжка, найситніша страва: їмо його першим
+  const cookedBest = player.bread > 0 ? BREAD_FOOD
+    : player.cooked > 0 ? COOKED_FOOD
     : player.roast > 0 ? ROAST_FOOD
     : player.mollusk > 0 ? MOLLUSK_FOOD : BAKED_FOOD;
   const useCooked = cookedAny && (deficit >= cookedBest || !rawAny);
   if (useCooked) {
-    if (player.cooked > 0) {
+    if (player.bread > 0) {
+      player.bread -= 1;
+      player.hunger = Math.min(MAX_HUNGER, player.hunger + BREAD_FOOD);
+    } else if (player.cooked > 0) {
       player.cooked -= 1;
       player.hunger = Math.min(MAX_HUNGER, player.hunger + COOKED_FOOD);
     } else if (player.roast > 0) {
@@ -3095,6 +3133,7 @@ function eatFood() {
   updateFruitHud();
   updateBakedHud();
   updateTruffleHud();
+  updateGrainHud();
 }
 
 // ============================================================
@@ -6536,7 +6575,7 @@ function startBreakOrAttack() {
       signs.size > 0 || rails.size > 0 || campfires.size > 0 || beehives.size > 0 ||
       scarecrows.size > 0 || mushrooms.size > 0 || anvils.size > 0 ||
       oysters.size > 0 || cactusFruits.size > 0 || lightningRods.size > 0 ||
-      flowers.size > 0) {
+      flowers.size > 0 || mills.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -6562,6 +6601,11 @@ function startBreakOrAttack() {
       }
       if (anvils.has(key)) {
         breakAnvil(key);
+        triggerSwing();
+        return;
+      }
+      if (mills.has(key)) {
+        breakMill(key);
         triggerSwing();
         return;
       }
@@ -7203,6 +7247,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateBeehives();  // ... і опору вуликів
   validateScarecrows(); // ... і опору опудал
   validateAnvils();    // ... і опору ковадел
+  validateMills();    // ... і опору вітряків
   validateLightningRods(); // ... і опору громовідводів
   validateMushrooms(); // ... і ґрунт грибів
   validateFlowers();   // ... і ґрунт квітів
@@ -7357,6 +7402,7 @@ function updateFallingBlocks(dt) {
       validateBeehives();
       validateScarecrows();
       validateAnvils();
+      validateMills();
       validateLightningRods();
       validateMushrooms();
       validateFlowers();
@@ -7700,7 +7746,7 @@ function placeTorch(hit) {
       saplings.has(torchKey(x, y, z)) || signs.has(torchKey(x, y, z)) ||
       rails.has(torchKey(x, y, z)) || campfires.has(torchKey(x, y, z)) ||
       beehives.has(torchKey(x, y, z)) ||
-      scarecrows.has(torchKey(x, y, z)) || anvils.has(torchKey(x, y, z)) ||
+      scarecrows.has(torchKey(x, y, z)) || anvils.has(torchKey(x, y, z)) || mills.has(torchKey(x, y, z)) ||
       lightningRods.has(torchKey(x, y, z)) ||
       mushrooms.has(torchKey(x, y, z)) ||
       flowers.has(torchKey(x, y, z))) return false;
@@ -7864,7 +7910,7 @@ function placeLadder(hit) {
       gates.has(ladderKey(x, y, z)) || saplings.has(ladderKey(x, y, z)) ||
       signs.has(ladderKey(x, y, z)) || rails.has(ladderKey(x, y, z)) ||
       campfires.has(ladderKey(x, y, z)) || beehives.has(ladderKey(x, y, z)) ||
-      scarecrows.has(ladderKey(x, y, z)) || anvils.has(ladderKey(x, y, z)) ||
+      scarecrows.has(ladderKey(x, y, z)) || anvils.has(ladderKey(x, y, z)) || mills.has(ladderKey(x, y, z)) ||
       lightningRods.has(ladderKey(x, y, z)) ||
       mushrooms.has(ladderKey(x, y, z)) ||
       flowers.has(ladderKey(x, y, z))) return false;
@@ -8076,7 +8122,7 @@ function placeDoor(hit) {
     if (doorAtCell(x, cy, z) || torches.has(k) || crops.has(k) ||
         beds.has(k) || ladders.has(k) || fences.has(k) || gates.has(k) ||
         saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
-        beehives.has(k) || scarecrows.has(k) || anvils.has(k) ||
+        beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
         lightningRods.has(k) ||
         mushrooms.has(k) || flowers.has(k)) return false;
   }
@@ -8343,7 +8389,7 @@ function fenceCellFree(x, y, z) {
   return !fences.has(k) && !gates.has(k) && !doorAtCell(x, y, z) &&
          !torches.has(k) && !crops.has(k) && !beds.has(k) && !ladders.has(k) &&
          !saplings.has(k) && !signs.has(k) && !rails.has(k) && !campfires.has(k) &&
-         !beehives.has(k) && !scarecrows.has(k) && !anvils.has(k) &&
+         !beehives.has(k) && !scarecrows.has(k) && !anvils.has(k) && !mills.has(k) &&
          !lightningRods.has(k) &&
          !mushrooms.has(k) && !flowers.has(k);
 }
@@ -8516,7 +8562,7 @@ function plantCrop(hit) {
       saplings.has(cropKey(x, y, z)) || signs.has(cropKey(x, y, z)) ||
       rails.has(cropKey(x, y, z)) || campfires.has(cropKey(x, y, z)) ||
       beehives.has(cropKey(x, y, z)) || scarecrows.has(cropKey(x, y, z)) ||
-      anvils.has(cropKey(x, y, z)) || lightningRods.has(cropKey(x, y, z)) ||
+      anvils.has(cropKey(x, y, z)) || mills.has(cropKey(x, y, z)) || lightningRods.has(cropKey(x, y, z)) ||
       mushrooms.has(cropKey(x, y, z)) ||
       flowers.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
@@ -8538,6 +8584,16 @@ function harvestCrop(c) {
     player.food = Math.min(FOOD_MAX, player.food + WHEAT_FOOD);
     updateFoodHud();
     unlockAch('harvest');
+    // Стиглий колос лишає й колосок — сировину для жорен вітряка
+    if (player.wheat < WHEAT_MAX) {
+      player.wheat += 1;
+      updateGrainHud();
+      flashItemName(`+1 🌾 колосок (${player.wheat})`);
+      if (!wheatHintShown && mills.size === 0) {
+        wheatHintShown = true;
+        sleepToast('🌾 Колосок у торбі! Постав вітряк (Tab) — жорна змелють борошно на хліб');
+      }
+    }
   }
   removeCrop(cropKey(c.x, c.y, c.z));
 }
@@ -8677,7 +8733,7 @@ function plantSapling(hit) {
       fences.has(saplingKey(x, y, z)) || gates.has(saplingKey(x, y, z)) ||
       signs.has(saplingKey(x, y, z)) || rails.has(saplingKey(x, y, z)) ||
       campfires.has(saplingKey(x, y, z)) || beehives.has(saplingKey(x, y, z)) ||
-      scarecrows.has(saplingKey(x, y, z)) || anvils.has(saplingKey(x, y, z)) ||
+      scarecrows.has(saplingKey(x, y, z)) || anvils.has(saplingKey(x, y, z)) || mills.has(saplingKey(x, y, z)) ||
       lightningRods.has(saplingKey(x, y, z)) ||
       mushrooms.has(saplingKey(x, y, z)) ||
       flowers.has(saplingKey(x, y, z))) return false;
@@ -8734,6 +8790,7 @@ function growSaplingTree(s) {
   validateBeehives();
   validateScarecrows();
   validateAnvils();
+  validateMills();
   validateLightningRods();
   validateMushrooms();
   validateFlowers();
@@ -8839,7 +8896,7 @@ function placeBed(hit) {
       gates.has(bedKey(x, y, z)) || saplings.has(bedKey(x, y, z)) ||
       signs.has(bedKey(x, y, z)) || rails.has(bedKey(x, y, z)) ||
       campfires.has(bedKey(x, y, z)) || beehives.has(bedKey(x, y, z)) ||
-      scarecrows.has(bedKey(x, y, z)) || anvils.has(bedKey(x, y, z)) ||
+      scarecrows.has(bedKey(x, y, z)) || anvils.has(bedKey(x, y, z)) || mills.has(bedKey(x, y, z)) ||
       lightningRods.has(bedKey(x, y, z)) ||
       mushrooms.has(bedKey(x, y, z)) ||
       flowers.has(bedKey(x, y, z))) return false;
@@ -9071,7 +9128,7 @@ function signCellFree(x, y, z) {
   const k = signKey(x, y, z);
   return blockAt(x, y, z) === AIR && !signs.has(k) && !torches.has(k) && !rails.has(k) &&
          !campfires.has(k) && !beehives.has(k) && !scarecrows.has(k) &&
-         !anvils.has(k) && !lightningRods.has(k) &&
+         !anvils.has(k) && !mills.has(k) && !lightningRods.has(k) &&
          !crops.has(k) && !beds.has(k) && !ladders.has(k) && !doorAtCell(x, y, z) &&
          !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k) &&
          !flowers.has(k);
@@ -9273,6 +9330,7 @@ function updateMining(dt, hit) {
     validateBeehives();  // ... або опору вулика
     validateScarecrows(); // ... або опору опудала
     validateAnvils();    // ... або опору ковадла
+    validateMills();    // ... або опору вітряка
     validateLightningRods(); // ... або опору громовідводу
     validateMushrooms(); // ... або ґрунт гриба
     validateFlowers();   // ... або ґрунт квітки
@@ -9635,7 +9693,7 @@ function placeRail(hit) {
   if (blockAt(x, y, z) !== AIR || !isSolid(blockAt(x, y - 1, z))) return false;
   if (rails.has(k) || torches.has(k) || crops.has(k) || beds.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
-      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mushrooms.has(k) ||
+      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) || mushrooms.has(k) ||
       flowers.has(k) ||
       lightningRods.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
@@ -10010,6 +10068,9 @@ const MUSH_RAW_COLOR = new THREE.Color(0xb0402e);   // сирий гриб на 
 const MUSH_DONE_COLOR = new THREE.Color(0x8a5a2b);  // печений — брунатний
 const FRUIT_RAW_COLOR = new THREE.Color(0xc23b6e);  // сирий плід опунції на каменях
 const FRUIT_BAKED_COLOR = new THREE.Color(0x8a4a3a); // спечений — карамельно-темний
+const BREAD_BAKE_TIME = 7;             // секунд випікання хлібини на каменях
+const DOUGH_COLOR = new THREE.Color(0xe8dbb0);      // сире тісто з борошна
+const BREAD_CRUST_COLOR = new THREE.Color(0xb0782f); // рум'яна скоринка
 
 const campfireLights = [];
 for (let i = 0; i < CAMPFIRE_LIGHT_POOL; i++) {
@@ -10088,11 +10149,20 @@ function makeCampfireModel() {
   fruitG.rotation.y = 0.4;
   fruitG.visible = false;
   g.add(fruitG);
-  return { group: g, ember, flames, glow, glowMat, meat, meatMat, oysterG, fruitG, fruitMat };
+  // Хлібина з борошна на тих самих каменях (одна конфорка на всіх)
+  const breadMat = new THREE.MeshLambertMaterial({ color: DOUGH_COLOR.clone() });
+  const breadG = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.12, 0.14), breadMat);
+  breadG.position.set(0.5, 0.12, 0.3);
+  breadG.rotation.y = 0.5;
+  breadG.visible = false;
+  g.add(breadG);
+  return { group: g, ember, flames, glow, glowMat, meat, meatMat, oysterG, fruitG, fruitMat,
+           breadG, breadMat };
 }
 
 function addCampfire(x, y, z, cooking = false, cookT = 0, cookItem = 'meat',
-                     steaming = false, steamT = 0, baking = false, bakeT = 0) {
+                     steaming = false, steamT = 0, baking = false, bakeT = 0,
+                     breadBaking = false, breadT = 0) {
   const key = campfireKey(x, y, z);
   if (campfires.has(key) || campfires.size >= CAMPFIRE_MAX) return false;
   const m = makeCampfireModel();
@@ -10102,11 +10172,13 @@ function addCampfire(x, y, z, cooking = false, cookT = 0, cookItem = 'meat',
     x, y, z, group: m.group, ember: m.ember, flames: m.flames,
     glow: m.glow, glowMat: m.glowMat, meat: m.meat, meatMat: m.meatMat,
     oysterG: m.oysterG, fruitG: m.fruitG, fruitMat: m.fruitMat,
+    breadG: m.breadG, breadMat: m.breadMat,
     flick: Math.random() * 6.28, spark: Math.random(), smoke: Math.random() * 0.8,
     sizzleT: 0, cooking: !!cooking, cookT: cooking ? cookT : 0,
     cookItem: cookItem === 'mush' ? 'mush' : 'meat',
     steaming: !!steaming, steamT: steaming ? steamT : 0, steamPuff: 0,
     baking: !!baking, bakeT: baking ? bakeT : 0,
+    breadBaking: !!breadBaking, breadT: breadBaking ? breadT : 0,
   });
   if (cooking) {
     m.meat.visible = true;
@@ -10114,6 +10186,7 @@ function addCampfire(x, y, z, cooking = false, cookT = 0, cookItem = 'meat',
   }
   if (steaming) m.oysterG.visible = true;
   if (baking) m.fruitG.visible = true;
+  if (breadBaking) m.breadG.visible = true;
   return true;
 }
 
@@ -10151,6 +10224,11 @@ function breakCampfire(key) {
     player.fruit = Math.min(FRUIT_MAX, player.fruit + 1);
     updateFruitHud();
   }
+  if (c.breadBaking) {
+    // Недопечена хлібина вертається борошном
+    player.flour = Math.min(FLOUR_MAX, player.flour + 1);
+    updateGrainHud();
+  }
   spawnParticles(c.x + 0.5, c.y + 0.35, c.z + 0.5, torchEmber, 10,
     { radius: 0.3, speed: 1.6, upBias: 0.8, life: 0.55, size: 0.08, gravity: 6 });
   Sound.breakBlock(LOG);
@@ -10185,7 +10263,7 @@ function placeCampfire(hit) {
   if (blockAt(x, y, z) !== AIR || campfires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
-      rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) ||
+      rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
@@ -10202,15 +10280,17 @@ function placeCampfire(hit) {
 function tryCookAt(c) {
   if (c.cooking || (player.food <= 0 && player.mush <= 0)) {
     // Рожен зайнятий або нема що на нього класти — черга каменів:
-    // устриця з дна, а за нею плід опунції
-    if (!c.steaming && !c.baking && player.oyster > 0) return trySteamAt(c);
-    if (!c.steaming && !c.baking && player.fruit > 0) return tryBakeAt(c);
-    if (c.cooking || c.steaming || c.baking) {
+    // устриця з дна, за нею плід опунції, а тоді хлібина з борошна
+    const stonesFree = !c.steaming && !c.baking && !c.breadBaking;
+    if (stonesFree && player.oyster > 0) return trySteamAt(c);
+    if (stonesFree && player.fruit > 0) return tryBakeAt(c);
+    if (stonesFree && player.flour > 0) return tryBreadAt(c);
+    if (c.cooking || !stonesFree) {
       flashItemName('На багатті вже готується порція');
       return true;
     }
     flashItemName("Немає що готувати — вполюйте здобич, назбирайте грибів, " +
-      'пірніть по устрицю чи збийте плід із кактуса');
+      'пірніть по устрицю, збийте плід із кактуса чи змеліть борошно');
     return true;
   }
   if (player.food > 0) {
@@ -10258,6 +10338,35 @@ function tryBakeAt(c) {
   spawnParticles(c.x + 1.0, c.y + 0.2, c.z + 0.8, FRUIT_RAW_COLOR, 4,
     { radius: 0.12, speed: 0.6, upBias: 1, life: 0.5, size: 0.06, gravity: 2 });
   return true;
+}
+
+// Покласти хлібину з борошна на пласкі камені: жар спече найситнішу страву
+function tryBreadAt(c) {
+  c.breadBaking = true;
+  c.breadT = 0;
+  c.breadG.visible = true;
+  c.breadMat.color.copy(DOUGH_COLOR);
+  player.flour -= 1;
+  updateGrainHud();
+  Sound.sizzle(0.08);
+  spawnParticles(c.x + 1.0, c.y + 0.2, c.z + 0.8, FLOUR_COLOR, 4,
+    { radius: 0.12, speed: 0.5, upBias: 1, life: 0.6, size: 0.07, gravity: 1 });
+  return true;
+}
+
+// Жар зробив своє: хлібина спеклася — рум'яна скоринка й найситніша страва
+function finishBread(c) {
+  c.breadBaking = false;
+  c.breadT = 0;
+  c.breadG.visible = false;
+  player.bread = Math.min(BREAD_MAX, player.bread + 1);
+  updateGrainHud();
+  Sound.cookDone();
+  flashItemName('🍞 Хліб спікся — найситніша страва!');
+  spawnParticles(c.x + 1.0, c.y + 0.25, c.z + 0.8, BREAD_CRUST_COLOR, 8,
+    { radius: 0.15, speed: 1.3, upBias: 1, life: 0.5, size: 0.07, gravity: 5 });
+  unlockAch('bread');
+  saveGame();
 }
 
 // Жар зробив своє: плід спікся в печену опунцію — солодку ситну страву
@@ -10398,6 +10507,19 @@ function updateCampfires(dt) {
       }
       if (c.bakeT >= FRUIT_BAKE_TIME) finishBake(c);
     }
+    // Печеться хлібина: тісто рум'яниться до скоринки, димок пахне пекарнею
+    if (c.breadBaking) {
+      c.breadT += dt;
+      c.breadMat.color.copy(DOUGH_COLOR)
+        .lerp(BREAD_CRUST_COLOR, Math.min(1, c.breadT / BREAD_BAKE_TIME));
+      c.steamPuff -= dt;
+      if (c.steamPuff <= 0) {
+        c.steamPuff = 0.6 + Math.random() * 0.6;
+        spawnParticles(c.x + 1.0, c.y + 0.24, c.z + 0.8, SMOKE_COLOR, 1,
+          { radius: 0.08, speed: 0.4, upBias: 1.3, life: 0.8, size: 0.08, gravity: -1.5 });
+      }
+      if (c.breadT >= BREAD_BAKE_TIME) finishBread(c);
+    }
     // Стати у вогнище — обпектися (вогонь догорає, як після лави)
     if (px === c.x && pz === c.z && (py === c.y || py === c.y - 1) &&
         player.pos.y < c.y + 1) {
@@ -10435,13 +10557,15 @@ function updateCampfires(dt) {
 }
 
 // Відновити збережені багаття (формат: [x, y, z, cooking, cookT, mush,
-// steaming, steamT, baking, bakeT] — хвіст старі сейви можуть не мати)
+// steaming, steamT, baking, bakeT, breadBaking, breadT] — хвіст старі сейви
+// можуть не мати)
 if (savedGame && Array.isArray(savedGame.campfires)) {
   for (const e of savedGame.campfires) {
     if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
       addCampfire(e[0], e[1], e[2], !!e[3], Number.isFinite(e[4]) ? e[4] : 0,
         e[5] ? 'mush' : 'meat', !!e[6], Number.isFinite(e[7]) ? e[7] : 0,
-        !!e[8], Number.isFinite(e[9]) ? e[9] : 0);
+        !!e[8], Number.isFinite(e[9]) ? e[9] : 0,
+        !!e[10], Number.isFinite(e[11]) ? e[11] : 0);
     }
   }
 }
@@ -10588,7 +10712,7 @@ function placeBeehive(hit) {
   if (blockAt(x, y, z) !== AIR || beehives.has(k) || campfires.has(k) ||
       torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) ||
       gates.has(k) || crops.has(k) || beds.has(k) || saplings.has(k) ||
-      signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) ||
+      signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
@@ -10784,7 +10908,7 @@ function placeScarecrow(hit) {
   if (blockAt(x, y, z) !== AIR || scarecrows.has(k) || beehives.has(k) ||
       campfires.has(k) || torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) ||
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
-      saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) ||
+      saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
@@ -10924,7 +11048,7 @@ function placeLightningRod(hit) {
       beehives.has(k) || campfires.has(k) || torches.has(k) || ladders.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
-      anvils.has(k) || mushrooms.has(k) || flowers.has(k)) return false;
+      anvils.has(k) || mills.has(k) || mushrooms.has(k) || flowers.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!Object.entries(LROD_COST).every(([ore, n]) => (player[ore] || 0) >= n)) {
     flashItemName('Потрібно ⛓ 2 × залізо + 🟡 1 × золото з торби');
@@ -11169,7 +11293,7 @@ function validateAnvils() {
 function placeAnvil(hit) {
   const [x, y, z] = hit.prev;
   const k = anvilKey(x, y, z);
-  if (blockAt(x, y, z) !== AIR || anvils.has(k) || scarecrows.has(k) ||
+  if (blockAt(x, y, z) !== AIR || anvils.has(k) || mills.has(k) || scarecrows.has(k) ||
       beehives.has(k) || campfires.has(k) || torches.has(k) || ladders.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
@@ -11467,6 +11591,197 @@ if (savedGame && Array.isArray(savedGame.anvils)) {
 }
 
 // ============================================================
+// Вітряк: жорна зернової кухні
+// ============================================================
+// Вітряк — сутність у клітинці (як ковадло, воксельну сітку не змінює):
+// кам'яний фундамент, дощана вежа й хрест крил, що ліниво крутяться від
+// вітру. Стиглий колос тепер лишає колосок 🌾; ПКМ по вітряку засипає
+// WHEAT_PER_FLOUR колосків у жорна — крила розганяються, з-під каменів
+// сиплеться пилок, і за MILL_GRIND_TIME секунд у торбі з'являється борошно
+// 🥣. Борошно на багатті (черга каменів) спікається в хліб 🍞 — найситнішу
+// страву гри. ЛКМ — розібрати (недомелена засипка вертається колосками).
+const mills = new Map();               // "x,y,z" -> { x, y, z, group, sails, ... }
+const MILL_MAX = 8;                    // межа, щоб збереження не розросталося
+const MILL_GRIND_TIME = 8;             // секунд на одну засипку жорен
+const MILL_STONE = 0x7d848d;
+const MILL_WOOD = 0x8a6a3f;
+const MILL_WOOD_DARK = 0x6b4a2b;
+const MILL_SAIL = 0xe6ddc4;
+const GRAIN_COLOR = new THREE.Color(0xd9b45a);   // золотаве зерно
+const FLOUR_COLOR = new THREE.Color(0xece4cf);   // борошняний пилок
+
+const millKey = (x, y, z) => x + ',' + y + ',' + z;
+
+function makeMillModel() {
+  const g = new THREE.Group();
+  animalBox(g, 0.72, 0.16, 0.72, MILL_STONE, 0, 0.08, 0);        // фундамент
+  animalBox(g, 0.56, 0.52, 0.56, MILL_WOOD, 0, 0.42, 0);         // основа вежі
+  animalBox(g, 0.46, 0.5, 0.46, MILL_WOOD, 0, 0.92, 0);          // середина
+  animalBox(g, 0.38, 0.34, 0.38, MILL_WOOD_DARK, 0, 1.32, 0);    // маківка
+  animalBox(g, 0.5, 0.12, 0.5, MILL_WOOD_DARK, 0, 1.55, 0);      // дашок
+  animalBox(g, 0.16, 0.24, 0.04, MILL_WOOD_DARK, 0, 0.28, 0.29); // дверцята
+  animalBox(g, 0.08, 0.08, 0.26, MILL_WOOD_DARK, 0, 1.34, 0.28); // вісь крил
+  // Хрест крил: чотири лопаті (дерев'яний брус + полотняне крило)
+  const sails = new THREE.Group();
+  for (let i = 0; i < 4; i++) {
+    const blade = new THREE.Group();
+    animalBox(blade, 0.05, 0.62, 0.03, MILL_WOOD_DARK, 0, 0.31, 0);
+    animalBox(blade, 0.17, 0.44, 0.02, MILL_SAIL, 0.06, 0.4, 0);
+    blade.rotation.z = i * Math.PI / 2;
+    sails.add(blade);
+  }
+  sails.position.set(0, 1.34, 0.42);
+  sails.rotation.z = Math.random() * Math.PI;
+  g.add(sails);
+  return { group: g, sails };
+}
+
+function addMill(x, y, z, grinding = false, grindT = 0) {
+  const key = millKey(x, y, z);
+  if (mills.has(key) || mills.size >= MILL_MAX) return false;
+  const m = makeMillModel();
+  m.group.position.set(x + 0.5, y, z + 0.5);
+  scene.add(m.group);
+  mills.set(key, {
+    x, y, z, group: m.group, sails: m.sails,
+    grinding: !!grinding, grindT: grinding ? grindT : 0,
+    spin: 0.35 + Math.random() * 0.15, dustT: 0, creakT: 0,
+  });
+  return true;
+}
+
+function removeMill(key) {
+  const m = mills.get(key);
+  if (!m) return;
+  scene.remove(m.group);
+  m.group.traverse((o) => {
+    if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
+  });
+  mills.delete(key);
+}
+
+// Розібрати вітряк ударом (чи втратою опори): недомелена засипка
+// вертається колосками
+function breakMill(key) {
+  const m = mills.get(key);
+  if (!m) return;
+  if (m.grinding) {
+    player.wheat = Math.min(WHEAT_MAX, player.wheat + WHEAT_PER_FLOUR);
+    updateGrainHud();
+  }
+  spawnParticles(m.x + 0.5, m.y + 0.7, m.z + 0.5, new THREE.Color(MILL_WOOD), 10,
+    { radius: 0.3, speed: 1.8, upBias: 0.8, life: 0.5, size: 0.09, gravity: 8 });
+  Sound.breakBlock(PLANK);
+  removeMill(key);
+}
+
+// Зняти вітряки, що втратили опору або клітинку яких зайняв блок
+function validateMills() {
+  if (mills.size === 0) return;
+  for (const [key, m] of mills) {
+    const occupied = isSolid(blockAt(m.x, m.y, m.z));
+    const supported = isSolid(blockAt(m.x, m.y - 1, m.z));
+    if (occupied || !supported) breakMill(key);
+  }
+}
+
+// Поставити вітряк у клітинку перед прицілом (лише на тверду підлогу)
+function placeMill(hit) {
+  const [x, y, z] = hit.prev;
+  const k = millKey(x, y, z);
+  if (blockAt(x, y, z) !== AIR || mills.has(k) || anvils.has(k) ||
+      scarecrows.has(k) || beehives.has(k) || campfires.has(k) ||
+      torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) ||
+      fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
+      saplings.has(k) || signs.has(k) || rails.has(k) ||
+      lightningRods.has(k) || mushrooms.has(k) || flowers.has(k)) return false;
+  if (!isSolid(blockAt(x, y - 1, z))) return false;
+  if (!addMill(x, y, z)) return false;
+  Sound.place(PLANK);
+  spawnParticles(x + 0.5, y + 0.6, z + 0.5, new THREE.Color(MILL_WOOD), 7,
+    { radius: 0.3, speed: 1.4, upBias: 0.8, life: 0.45, size: 0.08, gravity: 8 });
+  return true;
+}
+
+// ПКМ по вітряку: засипати колоски в жорна (крила розганяються, за
+// MILL_GRIND_TIME секунд засипка змелеться в борошно)
+let wheatHintShown = false;
+let flourHintShown = false;
+function tryGrindAt(m) {
+  if (m.grinding) {
+    flashItemName('Жорна ще мелють засипку');
+    return true;
+  }
+  if (player.flour >= FLOUR_MAX) {
+    flashItemName('Торба борошна повна — спечіть хліб на багатті');
+    return true;
+  }
+  if (player.wheat < WHEAT_PER_FLOUR) {
+    flashItemName(`Жорнам треба 🌾 ${WHEAT_PER_FLOUR} колоски (є ${player.wheat}) — зберіть стиглий урожай`);
+    return true;
+  }
+  player.wheat -= WHEAT_PER_FLOUR;
+  updateGrainHud();
+  m.grinding = true;
+  m.grindT = 0;
+  Sound.grind();
+  spawnParticles(m.x + 0.5, m.y + 1.0, m.z + 0.5, GRAIN_COLOR, 6,
+    { radius: 0.2, speed: 1.0, upBias: 0.6, life: 0.5, size: 0.07, gravity: 6 });
+  return true;
+}
+
+// Жорна змололи засипку: борошно в торбу
+function finishGrind(m) {
+  m.grinding = false;
+  m.grindT = 0;
+  player.flour = Math.min(FLOUR_MAX, player.flour + 1);
+  updateGrainHud();
+  Sound.cookDone();
+  flashItemName('🥣 Борошно змелене!');
+  spawnParticles(m.x + 0.5, m.y + 0.5, m.z + 0.5, FLOUR_COLOR, 10,
+    { radius: 0.25, speed: 1.2, upBias: 0.9, life: 0.6, size: 0.08, gravity: 3 });
+  unlockAch('mill');
+  if (!flourHintShown) {
+    flourHintShown = true;
+    sleepToast('🥣 Борошно в торбі! ПКМ по багатті — спекти хліб 🍞');
+  }
+  saveGame();
+}
+
+// Крила крутяться від вітру (за помелу — швидше), жорна сиплють пилок
+function updateMills(dt) {
+  if (mills.size === 0) return;
+  for (const m of mills.values()) {
+    const speed = m.grinding ? 3.2 : m.spin;
+    m.sails.rotation.z += speed * dt;
+    if (!m.grinding) continue;
+    m.grindT += dt;
+    m.dustT -= dt;
+    if (m.dustT <= 0) {
+      m.dustT = 0.4 + Math.random() * 0.5;
+      spawnParticles(m.x + 0.5, m.y + 0.25, m.z + 0.5, FLOUR_COLOR, 1,
+        { radius: 0.22, speed: 0.5, upBias: 0.5, life: 0.7, size: 0.07, gravity: 2 });
+    }
+    m.creakT -= dt;
+    if (m.creakT <= 0) {
+      m.creakT = 0.9 + Math.random() * 0.6;
+      const d2 = m.group.position.distanceToSquared(player.pos);
+      if (d2 < 140) Sound.grind(0.05);
+    }
+    if (m.grindT >= MILL_GRIND_TIME) finishGrind(m);
+  }
+}
+
+// Відновити збережені вітряки (формат: [x, y, z, grinding, grindT])
+if (savedGame && Array.isArray(savedGame.mills)) {
+  for (const e of savedGame.mills) {
+    if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
+      addMill(e[0], e[1], e[2], !!e[3], Number.isFinite(e[4]) ? e[4] : 0);
+    }
+  }
+}
+
+// ============================================================
 // Гриби: печерна здобич, що проростає в темряві під поверхнею
 // ============================================================
 // Гриб — сутність-паросток (як посів, не воксель): час від часу проростає
@@ -11537,7 +11852,7 @@ function mushCellFree(x, y, z) {
   const k = mushroomKey(x, y, z);
   if (mushrooms.has(k) || torches.has(k) || crops.has(k) || ladders.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
-      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || beds.has(k) ||
+      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) || beds.has(k) ||
       lightningRods.has(k) ||
       fences.has(k) || gates.has(k) || doorAtCell(x, y, z)) return false;
   if (blockAt(x, y, z) !== AIR) return false;
@@ -11965,7 +12280,7 @@ function fruitCellOk(x, y, z) {
   const k = fruitKey(x, y, z);
   if (cactusFruits.has(k) || mushrooms.has(k) || crops.has(k) || saplings.has(k) ||
       torches.has(k) || ladders.has(k) || rails.has(k) || campfires.has(k) ||
-      scarecrows.has(k) || anvils.has(k) || beehives.has(k) ||
+      scarecrows.has(k) || anvils.has(k) || mills.has(k) || beehives.has(k) ||
       lightningRods.has(k)) return false;
   if (blockAt(x, y, z) !== AIR || blockAt(x, y - 1, z) !== CACTUS) return false;
   return biomeAt(x, z) === BIOME.DESERT;
@@ -12500,7 +12815,7 @@ function flowerCellFree(x, y, z, planted = false) {
   if (flowers.has(k) || mushrooms.has(k) || torches.has(k) || crops.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       campfires.has(k) || beehives.has(k) || scarecrows.has(k) ||
-      anvils.has(k) || beds.has(k) || lightningRods.has(k) || fences.has(k) ||
+      anvils.has(k) || mills.has(k) || beds.has(k) || lightningRods.has(k) || fences.has(k) ||
       gates.has(k) || doorAtCell(x, y, z)) return false;
   if (blockAt(x, y, z) !== AIR) return false;
   return flowerSupportable(blockAt(x, y - 1, z), planted);
@@ -12895,6 +13210,12 @@ function placeBlock() {
     if (anvils.has(ak)) { openForgePanel(anvils.get(ak)); return; }
   }
 
+  // Вітряк у прицілі (ПКМ) → засипати колоски в жорна, з будь-яким предметом
+  if (mills.size > 0) {
+    const mk = millKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    if (mills.has(mk)) { tryGrindAt(mills.get(mk)); return; }
+  }
+
   if (hotbar[selectedSlot] === BOW) return;   // луком не ставлять блок
   if (hotbar[selectedSlot] === ROD) return;   // вудкою теж не ставлять блок
 
@@ -12936,6 +13257,12 @@ function placeBlock() {
   // Ковадло — сутність на твердій підлозі, кузня кирок (ПКМ по ньому)
   if (id === ANVIL) {
     placeAnvil(hit);
+    return;
+  }
+
+  // Вітряк — сутність на твердій підлозі, жорна зерна (ПКМ по ньому)
+  if (id === MILL) {
+    placeMill(hit);
     return;
   }
 
@@ -13042,6 +13369,7 @@ function placeBlock() {
   validateBeehives();  // ... або клітинку вулика
   validateScarecrows(); // ... або клітинку опудала
   validateAnvils();    // ... або клітинку ковадла
+  validateMills();    // ... або клітинку вітряка
   validateLightningRods(); // ... або клітинку громовідводу
   validateMushrooms(); // ... або клітинку гриба
   validateFlowers();   // ... або клітинку квітки
@@ -13885,6 +14213,12 @@ for (const f of FLOWER_KINDS) {
   flowerChipEls[f.bag] = document.getElementById('flower-chip-' + f.bag);
   flowerCountEls[f.bag] = document.getElementById('flower-count-' + f.bag);
 }
+const grainBadgeEl = document.getElementById('grain-badge');
+const grainChipEls = {}, grainCountEls = {};
+for (const k of ['wheat', 'flour', 'bread']) {
+  grainChipEls[k] = document.getElementById('grain-chip-' + k);
+  grainCountEls[k] = document.getElementById('grain-count-' + k);
+}
 const vignetteEl = document.getElementById('damage-vignette');
 const fireVignetteEl = document.getElementById('fire-vignette');
 const deathOverlay = document.getElementById('death-overlay');
@@ -14022,6 +14356,12 @@ function buildSurvivalHud() {
     const flowerIcon = document.getElementById('flower-icon-' + f.bag);
     if (flowerIcon) drawFlowerIcon(flowerIcon, i);
   });
+  const wheatIcon = document.getElementById('grain-icon-wheat');
+  if (wheatIcon) drawWheatIcon(wheatIcon);
+  const flourIcon = document.getElementById('grain-icon-flour');
+  if (flourIcon) drawFlourIcon(flourIcon);
+  const breadIcon = document.getElementById('grain-icon-bread');
+  if (breadIcon) drawBreadIcon(breadIcon);
 }
 
 let lastHealthDrawn = -1;
@@ -14550,6 +14890,100 @@ function updateFlowerHud() {
   if (flowerBadgeEl) flowerBadgeEl.hidden = !any;
 }
 
+// Лічильники зернового ланцюжка: один бейдж із трьома чипами
+// (колосок/борошно/хліб), порожні чипи зникають
+let lastGrainDrawn = '';
+function updateGrainHud() {
+  const sig = `${player.wheat},${player.flour},${player.bread}`;
+  if (sig === lastGrainDrawn) return;
+  lastGrainDrawn = sig;
+  let any = false;
+  for (const k of ['wheat', 'flour', 'bread']) {
+    const n = player[k] || 0;
+    if (grainCountEls[k]) grainCountEls[k].textContent = n;
+    if (grainChipEls[k]) grainChipEls[k].hidden = n <= 0;
+    if (n > 0) any = true;
+  }
+  if (grainBadgeEl) grainBadgeEl.hidden = !any;
+}
+
+// Піксельна іконка колоска: стебло з остюками й золота голівка
+function drawWheatIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.strokeStyle = '#9a8a3e';                        // стебло
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(8, 14.5); ctx.quadraticCurveTo(7.4, 10, 8, 6);
+  ctx.stroke();
+  ctx.fillStyle = '#d9b45a';                          // зернини колоса
+  for (let i = 0; i < 4; i++) {
+    const y = 3 + i * 2.1;
+    ctx.beginPath();
+    ctx.ellipse(6.6, y + 1, 1.5, 1.1, -0.5, 0, Math.PI * 2);
+    ctx.ellipse(9.4, y + 1, 1.5, 1.1, 0.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = '#e7c45a';                          // верхівка
+  ctx.beginPath();
+  ctx.ellipse(8, 2.4, 1.4, 1.6, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// Піксельна іконка борошна: полотняний мішечок із білою присипкою
+function drawFlourIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#c9b287';                          // мішечок
+  ctx.beginPath();
+  ctx.ellipse(8, 10.5, 5, 4.4, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#b39a6d';                          // тінь при денці
+  ctx.beginPath();
+  ctx.ellipse(9, 12, 3.4, 2.2, 0.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#8a6a3f';                          // зав'язана горловина
+  ctx.fillRect(6.5, 4, 3, 3);
+  ctx.fillRect(5.6, 5.4, 4.8, 1.2);
+  ctx.fillStyle = '#f2ecd9';                          // присипка борошна
+  ctx.beginPath();
+  ctx.ellipse(8, 8.6, 3, 1.4, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillRect(11, 6, 1, 1);
+  ctx.fillRect(4, 7, 1, 1);
+}
+
+// Піксельна іконка хліба: рум'яна хлібина з надрізами
+function drawBreadIcon(canvas) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  ctx.fillStyle = '#b0782f';                          // скоринка
+  ctx.beginPath();
+  ctx.ellipse(8, 9.5, 6, 4, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#8a5a22';                          // тінь знизу
+  ctx.beginPath();
+  ctx.ellipse(8.6, 11.4, 4.6, 2, 0.1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#e0b060';                          // світлий верх
+  ctx.beginPath();
+  ctx.ellipse(7.4, 7.6, 4.4, 2, -0.15, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#8a5a22';                        // надрізи скоринки
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(5, 7.6); ctx.lineTo(6.4, 9);
+  ctx.moveTo(7.6, 6.9); ctx.lineTo(9, 8.3);
+  ctx.moveTo(10.2, 7); ctx.lineTo(11.4, 8.2);
+  ctx.stroke();
+}
+
 // Піксельна іконка квітки: стебло з листком і пелюстки кольору виду
 function drawFlowerIcon(canvas, kindIdx) {
   canvas.width = TILE;
@@ -14779,6 +15213,28 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(13, 5, 2, 2);                 // ріг
     ctx.fillStyle = '#585f6a';                 // відблиск плити
     ctx.fillRect(3, 4, 10, 1);
+    return;
+  }
+  if (id === MILL) {
+    // Процедурна іконка вітряка: кам'яний низ, дощана вежа й хрест крил
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#7d848d';                 // фундамент
+    ctx.fillRect(4, 13, 8, 2);
+    ctx.fillStyle = '#8a6a3f';                 // вежа
+    ctx.fillRect(5, 8, 6, 5);
+    ctx.fillRect(6, 5, 4, 3);
+    ctx.fillStyle = '#6b4a2b';                 // дашок і дверцята
+    ctx.fillRect(5, 4, 6, 1);
+    ctx.fillRect(7, 10, 2, 3);
+    ctx.strokeStyle = '#e6ddc4';               // хрест крил
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(8, 5.5); ctx.lineTo(12.5, 1);
+    ctx.moveTo(8, 5.5); ctx.lineTo(3.5, 1);
+    ctx.moveTo(8, 5.5); ctx.lineTo(12.5, 10);
+    ctx.moveTo(8, 5.5); ctx.lineTo(3.5, 10);
+    ctx.stroke();
     return;
   }
   if (id === LEASH) {
@@ -15577,6 +16033,7 @@ updateCrownHud();
 updateArmorHud();
 updateOreHud();
 updateFlowerHud();
+updateGrainHud();
 document.getElementById('respawn-btn').addEventListener('click', respawn);
 
 // ===== Вимикач звуку =====
@@ -15966,6 +16423,8 @@ const ACHIEVEMENTS = [
   { id: 'neighbor',    icon: '🏘', title: 'Добрий сусід',       desc: 'Обміняти крам у крамниці зціленого селянина' },
   { id: 'flower',      icon: '🌼', title: 'Квітникар',          desc: 'Зірвати квітку на луках' },
   { id: 'dye',         icon: '🎨', title: 'Фарбар',             desc: 'Пофарбувати вовну квіткою' },
+  { id: 'mill',        icon: '🌬', title: 'Мірошник',           desc: 'Змолоти борошно на вітряку' },
+  { id: 'bread',       icon: '🍞', title: 'Пекар',              desc: 'Спекти хліб на багатті' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -17892,6 +18351,76 @@ window.MCDebug = {
     }));
   },
   get bag() { return { food: player.food, cooked: player.cooked, eggs: player.eggs }; },
+  // Вітряк і зерновий ланцюжок (для тестів)
+  giveMill: () => { assignBlockToSlot(MILL); return BLOCK_NAMES[MILL]; },
+  giveWheat: (n = 6) => {
+    player.wheat = Math.min(WHEAT_MAX, player.wheat + n);
+    updateGrainHud();
+    return player.wheat;
+  },
+  giveFlour: (n = 3) => {
+    player.flour = Math.min(FLOUR_MAX, player.flour + n);
+    updateGrainHud();
+    return player.flour;
+  },
+  // Поставити вітряк на поверхню за 2 блоки на захід від гравця
+  millNear: () => {
+    const x = Math.floor(player.pos.x) - 2, z = Math.floor(player.pos.z);
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0 || isSolid(blockAt(x, gy + 1, z))) return null;
+    return addMill(x, gy + 1, z) ? { x, y: gy + 1, z } : null;
+  },
+  // Засипати колоски в найближчий до гравця вітряк
+  grindWheat: () => {
+    let best = null, bestD = Infinity;
+    for (const m of mills.values()) {
+      const d = Math.hypot(m.x + 0.5 - player.pos.x, m.z + 0.5 - player.pos.z);
+      if (d < bestD) { bestD = d; best = m; }
+    }
+    if (!best) return null;
+    tryGrindAt(best);
+    return { grinding: best.grinding, wheat: player.wheat, flour: player.flour };
+  },
+  // Миттєво домолоти всі засипки (наступний кадр завершить помел)
+  grindFast: () => {
+    let n = 0;
+    for (const m of mills.values()) {
+      if (m.grinding) { m.grindT = MILL_GRIND_TIME; n++; }
+    }
+    return n;
+  },
+  // Покласти хлібину з борошна на найближче багаття
+  bakeBread: () => {
+    let best = null, bestD = Infinity;
+    for (const c of campfires.values()) {
+      const d = Math.hypot(c.x + 0.5 - player.pos.x, c.z + 0.5 - player.pos.z);
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    if (!best) return null;
+    if (best.steaming || best.baking || best.breadBaking) return 'камені зайняті';
+    if (player.flour <= 0) return 'спершу MCDebug.giveFlour()';
+    tryBreadAt(best);
+    return { breadBaking: best.breadBaking, flour: player.flour };
+  },
+  // Миттєво допекти всі хлібини (наступний кадр завершить випікання)
+  breadFast: () => {
+    let n = 0;
+    for (const c of campfires.values()) {
+      if (c.breadBaking) { c.breadT = BREAD_BAKE_TIME; n++; }
+    }
+    return n;
+  },
+  get grainInfo() {
+    return {
+      wheat: player.wheat, flour: player.flour, bread: player.bread,
+      mills: mills.size,
+      grinding: [...mills.values()].filter((m) => m.grinding).length,
+      hunger: player.hunger,
+    };
+  },
   get rails() { return rails.size; },
   get carts() {
     return carts.map((c) => ({
@@ -17922,6 +18451,7 @@ function animate() {
     updateTnt(dt);
     updateTorches(dt);
     updateCampfires(dt);
+    updateMills(dt);
     updateBeehives(dt);
     updateScarecrows(dt);
     updateLightningRods(dt);
