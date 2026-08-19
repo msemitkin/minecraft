@@ -439,6 +439,48 @@ kbd {
   display: none;
 }
 
+/* Дія зіль казана: один бейдж із чипами-таймерами (🌙⚡🫧),
+   збіглі чипи зникають */
+#potion-badge {
+  position: fixed;
+  right: 16px;
+  bottom: 970px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 9px;
+  background: rgba(0, 0, 0, 0.42);
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+#potion-badge[hidden] {
+  display: none;
+}
+
+.potion-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.potion-chip[hidden] {
+  display: none;
+}
+
+.potion-chip canvas {
+  width: 22px;
+  height: 22px;
+  image-rendering: pixelated;
+}
+
+.potion-chip span {
+  font: bold 16px/1 system-ui, sans-serif;
+  color: #fff;
+  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.7);
+}
+
 .grain-chip canvas {
   width: 22px;
   height: 22px;
@@ -525,7 +567,8 @@ kbd {
   #armor-badge,
   #ore-badge,
   #flower-badge,
-  #grain-badge {
+  #grain-badge,
+  #potion-badge {
     right: 96px;
   }
 }

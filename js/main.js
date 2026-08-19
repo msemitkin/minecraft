@@ -240,6 +240,9 @@ const isWoolBlock = (id) => id === WOOL || id === WOOL_RED ||
 // Вітряк — жорна зернової кухні: стиглий колос лишає колосок 🌾, три колоски
 // мелються в борошно 🥣, а борошно на багатті спікається в хліб 🍞
 const MILL = 62;
+// Казан — алхімія настоянок: відро води (чи дощ просто неба) плюс жменя
+// здобичі виварюються в зілля з часовою дією. ПКМ по готовому казану — випити.
+const CAULDRON = 63;
 const FLOWER_BAG_MAX = 16;      // максимум квітів кожного виду в торбі
 // Вид квітки (0 мак / 1 кульбаба / 2 волошка): предмет, назва, пелюстки,
 // осердя й вовна, у яку вона фарбує
@@ -252,6 +255,20 @@ const FLOWER_KINDS = [
     petal: 0x4f74c9, core: 0x2c3e70, wool: WOOL_BLUE },
 ];
 const FLOWER_KIND_OF_ITEM = Object.fromEntries(FLOWER_KINDS.map((f, i) => [f.item, i]));
+
+// Зілля казана: інгредієнт із торби, ціна, тривалість дії та колір настоянки.
+// У водяний казан іде перший рецепт, на який стає запасу (порядок — як тут).
+const POTION_KINDS = [
+  { key: 'night', bag: 'mush',   cost: 2, dur: 90, icon: '🌙',
+    name: 'Зілля нічного зору', what: 'ніч довкола світлішає', color: 0x9fd8ff },
+  { key: 'speed', bag: 'fruit',  cost: 2, dur: 60, icon: '⚡',
+    name: 'Зілля прудкості', what: 'крок і біг у півтора раза швидші', color: 0xf5a623 },
+  { key: 'gills', bag: 'oyster', cost: 2, dur: 90, icon: '🫧',
+    name: 'Зілля зябер', what: 'повітря під водою не тане', color: 0x35c4a0 },
+];
+const BREW_TIME = 8;             // секунд виварювання настоянки в казані
+const CAULDRON_RAIN_FILL = 25;   // секунд дощу, щоб наповнити казан просто неба
+const POTION_SPEED_MULT = 1.5;   // множник кроку під зіллям прудкості
 
 // Руди в торбі: лічильники та капи (сировина для кування кирок)
 const ORE_MAX = { coal: 64, iron: 32, gold: 16, diam: 8 };
@@ -349,6 +366,7 @@ const BLOCK_NAMES = {
   [WOOL_RED]: 'Червона вовна', [WOOL_YELLOW]: 'Жовта вовна',
   [WOOL_BLUE]: 'Синя вовна',
   [MILL]: 'Вітряк',
+  [CAULDRON]: 'Казан',
 };
 
 // Яка руда з торби відповідає воксельному блоку руди
@@ -364,7 +382,8 @@ const ALL_BLOCKS = [
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
-  GRAPPLE, LIGHTNING_ROD, MILL, FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
+  GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON,
+  FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
 
 // Сипкі блоки: підкоряються гравітації — падають окремою сутністю, коли під
@@ -602,6 +621,10 @@ function saveGame() {
         armorTier: player.armorTier,
         armorHp: player.armorHp,
         flying: player.flying,
+        effNight: +player.effNight.toFixed(1),
+        effSpeed: +player.effSpeed.toFixed(1),
+        effGills: +player.effGills.toFixed(1),
+        potTasted: player.potTasted,
       },
       timeOfDay,
       // Живий ватажок не зберігається серед нечисті — тож у сейві він «ще не
@@ -631,6 +654,8 @@ function saveGame() {
       anvils: [...anvils.values()].map((a) => [a.x, a.y, a.z]),
       mills: [...mills.values()].map((m) =>
         [m.x, m.y, m.z, m.grinding ? 1 : 0, +m.grindT.toFixed(1)]),
+      cauldrons: [...cauldrons.values()].map((c) =>
+        [c.x, c.y, c.z, c.state, c.kind, +c.brewT.toFixed(1), +c.rainT.toFixed(1)]),
       lightningRods: [...lightningRods.values()].map((r) => [r.x, r.y, r.z]),
       mushrooms: [...mushrooms.values()].map((m) =>
         [m.x, m.y, m.z, m.kind, m.farmed ? 1 : 0]),
@@ -2492,6 +2517,10 @@ const player = {
   lastCause: '',
   flying: false,    // творчий політ (подвійний Space): без гравітації й шкоди від падіння
   climbed: 0,       // накопичений підйом драбиною (для досягнення)
+  effNight: 0,      // секунди дії зілля нічного зору (ніч світлішає)
+  effSpeed: 0,      // секунди дії зілля прудкості (крок швидший)
+  effGills: 0,      // секунди дії зілля зябер (повітря під водою не тане)
+  potTasted: 0,     // бітова маска скуштованих зіль (для досягнення)
 };
 player.fallPeakY = player.pos.y;
 
@@ -2595,6 +2624,11 @@ if (savedGame && savedGame.player) {
       : ARMOR_TIERS[player.armorTier].hp;
   }
   player.flying = !!p.flying;
+  // Дія зіль переживає перезавантаження (недопиті секунди — чесно гравцеві)
+  if (Number.isFinite(p.effNight)) player.effNight = Math.max(0, Math.min(300, p.effNight));
+  if (Number.isFinite(p.effSpeed)) player.effSpeed = Math.max(0, Math.min(300, p.effSpeed));
+  if (Number.isFinite(p.effGills)) player.effGills = Math.max(0, Math.min(300, p.effGills));
+  if (Number.isFinite(p.potTasted)) player.potTasted = Math.floor(p.potTasted) & 7;
 }
 player.fallPeakY = player.pos.y;
 applyPickTier();   // збережений рівень кирки — перефарбувати голівку
@@ -2703,7 +2737,9 @@ function updatePlayer(dt) {
   const onLadder = !flying && playerOnLadder();
 
   // Горизонтальний рух (у польоті трохи швидше; Shift у польоті — знижуватися, тож не пришвидшує)
-  const speed = flying ? 7 : (running ? 8 : 5);
+  // Зілля прудкості підганяє крок і біг (політ і так швидкий — без бусту)
+  const potionBoost = !flying && player.effSpeed > 0 ? POTION_SPEED_MULT : 1;
+  const speed = (flying ? 7 : (running ? 8 : 5)) * potionBoost;
   let fx = 0, fz = 0;
   if (keys['KeyW']) fz -= 1;
   if (keys['KeyS']) fz += 1;
@@ -2909,6 +2945,11 @@ function respawn() {
   player.sinceHurt = 999;
   player.dead = false;
   player.flying = false;
+  // Смерть змиває дію зіль (як у Minecraft)
+  player.effNight = 0;
+  player.effSpeed = 0;
+  player.effGills = 0;
+  updatePotionHud();
   // Відродження біля ліжка (сон закріпив точку), інакше — стандартний спавн
   const rx = spawnPoint ? spawnPoint.x : SPAWN.x;
   const rz = spawnPoint ? spawnPoint.z : SPAWN.z;
@@ -2961,7 +3002,16 @@ function updateSurvival(dt) {
     Math.floor(player.pos.z)
   ));
 
-  if (headWater) {
+  if (headWater && player.effGills > 0) {
+    // Зілля зябер: повітря під водою не тане, час від часу зринають бульбашки
+    player.air = MAX_AIR;
+    player.drownTick = 0;
+    if (Math.random() < dt * 3) {
+      spawnParticles(player.pos.x, player.pos.y + EYE + 0.2, player.pos.z,
+        GILLS_BUBBLE_COLOR, 1,
+        { radius: 0.25, speed: 0.4, upBias: 1.6, life: 0.6, size: 0.06, gravity: -4 });
+    }
+  } else if (headWater) {
     player.air -= dt;
     if (player.air <= 0) {
       player.air = 0;
@@ -2975,6 +3025,9 @@ function updateSurvival(dt) {
     player.air = Math.min(MAX_AIR, player.air + dt * 4);
     player.drownTick = 0;
   }
+
+  // ===== Дія зіль казана: таймери тануть, збіглий ефект прощається =====
+  updatePotionEffects(dt);
 
   // ===== Голод =====
   if (player.eatTimer > 0) player.eatTimer = Math.max(0, player.eatTimer - dt);
@@ -6575,7 +6628,7 @@ function startBreakOrAttack() {
       signs.size > 0 || rails.size > 0 || campfires.size > 0 || beehives.size > 0 ||
       scarecrows.size > 0 || mushrooms.size > 0 || anvils.size > 0 ||
       oysters.size > 0 || cactusFruits.size > 0 || lightningRods.size > 0 ||
-      flowers.size > 0 || mills.size > 0) {
+      flowers.size > 0 || mills.size > 0 || cauldrons.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -6606,6 +6659,11 @@ function startBreakOrAttack() {
       }
       if (mills.has(key)) {
         breakMill(key);
+        triggerSwing();
+        return;
+      }
+      if (cauldrons.has(key)) {
+        breakCauldron(key);
         triggerSwing();
         return;
       }
@@ -7248,6 +7306,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateScarecrows(); // ... і опору опудал
   validateAnvils();    // ... і опору ковадел
   validateMills();    // ... і опору вітряків
+  validateCauldrons(); // ... і опору казанів
   validateLightningRods(); // ... і опору громовідводів
   validateMushrooms(); // ... і ґрунт грибів
   validateFlowers();   // ... і ґрунт квітів
@@ -7403,6 +7462,7 @@ function updateFallingBlocks(dt) {
       validateScarecrows();
       validateAnvils();
       validateMills();
+      validateCauldrons();
       validateLightningRods();
       validateMushrooms();
       validateFlowers();
@@ -8791,6 +8851,7 @@ function growSaplingTree(s) {
   validateScarecrows();
   validateAnvils();
   validateMills();
+  validateCauldrons();
   validateLightningRods();
   validateMushrooms();
   validateFlowers();
@@ -9331,6 +9392,7 @@ function updateMining(dt, hit) {
     validateScarecrows(); // ... або опору опудала
     validateAnvils();    // ... або опору ковадла
     validateMills();    // ... або опору вітряка
+    validateCauldrons(); // ... або опору казана
     validateLightningRods(); // ... або опору громовідводу
     validateMushrooms(); // ... або ґрунт гриба
     validateFlowers();   // ... або ґрунт квітки
@@ -11689,7 +11751,7 @@ function validateMills() {
 function placeMill(hit) {
   const [x, y, z] = hit.prev;
   const k = millKey(x, y, z);
-  if (blockAt(x, y, z) !== AIR || mills.has(k) || anvils.has(k) ||
+  if (blockAt(x, y, z) !== AIR || mills.has(k) || cauldrons.has(k) || anvils.has(k) ||
       scarecrows.has(k) || beehives.has(k) || campfires.has(k) ||
       torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) ||
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
@@ -11777,6 +11839,301 @@ if (savedGame && Array.isArray(savedGame.mills)) {
   for (const e of savedGame.mills) {
     if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
       addMill(e[0], e[1], e[2], !!e[3], Number.isFinite(e[4]) ? e[4] : 0);
+    }
+  }
+}
+
+// ============================================================
+// Казан: алхімія настоянок
+// ============================================================
+// Казан — сутність у клітинці (як ковадло чи вітряк, воксельну сітку не
+// змінює): кам'яна основа, чавунний котел і настоянка, що міняє колір.
+// ПКМ відром води (або терплячий дощ просто неба) наповнює казан; ще один
+// ПКМ кидає у воду перший рецепт із торби, на який стає запасу (🍄 гриби →
+// 🌵 опунції → 🦪 устриці) — вариво булькає BREW_TIME секунд і світиться
+// готовим зіллям. ПКМ по готовому казану — випити: дія з таймером у HUD
+// (нічний зір / прудкість / зябра). ЛКМ — розібрати (незварена засипка
+// чесно вертається в торбу, вода виливається).
+const cauldrons = new Map();           // "x,y,z" -> { x, y, z, state, kind, ... }
+const CAULDRON_MAX = 8;                // межа, щоб збереження не розросталося
+const CAULDRON_IRON = 0x2d3138;
+const CAULDRON_IRON_LIT = 0x3f444c;
+const CAULDRON_STONE = 0x6f7680;
+const CAULDRON_WATER_COLOR = 0x3b6ea5;
+const GILLS_BUBBLE_COLOR = new THREE.Color(0xbfe8ff);       // бульбашки зябер
+const nightVisionSky = new THREE.Color(0x4a5f82);           // сріблиста ніч
+// Поля дії зіль у гравця за ключем рецепта
+const EFFECT_FIELD = { night: 'effNight', speed: 'effSpeed', gills: 'effGills' };
+// Стелі запасів інгредієнтів (щоб розібраний казан чесно вертав засипку)
+const POTION_BAG_MAX = { mush: MUSH_MAX, fruit: FRUIT_MAX, oyster: OYSTER_MAX };
+// Оновити бейдж торби, з якої казан узяв (чи повернув) інгредієнт
+function updateBagHudFor(bag) {
+  if (bag === 'mush') updateMushHud();
+  else if (bag === 'fruit') updateFruitHud();
+  else if (bag === 'oyster') updateOysterHud();
+}
+
+const cauldronKey = (x, y, z) => x + ',' + y + ',' + z;
+
+function makeCauldronModel() {
+  const g = new THREE.Group();
+  animalBox(g, 0.5, 0.12, 0.5, CAULDRON_STONE, 0, 0.06, 0);        // кам'яна основа
+  animalBox(g, 0.14, 0.14, 0.14, CAULDRON_IRON, -0.24, 0.19, -0.24); // ніжки
+  animalBox(g, 0.14, 0.14, 0.14, CAULDRON_IRON, 0.24, 0.19, -0.24);
+  animalBox(g, 0.14, 0.14, 0.14, CAULDRON_IRON, -0.24, 0.19, 0.24);
+  animalBox(g, 0.14, 0.14, 0.14, CAULDRON_IRON, 0.24, 0.19, 0.24);
+  animalBox(g, 0.62, 0.36, 0.62, CAULDRON_IRON, 0, 0.42, 0);       // котел
+  animalBox(g, 0.7, 0.08, 0.7, CAULDRON_IRON_LIT, 0, 0.62, 0);     // обід
+  // Настоянка: тонкий шар у горловині, колір і світіння міняє стан казана
+  const liquid = animalBox(g, 0.56, 0.05, 0.56, CAULDRON_WATER_COLOR, 0, 0.64, 0);
+  liquid.visible = false;
+  return { group: g, liquid };
+}
+
+// Оновити шар настоянки під стан казана (0 порожній / 1 вода / 2 вариво /
+// 3 готове зілля — світиться власним кольором)
+function refreshCauldronLiquid(c) {
+  const mat = c.liquid.material;
+  c.liquid.visible = c.state > 0;
+  if (c.state === 1) {
+    mat.color.set(CAULDRON_WATER_COLOR);
+    mat.emissive.set(0x000000);
+  } else if (c.state >= 2) {
+    const p = POTION_KINDS[c.kind];
+    mat.color.set(p.color);
+    mat.emissive.set(p.color).multiplyScalar(c.state === 3 ? 0.55 : 0.2);
+  }
+}
+
+function addCauldron(x, y, z, state = 0, kind = 0, brewT = 0, rainT = 0) {
+  const key = cauldronKey(x, y, z);
+  if (cauldrons.has(key) || cauldrons.size >= CAULDRON_MAX) return false;
+  const m = makeCauldronModel();
+  m.group.position.set(x + 0.5, y, z + 0.5);
+  scene.add(m.group);
+  const c = {
+    x, y, z, group: m.group, liquid: m.liquid,
+    state: THREE.MathUtils.clamp(Math.floor(state), 0, 3),
+    kind: THREE.MathUtils.clamp(Math.floor(kind), 0, POTION_KINDS.length - 1),
+    brewT: Math.max(0, brewT), rainT: Math.max(0, rainT),
+    bubT: 0, glintT: 0,
+  };
+  refreshCauldronLiquid(c);
+  cauldrons.set(key, c);
+  return true;
+}
+
+function removeCauldron(key) {
+  const c = cauldrons.get(key);
+  if (!c) return;
+  scene.remove(c.group);
+  c.group.traverse((o) => {
+    if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
+  });
+  cauldrons.delete(key);
+}
+
+// Розібрати казан ударом (чи втратою опори): незварена засипка вертається
+// в торбу, вода й готове зілля чесно виливаються на землю
+function breakCauldron(key) {
+  const c = cauldrons.get(key);
+  if (!c) return;
+  if (c.state === 2) {
+    const p = POTION_KINDS[c.kind];
+    player[p.bag] = Math.min(POTION_BAG_MAX[p.bag], player[p.bag] + p.cost);
+    updateBagHudFor(p.bag);
+  }
+  spawnParticles(c.x + 0.5, c.y + 0.5, c.z + 0.5, new THREE.Color(CAULDRON_IRON_LIT), 10,
+    { radius: 0.3, speed: 1.8, upBias: 0.8, life: 0.5, size: 0.09, gravity: 8 });
+  if (c.state > 0) Sound.splash();
+  Sound.breakBlock(STONE);
+  removeCauldron(key);
+}
+
+// Зняти казани, що втратили опору або клітинку яких зайняв блок
+function validateCauldrons() {
+  if (cauldrons.size === 0) return;
+  for (const [key, c] of cauldrons) {
+    const occupied = isSolid(blockAt(c.x, c.y, c.z));
+    const supported = isSolid(blockAt(c.x, c.y - 1, c.z));
+    if (occupied || !supported) breakCauldron(key);
+  }
+}
+
+// Поставити казан у клітинку перед прицілом (лише на тверду підлогу)
+let cauldronHintShown = false;
+function placeCauldron(hit) {
+  const [x, y, z] = hit.prev;
+  const k = cauldronKey(x, y, z);
+  if (blockAt(x, y, z) !== AIR || cauldrons.has(k) || mills.has(k) ||
+      anvils.has(k) || scarecrows.has(k) || beehives.has(k) || campfires.has(k) ||
+      torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) ||
+      fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
+      saplings.has(k) || signs.has(k) || rails.has(k) ||
+      lightningRods.has(k) || mushrooms.has(k) || flowers.has(k)) return false;
+  if (!isSolid(blockAt(x, y - 1, z))) return false;
+  if (!addCauldron(x, y, z)) return false;
+  Sound.place(STONE);
+  spawnParticles(x + 0.5, y + 0.5, z + 0.5, new THREE.Color(CAULDRON_IRON_LIT), 7,
+    { radius: 0.3, speed: 1.4, upBias: 0.8, life: 0.45, size: 0.08, gravity: 8 });
+  if (!cauldronHintShown) {
+    cauldronHintShown = true;
+    sleepToast('🍲 Казан стоїть! Влийте відро води (чи лишіть під дощем) — і буде зілля');
+  }
+  return true;
+}
+
+// ПКМ по казану: влити воду з відра / кинути засипку / випити готове зілля
+function tryCauldronAt(c) {
+  if (c.state === 3) { drinkFromCauldron(c); return true; }
+  if (c.state === 2) {
+    flashItemName(`${POTION_KINDS[c.kind].icon} Вариво ще булькає — зачекайте`);
+    return true;
+  }
+  if (c.state === 0) {
+    if (hotbar[selectedSlot] === WATER_BUCKET) {
+      c.state = 1;
+      c.rainT = 0;
+      refreshCauldronLiquid(c);
+      assignBlockToSlot(BUCKET);
+      Sound.splash();
+      spawnParticles(c.x + 0.5, c.y + 0.75, c.z + 0.5, new THREE.Color(CAULDRON_WATER_COLOR), 8,
+        { radius: 0.25, speed: 1.2, upBias: 0.8, life: 0.4, size: 0.07, gravity: 8 });
+      saveGame();
+      return true;
+    }
+    flashItemName('Казан порожній — влийте відро води або лишіть під дощем');
+    return true;
+  }
+  // Вода чекає на засипку: перший рецепт, на який стає запасу
+  for (let i = 0; i < POTION_KINDS.length; i++) {
+    const p = POTION_KINDS[i];
+    if (player[p.bag] < p.cost) continue;
+    player[p.bag] -= p.cost;
+    updateBagHudFor(p.bag);
+    c.state = 2;
+    c.kind = i;
+    c.brewT = 0;
+    refreshCauldronLiquid(c);
+    Sound.sizzle();
+    flashItemName(`${p.icon} У казані закипає «${p.name}»`);
+    spawnParticles(c.x + 0.5, c.y + 0.8, c.z + 0.5, new THREE.Color(p.color), 6,
+      { radius: 0.2, speed: 1.0, upBias: 0.8, life: 0.5, size: 0.07, gravity: 4 });
+    saveGame();
+    return true;
+  }
+  flashItemName('Для зілля треба 🍄 2 гриби, 🌵 2 опунції або 🦪 2 устриці');
+  return true;
+}
+
+// Вариво доварилося: настоянка світиться, чекає охочого
+function finishBrew(c) {
+  c.state = 3;
+  c.brewT = 0;
+  refreshCauldronLiquid(c);
+  const p = POTION_KINDS[c.kind];
+  Sound.cookDone();
+  flashItemName(`${p.icon} «${p.name}» готове — ПКМ зачерпнути!`);
+  spawnParticles(c.x + 0.5, c.y + 0.75, c.z + 0.5, new THREE.Color(p.color), 12,
+    { radius: 0.3, speed: 1.4, upBias: 1.0, life: 0.7, size: 0.08, gravity: 2 });
+  unlockAch('brew');
+  saveGame();
+}
+
+// Випити готове зілля просто з казана: дія стартує, казан порожніє
+function drinkFromCauldron(c) {
+  const p = POTION_KINDS[c.kind];
+  player[EFFECT_FIELD[p.key]] = p.dur;
+  player.potTasted |= 1 << c.kind;
+  if (player.potTasted === 7) unlockAch('taster');
+  c.state = 0;
+  c.rainT = 0;
+  refreshCauldronLiquid(c);
+  Sound.drink();
+  flashItemName(`${p.icon} ${p.name}: ${p.what} (${p.dur} с)`);
+  spawnParticles(player.pos.x, player.pos.y + EYE - 0.2, player.pos.z,
+    new THREE.Color(p.color), 8,
+    { radius: 0.2, speed: 1.0, upBias: 1.2, life: 0.5, size: 0.07, gravity: -2 });
+  updatePotionHud();
+  saveGame();
+}
+
+// Найближчий до гравця казан (для дебагу)
+function nearestCauldron() {
+  let best = null, bestD = Infinity;
+  for (const c of cauldrons.values()) {
+    const d = Math.hypot(c.x + 0.5 - player.pos.x, c.z + 0.5 - player.pos.z);
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  return best;
+}
+
+// Вариво булькає, готове зілля виблискує, дощ наповнює порожні казани
+function updateCauldrons(dt) {
+  if (cauldrons.size === 0) return;
+  for (const c of cauldrons.values()) {
+    if (c.state === 0 && weatherState === 'rain' && skyOpenAt(c.x, c.y + 1, c.z)) {
+      c.rainT += dt;
+      if (c.rainT >= CAULDRON_RAIN_FILL) {
+        c.state = 1;
+        c.rainT = 0;
+        refreshCauldronLiquid(c);
+        const d2 = c.group.position.distanceToSquared(player.pos);
+        if (d2 < 200) {
+          Sound.splash();
+          flashItemName('🌧 Дощ наповнив казан — час варити зілля');
+        }
+      }
+    } else if (c.state === 2) {
+      c.brewT += dt;
+      c.bubT -= dt;
+      if (c.bubT <= 0) {
+        c.bubT = 0.25 + Math.random() * 0.3;
+        spawnParticles(c.x + 0.3 + Math.random() * 0.4, c.y + 0.7,
+          c.z + 0.3 + Math.random() * 0.4, new THREE.Color(POTION_KINDS[c.kind].color), 1,
+          { radius: 0.08, speed: 0.5, upBias: 1.2, life: 0.6, size: 0.07, gravity: -3 });
+      }
+      if (c.brewT >= BREW_TIME) finishBrew(c);
+    } else if (c.state === 3) {
+      c.glintT -= dt;
+      if (c.glintT <= 0) {
+        c.glintT = 0.8 + Math.random() * 0.8;
+        spawnParticles(c.x + 0.35 + Math.random() * 0.3, c.y + 0.72,
+          c.z + 0.35 + Math.random() * 0.3, new THREE.Color(POTION_KINDS[c.kind].color), 1,
+          { radius: 0.06, speed: 0.3, upBias: 1.0, life: 0.5, size: 0.06, gravity: -2 });
+      }
+    }
+  }
+}
+
+// Дія випитих зіль: таймери тануть, прудкість іскриться під ногами,
+// збіглий ефект прощається підказкою
+function updatePotionEffects(dt) {
+  let changed = false;
+  for (const p of POTION_KINDS) {
+    const field = EFFECT_FIELD[p.key];
+    if (player[field] <= 0) continue;
+    player[field] = Math.max(0, player[field] - dt);
+    changed = true;
+    if (player[field] === 0) flashItemName(`${p.icon} Дія «${p.name}» скінчилася`);
+  }
+  if (player.effSpeed > 0 && Math.hypot(player.vel.x, player.vel.z) > 1 &&
+      Math.random() < dt * 8) {
+    spawnParticles(player.pos.x, player.pos.y + 0.15, player.pos.z,
+      SPEED_SPARK_COLOR, 1,
+      { radius: 0.25, speed: 0.5, upBias: 0.6, life: 0.4, size: 0.06, gravity: 2 });
+  }
+  if (changed) updatePotionHud();
+}
+const SPEED_SPARK_COLOR = new THREE.Color(0xf5a623);
+
+// Відновити збережені казани (формат: [x, y, z, state, kind, brewT, rainT])
+if (savedGame && Array.isArray(savedGame.cauldrons)) {
+  for (const e of savedGame.cauldrons) {
+    if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
+      addCauldron(e[0], e[1], e[2],
+        Number.isFinite(e[3]) ? e[3] : 0, Number.isFinite(e[4]) ? e[4] : 0,
+        Number.isFinite(e[5]) ? e[5] : 0, Number.isFinite(e[6]) ? e[6] : 0);
     }
   }
 }
@@ -13216,6 +13573,13 @@ function placeBlock() {
     if (mills.has(mk)) { tryGrindAt(mills.get(mk)); return; }
   }
 
+  // Казан у прицілі (ПКМ) → влити воду / кинути засипку / випити зілля
+  // (перед обробкою відра, щоб відро з водою лилося саме в казан)
+  if (cauldrons.size > 0) {
+    const ck = cauldronKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    if (cauldrons.has(ck)) { tryCauldronAt(cauldrons.get(ck)); return; }
+  }
+
   if (hotbar[selectedSlot] === BOW) return;   // луком не ставлять блок
   if (hotbar[selectedSlot] === ROD) return;   // вудкою теж не ставлять блок
 
@@ -13263,6 +13627,12 @@ function placeBlock() {
   // Вітряк — сутність на твердій підлозі, жорна зерна (ПКМ по ньому)
   if (id === MILL) {
     placeMill(hit);
+    return;
+  }
+
+  // Казан — сутність на твердій підлозі, алхімія зіль (ПКМ по ньому)
+  if (id === CAULDRON) {
+    placeCauldron(hit);
     return;
   }
 
@@ -13370,6 +13740,7 @@ function placeBlock() {
   validateScarecrows(); // ... або клітинку опудала
   validateAnvils();    // ... або клітинку ковадла
   validateMills();    // ... або клітинку вітряка
+  validateCauldrons(); // ... або клітинку казана
   validateLightningRods(); // ... або клітинку громовідводу
   validateMushrooms(); // ... або клітинку гриба
   validateFlowers();   // ... або клітинку квітки
@@ -13870,6 +14241,13 @@ function updateDayNight(dt) {
     sun.intensity += skyFlash * 0.4;
     skyColor.lerp(flashColor, skyFlash * 0.7);
   }
+  // Зілля нічного зору: пітьмі не дотягтися — гемісферне світло тримає
+  // місячний поріг, небо трохи сріблиться; в останні 5 секунд дія тане
+  if (player.effNight > 0) {
+    const k = Math.min(1, player.effNight / 5);
+    hemi.intensity = Math.max(hemi.intensity, 0.15 + 0.5 * k);
+    skyColor.lerp(nightVisionSky, 0.3 * k * (1 - Math.max(0, dayNightSun)));
+  }
   scene.fog.color.copy(skyColor);
 }
 
@@ -14219,6 +14597,12 @@ for (const k of ['wheat', 'flour', 'bread']) {
   grainChipEls[k] = document.getElementById('grain-chip-' + k);
   grainCountEls[k] = document.getElementById('grain-count-' + k);
 }
+const potionBadgeEl = document.getElementById('potion-badge');
+const potionChipEls = {}, potionCountEls = {};
+for (const p of POTION_KINDS) {
+  potionChipEls[p.key] = document.getElementById('potion-chip-' + p.key);
+  potionCountEls[p.key] = document.getElementById('potion-count-' + p.key);
+}
 const vignetteEl = document.getElementById('damage-vignette');
 const fireVignetteEl = document.getElementById('fire-vignette');
 const deathOverlay = document.getElementById('death-overlay');
@@ -14362,6 +14746,11 @@ function buildSurvivalHud() {
   if (flourIcon) drawFlourIcon(flourIcon);
   const breadIcon = document.getElementById('grain-icon-bread');
   if (breadIcon) drawBreadIcon(breadIcon);
+  POTION_KINDS.forEach((p, i) => {
+    const potIcon = document.getElementById('potion-icon-' + p.key);
+    if (potIcon) drawPotionIcon(potIcon, i);
+  });
+  updatePotionHud();   // збережена дія зіль — показати таймери одразу
 }
 
 let lastHealthDrawn = -1;
@@ -14907,6 +15296,46 @@ function updateGrainHud() {
   if (grainBadgeEl) grainBadgeEl.hidden = !any;
 }
 
+// Дія зіль: один бейдж із чипами-таймерами (🌙⚡🫧), збіглі чипи зникають
+let lastPotionDrawn = '';
+function updatePotionHud() {
+  const sig = POTION_KINDS
+    .map((p) => Math.ceil(player[EFFECT_FIELD[p.key]])).join(',');
+  if (sig === lastPotionDrawn) return;
+  lastPotionDrawn = sig;
+  let any = false;
+  for (const p of POTION_KINDS) {
+    const s = Math.ceil(player[EFFECT_FIELD[p.key]]);
+    if (potionCountEls[p.key]) potionCountEls[p.key].textContent = s + 'с';
+    if (potionChipEls[p.key]) potionChipEls[p.key].hidden = s <= 0;
+    if (s > 0) any = true;
+  }
+  if (potionBadgeEl) potionBadgeEl.hidden = !any;
+}
+
+// Піксельна іконка зілля: колба з настоянкою кольору рецепта й корком
+function drawPotionIcon(canvas, kindIdx) {
+  canvas.width = TILE;
+  canvas.height = TILE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, TILE, TILE);
+  const hex = '#' + POTION_KINDS[kindIdx].color.toString(16).padStart(6, '0');
+  ctx.fillStyle = '#cfd8e0';                          // скло колби
+  ctx.fillRect(6, 2, 4, 4);                           // шийка
+  ctx.beginPath();
+  ctx.arc(8, 10, 5, 0, Math.PI * 2);                  // черево
+  ctx.fill();
+  ctx.fillStyle = hex;                                // настоянка
+  ctx.beginPath();
+  ctx.arc(8, 10.5, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#8a5a2b';                          // корок
+  ctx.fillRect(6, 1, 4, 2);
+  ctx.fillStyle = '#ffffff';                          // блік на склі
+  ctx.fillRect(5, 7, 1, 2);
+  ctx.fillRect(6, 6, 1, 1);
+}
+
 // Піксельна іконка колоска: стебло з остюками й золота голівка
 function drawWheatIcon(canvas) {
   canvas.width = TILE;
@@ -15235,6 +15664,26 @@ function drawBlockIcon(canvas, id) {
     ctx.moveTo(8, 5.5); ctx.lineTo(12.5, 10);
     ctx.moveTo(8, 5.5); ctx.lineTo(3.5, 10);
     ctx.stroke();
+    return;
+  }
+  if (id === CAULDRON) {
+    // Процедурна іконка казана: камінь, чавунний котел, настоянка й бульбашки
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#6f7680';                 // кам'яна основа
+    ctx.fillRect(4, 13, 8, 2);
+    ctx.fillStyle = '#2d3138';                 // ніжки й котел
+    ctx.fillRect(4, 11, 2, 2);
+    ctx.fillRect(10, 11, 2, 2);
+    ctx.fillRect(3, 6, 10, 5);
+    ctx.fillStyle = '#3f444c';                 // обід
+    ctx.fillRect(2, 5, 12, 2);
+    ctx.fillStyle = '#35c4a0';                 // настоянка в горловині
+    ctx.fillRect(4, 5, 8, 1);
+    ctx.fillStyle = '#9fe8d4';                 // бульбашки над варивом
+    ctx.fillRect(6, 2, 1, 1);
+    ctx.fillRect(9, 1, 2, 2);
+    ctx.fillRect(7, 3, 1, 1);
     return;
   }
   if (id === LEASH) {
@@ -16425,6 +16874,8 @@ const ACHIEVEMENTS = [
   { id: 'dye',         icon: '🎨', title: 'Фарбар',             desc: 'Пофарбувати вовну квіткою' },
   { id: 'mill',        icon: '🌬', title: 'Мірошник',           desc: 'Змолоти борошно на вітряку' },
   { id: 'bread',       icon: '🍞', title: 'Пекар',              desc: 'Спекти хліб на багатті' },
+  { id: 'brew',        icon: '🧪', title: 'Зіллєвар',           desc: 'Зварити зілля в казані' },
+  { id: 'taster',      icon: '⚗',  title: 'Дегустатор',         desc: 'Скуштувати всі три зілля казана' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -18421,6 +18872,61 @@ window.MCDebug = {
       hunger: player.hunger,
     };
   },
+  // Казан і зілля (для тестів)
+  giveCauldron: () => { assignBlockToSlot(CAULDRON); return BLOCK_NAMES[CAULDRON]; },
+  giveBrewStuff: (n = 4) => {
+    player.mush = Math.min(MUSH_MAX, player.mush + n);
+    player.fruit = Math.min(FRUIT_MAX, player.fruit + n);
+    player.oyster = Math.min(OYSTER_MAX, player.oyster + n);
+    updateMushHud(); updateFruitHud(); updateOysterHud();
+    return { mush: player.mush, fruit: player.fruit, oyster: player.oyster };
+  },
+  // Поставити казан на поверхню за 2 блоки на схід від гравця
+  cauldronNear: () => {
+    const x = Math.floor(player.pos.x) + 2, z = Math.floor(player.pos.z);
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0 || isSolid(blockAt(x, gy + 1, z))) return null;
+    return addCauldron(x, gy + 1, z) ? { x, y: gy + 1, z } : null;
+  },
+  // Наповнити найближчий порожній казан водою (як відро чи дощ)
+  fillCauldron: () => {
+    const c = nearestCauldron();
+    if (!c) return null;
+    if (c.state === 0) { c.state = 1; refreshCauldronLiquid(c); }
+    return { state: c.state };
+  },
+  // ПКМ по найближчому казану (влити воду / кинути засипку / випити)
+  useCauldron: () => {
+    const c = nearestCauldron();
+    if (!c) return null;
+    tryCauldronAt(c);
+    return { state: c.state, kind: POTION_KINDS[c.kind].key };
+  },
+  // Миттєво доварити всі варива (наступний кадр завершить)
+  brewFast: () => {
+    let n = 0;
+    for (const c of cauldrons.values()) {
+      if (c.state === 2) { c.brewT = BREW_TIME; n++; }
+    }
+    return n;
+  },
+  get potionInfo() {
+    return {
+      cauldrons: [...cauldrons.values()].map((c) => ({
+        x: c.x, y: c.y, z: c.z, state: c.state,
+        kind: POTION_KINDS[c.kind].key, brewT: +c.brewT.toFixed(1),
+        rainT: +c.rainT.toFixed(1),
+      })),
+      effNight: +player.effNight.toFixed(1),
+      effSpeed: +player.effSpeed.toFixed(1),
+      effGills: +player.effGills.toFixed(1),
+      tasted: player.potTasted,
+      bag: { mush: player.mush, fruit: player.fruit, oyster: player.oyster },
+    };
+  },
   get rails() { return rails.size; },
   get carts() {
     return carts.map((c) => ({
@@ -18452,6 +18958,7 @@ function animate() {
     updateTorches(dt);
     updateCampfires(dt);
     updateMills(dt);
+    updateCauldrons(dt);
     updateBeehives(dt);
     updateScarecrows(dt);
     updateLightningRods(dt);
