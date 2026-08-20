@@ -243,6 +243,17 @@ const MILL = 62;
 // Казан — алхімія настоянок: відро води (чи дощ просто неба) плюс жменя
 // здобичі виварюються в зілля з часовою дією. ПКМ по готовому казану — випити.
 const CAULDRON = 63;
+// Фляга — похідний посуд для зілля (предмет-стан, як відро): порожня ПКМ по
+// готовому казану зачерпує зілля з собою, повна ПКМ будь-де — випити в дорозі.
+// Стан (порожня / три зілля) кодується окремим id у слоті хотбара; у воксельну
+// сітку фляга ніколи не потрапляє.
+const FLASK = 64;
+const FLASK_NIGHT = 65, FLASK_SPEED = 66, FLASK_GILLS = 67;
+const isFlask = (id) => id === FLASK || (id >= FLASK_NIGHT && id <= FLASK_GILLS);
+// id повної фляги за індексом рецепта в POTION_KINDS (night / speed / gills)
+const FLASK_OF_KIND = [FLASK_NIGHT, FLASK_SPEED, FLASK_GILLS];
+// Ковток «у дорозі»: досягнення за зілля, випите далі від будь-якого казана
+const FLASK_SIP_AWAY = 20;
 const FLOWER_BAG_MAX = 16;      // максимум квітів кожного виду в торбі
 // Вид квітки (0 мак / 1 кульбаба / 2 волошка): предмет, назва, пелюстки,
 // осердя й вовна, у яку вона фарбує
@@ -367,6 +378,10 @@ const BLOCK_NAMES = {
   [WOOL_BLUE]: 'Синя вовна',
   [MILL]: 'Вітряк',
   [CAULDRON]: 'Казан',
+  [FLASK]: 'Фляга',
+  [FLASK_NIGHT]: 'Фляга: зілля нічного зору',
+  [FLASK_SPEED]: 'Фляга: зілля прудкості',
+  [FLASK_GILLS]: 'Фляга: зілля зябер',
 };
 
 // Яка руда з торби відповідає воксельному блоку руди
@@ -382,7 +397,7 @@ const ALL_BLOCKS = [
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
-  GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON,
+  GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, FLASK,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
 
@@ -12033,7 +12048,7 @@ function finishBrew(c) {
   refreshCauldronLiquid(c);
   const p = POTION_KINDS[c.kind];
   Sound.cookDone();
-  flashItemName(`${p.icon} «${p.name}» готове — ПКМ зачерпнути!`);
+  flashItemName(`${p.icon} «${p.name}» готове — ПКМ випити, а флягою (Tab) — узяти в дорогу!`);
   spawnParticles(c.x + 0.5, c.y + 0.75, c.z + 0.5, new THREE.Color(p.color), 12,
     { radius: 0.3, speed: 1.4, upBias: 1.0, life: 0.7, size: 0.08, gravity: 2 });
   unlockAch('brew');
@@ -12056,6 +12071,72 @@ function drinkFromCauldron(c) {
     { radius: 0.2, speed: 1.0, upBias: 1.2, life: 0.5, size: 0.07, gravity: -2 });
   updatePotionHud();
   saveGame();
+}
+
+// Зачерпнути готове зілля з казана у порожню флягу: слот хотбара стає повною
+// флягою цього рецепта, казан порожніє — зілля тепер їде в кишені
+function fillFlaskFrom(c) {
+  const p = POTION_KINDS[c.kind];
+  assignBlockToSlot(FLASK_OF_KIND[c.kind]);
+  c.state = 0;
+  c.rainT = 0;
+  refreshCauldronLiquid(c);
+  triggerSwing();
+  Sound.splash();
+  flashItemName(`${p.icon} «${p.name}» у флязі — випий ПКМ будь-де в дорозі`);
+  spawnParticles(c.x + 0.5, c.y + 0.75, c.z + 0.5, new THREE.Color(p.color), 8,
+    { radius: 0.2, speed: 1.0, upBias: 1.0, life: 0.5, size: 0.07, gravity: 4 });
+  unlockAch('flask');
+  saveGame();
+}
+
+// Випити зілля з повної фляги (ПКМ будь-де): дія стартує, фляга порожніє.
+// Ковток далеко від казанів — окреме досягнення: заради нього фляга й існує
+function drinkFlask() {
+  const kind = hotbar[selectedSlot] - FLASK_NIGHT;
+  const p = POTION_KINDS[kind];
+  player[EFFECT_FIELD[p.key]] = p.dur;
+  player.potTasted |= 1 << kind;
+  if (player.potTasted === 7) unlockAch('taster');
+  assignBlockToSlot(FLASK);
+  triggerSwing();
+  Sound.drink();
+  flashItemName(`${p.icon} ${p.name}: ${p.what} (${p.dur} с)`);
+  spawnParticles(player.pos.x, player.pos.y + EYE - 0.2, player.pos.z,
+    new THREE.Color(p.color), 8,
+    { radius: 0.2, speed: 1.0, upBias: 1.2, life: 0.5, size: 0.07, gravity: -2 });
+  updatePotionHud();
+  const c = nearestCauldron();
+  if (!c || Math.hypot(c.x + 0.5 - player.pos.x, c.z + 0.5 - player.pos.z) >
+      FLASK_SIP_AWAY) unlockAch('sip');
+  saveGame();
+}
+
+// ПКМ із флягою в руці: по готовому казану — зачерпнути (порожньою) чи
+// підказка (повною); по казану в іншому стані — звична взаємодія казана;
+// деінде — випити повну флягу або підказати порожній, де шукати зілля
+function useFlask() {
+  const held = hotbar[selectedSlot];
+  const hit = raycastBlock();
+  if (hit && hit.prev && cauldrons.size > 0) {
+    const c = cauldrons.get(cauldronKey(hit.prev[0], hit.prev[1], hit.prev[2]));
+    if (c) {
+      if (c.state === 3) {
+        if (held === FLASK) fillFlaskFrom(c);
+        else flashItemName('Фляга вже повна — випий її (ПКМ убік від казана)');
+        return;
+      }
+      tryCauldronAt(c);
+      return;
+    }
+  }
+  if (held === FLASK) {
+    flashItemName(cauldrons.size > 0
+      ? 'Фляга порожня — зачерпни ПКМ готове зілля з казана'
+      : 'Фляга порожня — постав казан (Tab) і звари зілля');
+    return;
+  }
+  drinkFlask();
 }
 
 // Найближчий до гравця казан (для дебагу)
@@ -13533,6 +13614,10 @@ function placeBlock() {
   // Гак-кішка в руці — вистрелити гачком (до raycast: у гака власна дальність),
   // а коли мотузка вже в роботі — відпустити її
   if (hotbar[selectedSlot] === GRAPPLE) { fireGrapple(); return; }
+
+  // Фляга в руці — зачерпнути готове зілля з казана в прицілі чи випити в
+  // дорозі (до raycast: ковток без блока перед очима теж має відбутись)
+  if (isFlask(hotbar[selectedSlot])) { useFlask(); return; }
 
   const hit = raycastBlock();
   if (!hit || !hit.prev) return;
@@ -15686,6 +15771,35 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(7, 3, 1, 1);
     return;
   }
+  if (isFlask(id)) {
+    // Процедурна іконка фляги: корок, скляна пляшка з ремінцем; повна —
+    // усередині плескіт зілля свого кольору
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#8a5a2b';                          // корок
+    ctx.fillRect(6, 1, 4, 2);
+    ctx.fillStyle = '#cfd8e0';                          // шийка і черево
+    ctx.fillRect(6, 3, 4, 3);
+    ctx.beginPath();
+    ctx.arc(8, 10, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#6f7883';                        // ремінець через плече
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(3.5, 8); ctx.quadraticCurveTo(8, 5.2, 12.5, 8);
+    ctx.stroke();
+    if (id !== FLASK) {
+      const p = POTION_KINDS[id - FLASK_NIGHT];         // настоянка
+      ctx.fillStyle = '#' + p.color.toString(16).padStart(6, '0');
+      ctx.beginPath();
+      ctx.arc(8, 10.5, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = '#ffffff';                          // блік на склі
+    ctx.fillRect(4.5, 8, 1, 2);
+    ctx.fillRect(5.5, 7, 1, 1);
+    return;
+  }
   if (id === LEASH) {
     // Процедурна іконка повідця: змотана павутинна мотузка з петлею
     const ctx = canvas.getContext('2d');
@@ -16456,7 +16570,7 @@ addEventListener('pagehide', saveGame);
 if (savedGame && Array.isArray(savedGame.hotbar)) {
   for (let i = 0; i < HOTBAR_SIZE; i++) {
     const id = savedGame.hotbar[i];
-    if (ALL_BLOCKS.includes(id) || isBucket(id)) hotbar[i] = id;
+    if (ALL_BLOCKS.includes(id) || isBucket(id) || isFlask(id)) hotbar[i] = id;
   }
 }
 buildHotbar();
@@ -16876,6 +16990,8 @@ const ACHIEVEMENTS = [
   { id: 'bread',       icon: '🍞', title: 'Пекар',              desc: 'Спекти хліб на багатті' },
   { id: 'brew',        icon: '🧪', title: 'Зіллєвар',           desc: 'Зварити зілля в казані' },
   { id: 'taster',      icon: '⚗',  title: 'Дегустатор',         desc: 'Скуштувати всі три зілля казана' },
+  { id: 'flask',       icon: '🥤', title: 'Зілля в дорогу',     desc: 'Зачерпнути зілля з казана у флягу' },
+  { id: 'sip',         icon: '🧭', title: 'Похідний ковток',    desc: 'Випити зілля з фляги далеко від казана' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -18925,6 +19041,26 @@ window.MCDebug = {
       effGills: +player.effGills.toFixed(1),
       tasted: player.potTasted,
       bag: { mush: player.mush, fruit: player.fruit, oyster: player.oyster },
+    };
+  },
+  // Фляга (для тестів)
+  giveFlask: () => { assignBlockToSlot(FLASK); return BLOCK_NAMES[FLASK]; },
+  fillFlask: (kind = 0) => {
+    const k = THREE.MathUtils.clamp(Math.floor(kind), 0, POTION_KINDS.length - 1);
+    assignBlockToSlot(FLASK_OF_KIND[k]);
+    return BLOCK_NAMES[FLASK_OF_KIND[k]];
+  },
+  useFlask: () => {
+    if (!isFlask(hotbar[selectedSlot])) return 'спершу MCDebug.giveFlask()';
+    useFlask();
+    return BLOCK_NAMES[hotbar[selectedSlot]];
+  },
+  get flaskInfo() {
+    const held = hotbar[selectedSlot];
+    return {
+      held: BLOCK_NAMES[held] || held,
+      isFlask: isFlask(held),
+      full: isFlask(held) && held !== FLASK,
     };
   },
   get rails() { return rails.size; },
