@@ -300,6 +300,19 @@ const SWORD_TIERS = [
   { name: 'Алмазний меч', icon: '🗡', dmg: 15, kb: 6,   blade: 0x5fd8d2, cost: { coal: 3, diam: 2 } },
 ];
 
+// Гартування клинка в лаві — продовження кузні після алмазної стелі, але
+// кується не на ковадлі, а в полі: ПКМ по джерелу лави з алмазним мечем
+// (і запасом вугілля роздмухати жар) розжарює клинок білим жаром, а ПКМ по
+// воді (чи пірнання) поки жар не згас — гартує назавжди в полум'яний клинок.
+// Удари полум'яного клинка підпалюють нечисть: вогонь догорає на ній кілька
+// секунд періодичною шкодою (кріпера й павука теж — на відміну від світанку).
+// Прогаяний жар холоне надарма — вугілля згоріло, спробуй ще.
+const TEMPER_COAL = 3;        // вугілля, щоб роздмухати жар лави до білого
+const TEMPER_WINDOW = 25;     // секунд, поки розжарений клинок не охолов
+const ABLAZE_TIME = 4;        // скільки секунд горить підпалена клинком нечисть
+const ABLAZE_TICK = 0.8;      // період шкоди вогню на нечисті
+const ABLAZE_DMG = 1;         // шкода за тик вогню
+
 // Щит — не предмет хотбара, а стійка оборони: утримуй C (чи сенсорну
 // кнопку 🛡), щоб прикритися — піднятий щит відбиває удари нечисті та
 // стріли скелетів спереду (в межах фронтального конуса dot), відкидаючи
@@ -617,6 +630,7 @@ function saveGame() {
         diam: player.diam,
         pickTier: player.pickTier,
         swordTier: player.swordTier,
+        swordFlame: player.swordFlame ? 1 : 0,
         shieldTier: player.shieldTier,
         armorTier: player.armorTier,
         armorHp: player.armorHp,
@@ -2090,10 +2104,21 @@ const SWORD_FLASH_TIME = 0.9;
 let swordFlash = 0;
 
 // Перефарбувати клинок під поточний рівень меча (кується на ковадлі);
-// алмазний ледь світиться зсередини, як і алмазна кирка
+// алмазний ледь світиться зсередини, як і алмазна кирка. Розжарений у лаві
+// клинок сяє білим жаром, загартований полум'яний — жевріє помаранчем.
 function applySwordTier() {
   const mat = swordView.userData.bladeMat;
   const tier = SWORD_TIERS[player.swordTier];
+  if (player.swordHeat > 0) {
+    mat.color.setHex(0xfff3da);
+    mat.emissive.setHex(0xff8c30);
+    return;
+  }
+  if (player.swordFlame && player.swordTier === SWORD_TIERS.length - 1) {
+    mat.color.setHex(0xffb066);
+    mat.emissive.setHex(0x8c2a00);
+    return;
+  }
   mat.color.setHex(tier.blade || 0xdfe4ea);
   mat.emissive.setHex(player.swordTier === SWORD_TIERS.length - 1 ? 0x0a2f2c : 0x000000);
 }
@@ -2301,8 +2326,10 @@ function updateViewModel(dt) {
   const holdingBow = hotbar[selectedSlot] === BOW;
   const holdingRod = hotbar[selectedSlot] === ROD;
   if (swordFlash > 0) swordFlash = Math.max(0, swordFlash - dt);
-  const showSword = swordFlash > 0 && player.swordTier > 0 &&
-    !holdingBow && !holdingRod && !mining;
+  // Розжарений у лаві клинок гравець несе в руці всю дорогу до води —
+  // білий жар видно (і час, що тане), поки меч не загартовано чи не охолов
+  const showSword = (swordFlash > 0 || player.swordHeat > 0) &&
+    player.swordTier > 0 && !holdingBow && !holdingRod && !mining;
   viewModel.visible = !holdingBow && !holdingRod && !showSword;
   swordView.visible = showSword;
   bowView.group.visible = holdingBow;
@@ -2495,6 +2522,8 @@ const player = {
   diam: 0,              // видобуті алмази (сировина кування)
   pickTier: 0,          // рівень кирки (0..3): кується на ковадлі з руд
   swordTier: 0,         // рівень меча (0..3): 0 — голіруч, далі кується на ковадлі
+  swordFlame: false,    // полум'яний клинок: загартований у лаві й воді (назавжди)
+  swordHeat: 0,         // секунд, поки розжарений у лаві клинок не охолов
   shieldTier: 0,        // рівень щита (0..2): 0 — без щита, далі кується на ковадлі
   armorTier: 0,         // рівень обладунку (0..3): 0 — без захисту, кується на ковадлі
   armorHp: 0,           // міцність обладунку: -1 за прийнятий удар, 0 — розбитий
@@ -2614,6 +2643,8 @@ if (savedGame && savedGame.player) {
   if (Number.isFinite(p.swordTier)) {
     player.swordTier = THREE.MathUtils.clamp(Math.floor(p.swordTier), 0, SWORD_TIERS.length - 1);
   }
+  // Полум'яний гарт клинка — назавжди (старі сейви: звичайний меч, як і був)
+  player.swordFlame = !!p.swordFlame;
   if (Number.isFinite(p.shieldTier)) {
     player.shieldTier = THREE.MathUtils.clamp(Math.floor(p.shieldTier), 0, SHIELD_TIERS.length - 1);
   }
@@ -2804,6 +2835,8 @@ function updatePlayer(dt) {
 
   // Звук сплеску при зануренні у воду (у лаву — сичання нижче, у updateSurvival)
   if (inWater && !player.prevInWater) Sound.splash();
+  // Пірнання з розжареним клинком гартує його, як і ПКМ по воді
+  if (inWater && player.swordHeat > 0 && !player.dead) quenchSword(null);
   player.prevInWater = inWater;
 
   const yBefore = player.pos.y;
@@ -2942,6 +2975,8 @@ function respawn() {
   player.hurtFlash = 0;
   player.fireTicks = 0;
   player.fireDmgTick = 0;
+  // Смерть гасить розжарений клинок (полум'яний гарт — назавжди, лишається)
+  if (player.swordHeat > 0) { player.swordHeat = 0; applySwordTier(); }
   player.sinceHurt = 999;
   player.dead = false;
   player.flying = false;
@@ -6043,6 +6078,8 @@ function spawnMob(x, y, z, type = 'zombie') {
     attackCD: 0,    // перезарядка атаки
     attackAnim: 0,  // мах руками при ударі
     burn: 0,        // час горіння під сонцем
+    ablaze: 0,      // залишок вогню полум'яного клинка (гасить вода)
+    ablazeTick: 0,  // таймер періодичної шкоди вогню клинка
     fuse: 0,        // кріпер: час, що лишився до вибуху (0 — ґніт не горить)
     detonated: false,
     shootCD: 1 + Math.random(),  // скелет: перезарядка пострілу з лука
@@ -6166,6 +6203,29 @@ function updateMob(m, dt) {
         { radius: 0.25, speed: 0.6, upBias: 1.3, life: 0.5, size: 0.13, gravity: -6 });
     }
     if (m.health <= 0) return;
+  }
+
+  // Вогонь полум'яного клинка догорає на нечисті періодичною шкодою та
+  // язиками полум'я (кріпер і павук горять теж — на відміну від світанку);
+  // вода під ногами гасить, зцілення золотим яблуком — теж
+  if (m.ablaze > 0) {
+    if (curing ||
+        isWaterId(blockAt(Math.floor(m.pos.x), Math.floor(m.pos.y + 0.3), Math.floor(m.pos.z)))) {
+      m.ablaze = 0;
+    } else {
+      m.ablaze -= dt;
+      m.ablazeTick -= dt;
+      if (m.ablazeTick <= 0) {
+        m.ablazeTick = ABLAZE_TICK;
+        m.health -= ABLAZE_DMG;
+        m.hurt = Math.max(m.hurt, 0.6);
+      }
+      if (Math.random() < dt * 18) {
+        spawnParticles(m.pos.x, m.pos.y + 0.9, m.pos.z, LAVA_FIRE_COLOR, 1,
+          { radius: 0.28, speed: 0.7, upBias: 1.4, life: 0.5, size: 0.12, gravity: -6 });
+      }
+      if (m.health <= 0) return;
+    }
   }
 
   // Удень зомбі та скелети займаються вогнем і швидко гинуть; кріпери й
@@ -6550,6 +6610,14 @@ function meleeStrike(entity, isAnimal, dx, dz) {
     Sound.sword();
   }
   damageEntity(entity, isAnimal, tier.dmg, dx, dz, tier.kb);
+  // Полум'яний клинок підпалює нечисть (тварин вогонь милує — здобич не
+  // горить, а зомбі посеред зцілення береже золоте яблуко)
+  if (player.swordFlame && !isAnimal && entity.health > 0 && !(entity.curing > 0)) {
+    entity.ablaze = ABLAZE_TIME;
+    entity.ablazeTick = 0;
+    spawnParticles(entity.pos.x, entity.pos.y + 1.0, entity.pos.z, LAVA_FIRE_COLOR, 6,
+      { radius: 0.3, speed: 1.6, upBias: 1.4, life: 0.5, size: 0.11, gravity: -5 });
+  }
 }
 
 // Спільне завдання шкоди істоті (зомбі/кріпер або тварина) ударом чи стрілою.
@@ -11455,6 +11523,7 @@ function renderForgePanel() {
     { cur: player.swordTier === 0 ? 'так і б\'ємось' : 'при поясі',
       done: 'уже перекутий', doneBase: 'замінено міцнішим',
       prev: ' • спершу попередній' });
+  renderTemperRow();
   renderForgeTrack('🛡 Щит', SHIELD_TIERS, player.shieldTier, doForgeShield,
     (tier) => tier.stat,
     { cur: player.shieldTier === 0 ? 'прикритися нічим' : 'на лівій руці',
@@ -11542,6 +11611,32 @@ function doForgeShield(t) {
 
 // Рядок лагодження обладунку: показує міцність і кнопку «Полагодити»
 // (за mend-ціну поточного рівня), коли панцир пошарпаний чи розбитий
+// Рядок гартування в розділі меча: цей ступінь кується не на ковадлі, а в
+// полі (лава → вода), тож рядок лише підказує шлях і показує стан клинка
+function renderTemperRow() {
+  if (player.swordTier !== SWORD_TIERS.length - 1) return;
+  const row = document.createElement('div');
+  row.className = 'trade-row' + (player.swordFlame ? ' forged' : '');
+  const goods = document.createElement('div');
+  goods.className = 'trade-goods';
+  const line = document.createElement('div');
+  line.textContent = player.swordFlame
+    ? '🔥 Полум\'яний клинок — удари підпалюють нечисть'
+    : player.swordHeat > 0
+      ? '🌡 Клинок розжарено — мерщій до води!'
+      : '🔥 Гартування — не тут, а в надрах: ПКМ по джерелу лави';
+  const status = document.createElement('div');
+  status.className = 'trade-stock';
+  status.textContent = player.swordFlame
+    ? 'загартований назавжди'
+    : player.swordHeat > 0
+      ? `жар згасне за ${Math.ceil(player.swordHeat)} с`
+      : `${TEMPER_COAL} ⚫ роздмухати жар • загартуй у воді, поки не охолов`;
+  goods.append(line, status);
+  row.append(goods);
+  forgeListEl.appendChild(row);
+}
+
 function renderArmorMendRow() {
   if (player.armorTier <= 0) return;
   const tier = ARMOR_TIERS[player.armorTier];
@@ -13475,6 +13570,78 @@ function useBucket() {
   unlockAch('bucket');
 }
 
+// ===== Гартування клинка в лаві =====
+// Кузня кує до алмазної стелі, а далі гартує саме пекло: ПКМ по джерелу лави
+// з алмазним мечем (і TEMPER_COAL вугілля роздмухати жар) розжарює клинок
+// білим жаром; ПКМ по воді чи пірнання, поки жар не згас (TEMPER_WINDOW с), —
+// гартує назавжди в полум'яний клинок, чиї удари підпалюють нечисть.
+// Прогаяний жар холоне надарма — вугілля згоріло, спробуй ще.
+function tryTemperSword() {
+  if (player.swordTier !== SWORD_TIERS.length - 1 || player.swordFlame) return false;
+  const src = findFluidSource();
+  if (!src) return false;
+  if (player.swordHeat > 0) {
+    if (src.id === WATER) { quenchSword(src); return true; }
+    flashItemName('Клинок уже розжарено — мерщій до води!');
+    return true;
+  }
+  if (src.id !== LAVA) return false;
+  if (player.coal < TEMPER_COAL) {
+    flashItemName(`Роздмухати жар нічим — потрібно ${TEMPER_COAL} ⚫ вугілля`);
+    return true;
+  }
+  player.coal -= TEMPER_COAL;
+  player.swordHeat = TEMPER_WINDOW;
+  applySwordTier();
+  updateOreHud();
+  Sound.lava(0.3);
+  Sound.forge();
+  spawnParticles(src.x + 0.5, src.y + 0.9, src.z + 0.5, LAVA_FIRE_COLOR, 16,
+    { radius: 0.35, speed: 2.2, upBias: 1.6, life: 0.7, size: 0.11, gravity: -4 });
+  flashItemName('🌡 Клинок розжарено білим жаром — загартуй у воді, поки не охолов!');
+  unlockAch('temper_heat');
+  if (forgeOpen) renderForgePanel();
+  return true;
+}
+
+// Загартувати розжарений клинок: у воду в прицілі (src) чи просто пірнувши
+// (src = null). Пара, сичання — і полум'яний клинок назавжди при поясі.
+function quenchSword(src) {
+  player.swordHeat = 0;
+  player.swordFlame = true;
+  applySwordTier();
+  Sound.lavaHiss();
+  const px = src ? src.x + 0.5 : player.pos.x;
+  const py = src ? src.y + 0.9 : player.pos.y + 1.2;
+  const pz = src ? src.z + 0.5 : player.pos.z;
+  spawnParticles(px, py, pz, OYSTER_STEAM_COLOR, 14,
+    { radius: 0.4, speed: 1.2, upBias: 1.6, life: 0.8, size: 0.13, gravity: -2 });
+  flashItemName('🔥 Полум\'яний клинок! Удари відтепер підпалюють нечисть');
+  unlockAch('flame_sword');
+  if (forgeOpen) renderForgePanel();
+  saveGame();
+}
+
+// Жар розжареного клинка тане з часом: куриться димком та іскрами з руки,
+// а згаснувши без води — лишає клинок звичайним (вугілля згоріло надарма)
+function updateTemper(dt) {
+  if (player.swordHeat <= 0) return;
+  player.swordHeat = Math.max(0, player.swordHeat - dt);
+  if (Math.random() < dt * 6) {
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    spawnParticles(
+      player.pos.x + dir.x * 0.6, player.pos.y + 1.25, player.pos.z + dir.z * 0.6,
+      Math.random() < 0.5 ? SMOKE_COLOR : LAVA_FIRE_COLOR, 1,
+      { radius: 0.12, speed: 0.5, upBias: 1.2, life: 0.5, size: 0.08, gravity: -3 });
+  }
+  if (player.swordHeat === 0) {
+    applySwordTier();
+    flashItemName('Жар згас — клинок охолов, вугілля згоріло надарма');
+    if (forgeOpen) renderForgePanel();
+  }
+}
+
 function placeBlock() {
   if (player.blocking) return;             // щит займає руки
   triggerSwing();
@@ -13533,6 +13700,11 @@ function placeBlock() {
   // Гак-кішка в руці — вистрелити гачком (до raycast: у гака власна дальність),
   // а коли мотузка вже в роботі — відпустити її
   if (hotbar[selectedSlot] === GRAPPLE) { fireGrapple(); return; }
+
+  // Гартування клинка: ПКМ по джерелу лави з алмазним мечем розжарює його,
+  // ПКМ по воді — гартує. До raycast (флюїди не тверді), але відро головніше:
+  // з відром у руці флюїди лишаються за ним
+  if (!isBucket(hotbar[selectedSlot]) && tryTemperSword()) return;
 
   const hit = raycastBlock();
   if (!hit || !hit.prev) return;
@@ -16876,6 +17048,8 @@ const ACHIEVEMENTS = [
   { id: 'bread',       icon: '🍞', title: 'Пекар',              desc: 'Спекти хліб на багатті' },
   { id: 'brew',        icon: '🧪', title: 'Зіллєвар',           desc: 'Зварити зілля в казані' },
   { id: 'taster',      icon: '⚗',  title: 'Дегустатор',         desc: 'Скуштувати всі три зілля казана' },
+  { id: 'temper_heat', icon: '🌡', title: 'Білий жар',          desc: 'Розжарити алмазний клинок у джерелі лави' },
+  { id: 'flame_sword', icon: '🔥', title: 'Полум\'яний клинок', desc: 'Загартувати розжарений клинок у воді' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -18597,6 +18771,36 @@ window.MCDebug = {
     if (t >= SHIELD_TIERS.length) return 'уже алмазний — далі нікуди';
     return { ok: doForgeShield(t), ...MCDebug.forgeInfo };
   },
+  // Гартування клинка: стан, форсоване розжарення/гартування (справжніми
+  // шляхами) і готовий полум'яний меч для тестів
+  get temperInfo() {
+    return { swordTier: player.swordTier, flame: player.swordFlame,
+             heat: +player.swordHeat.toFixed(1), coal: player.coal,
+             ablazeMobs: mobs.filter((m) => m.ablaze > 0).length };
+  },
+  // Справжній шлях гартування (як ПКМ): потрібне джерело лави/води в прицілі
+  tryTemper: () => ({ ok: tryTemperSword(), ...MCDebug.temperInfo }),
+  heatNow: () => {
+    if (player.swordTier !== SWORD_TIERS.length - 1) return 'спершу алмазний меч';
+    if (player.swordFlame) return 'уже загартований';
+    player.swordHeat = TEMPER_WINDOW;
+    applySwordTier();
+    unlockAch('temper_heat');
+    return MCDebug.temperInfo;
+  },
+  quenchNow: () => {
+    if (player.swordHeat <= 0) return 'клинок не розжарено — спершу heatNow()';
+    quenchSword(null);
+    return MCDebug.temperInfo;
+  },
+  giveFlameSword: () => {
+    player.swordTier = SWORD_TIERS.length - 1;
+    player.swordFlame = true;
+    player.swordHeat = 0;
+    applySwordTier();
+    saveGame();
+    return MCDebug.temperInfo;
+  },
   // Підняти/опустити щит тим самим шляхом, що й сенсорна кнопка 🛡
   raiseShield: (on = true) => {
     touchShieldHeld = !!on;
@@ -18950,6 +19154,7 @@ function animate() {
   if (gameActive() && !player.dead && !sleeping) {
     updatePlayer(dt);
     updateSurvival(dt);
+    updateTemper(dt);
     updateAnimals(dt);
     updateTrader(dt);
     updateVillager();
