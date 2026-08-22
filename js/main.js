@@ -1277,6 +1277,154 @@ const Sound = (() => {
   };
 })();
 
+// ============================================================
+// Покинуті штольні — перша згенерована споруда надр: центральна
+// зала зі скринею припасів і до чотирьох галерей із дерев'яними
+// опорами. Розкладка детермінована ґраткою (як біоми), тож та сама
+// штольня однаково виростає в усіх чанках, які вона перетинає, —
+// межі чанків непомітні, а старі сейви сумісні (правки гравця
+// накладаються поверх, як і завжди).
+// ============================================================
+const SHAFT_GRID = 112;      // крок ґратки, у клітинці якої може лежати штольня
+const SHAFT_CHANCE = 0.55;   // шанс, що клітинка ґратки має штольню
+const SHAFT_Y_MIN = 11;      // діапазон висоти підлоги — над лавовим морем печер
+const SHAFT_Y_MAX = 20;
+const SHAFT_ROOM = 3;        // піврозмір зали (інтер'єр 7×7×3)
+const SHAFT_GAP = 4;         // не підкопуватися ближче до поверхні
+const SHAFT_LEN_MIN = 10;    // довжина галереї 10..24
+const SHAFT_LEN_VAR = 15;
+const SHAFT_REACH = SHAFT_ROOM + 1 + SHAFT_LEN_MIN + SHAFT_LEN_VAR - 1;
+
+// Початок штольні в клітинці ґратки (або null, якщо клітинка порожня)
+function shaftOrigin(gx, gz) {
+  if (ihash(gx * 3 + 41, gz * 3 + 89) >= SHAFT_CHANCE) return null;
+  const pad = 24;   // відступ від краю клітинки, щоб споруда не лізла в сусідню
+  const ox = gx * SHAFT_GRID + pad +
+    Math.floor(ihash(gx + 611, gz + 227) * (SHAFT_GRID - pad * 2));
+  const oz = gz * SHAFT_GRID + pad +
+    Math.floor(ihash(gx + 733, gz + 359) * (SHAFT_GRID - pad * 2));
+  const oy = SHAFT_Y_MIN +
+    Math.floor(ihash(gx + 877, gz + 491) * (SHAFT_Y_MAX - SHAFT_Y_MIN + 1));
+  return { x: ox, y: oy, z: oz };
+}
+
+// Галереї штольні: промені від зали по сторонах світу (шанс 80% кожен)
+function shaftGalleries(gx, gz) {
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const out = [];
+  for (let i = 0; i < dirs.length; i++) {
+    if (ihash(gx * 5 + i * 17 + 913, gz * 5 + i * 29 + 157) >= 0.8) continue;
+    const len = SHAFT_LEN_MIN +
+      Math.floor(ihash(gx + i * 43 + 337, gz + i * 61 + 719) * SHAFT_LEN_VAR);
+    out.push({ dx: dirs[i][0], dz: dirs[i][1], len });
+  }
+  return out;
+}
+
+// Чи лежить воксель в інтер'єрі штольні клітинки (gx,gz)
+function pointInShaft(o, gx, gz, x, y, z) {
+  if (y < o.y || y > o.y + 2) return false;
+  if (Math.abs(x - o.x) <= SHAFT_ROOM && Math.abs(z - o.z) <= SHAFT_ROOM) return true;
+  for (const g of shaftGalleries(gx, gz)) {
+    const along = g.dx !== 0 ? (x - o.x) * g.dx : (z - o.z) * g.dz;
+    const across = g.dx !== 0 ? Math.abs(z - o.z) : Math.abs(x - o.x);
+    if (along > SHAFT_ROOM && along <= SHAFT_ROOM + g.len && across <= 1) return true;
+  }
+  return false;
+}
+
+// Чи стоїть точка світу всередині котроїсь штольні поблизу (для досягнення)
+function mineshaftAt(wx, wy, wz) {
+  const x = Math.floor(wx), y = Math.floor(wy), z = Math.floor(wz);
+  if (y < SHAFT_Y_MIN || y > SHAFT_Y_MAX + 2) return null;
+  const gx0 = Math.floor((x - SHAFT_REACH) / SHAFT_GRID);
+  const gx1 = Math.floor((x + SHAFT_REACH) / SHAFT_GRID);
+  const gz0 = Math.floor((z - SHAFT_REACH) / SHAFT_GRID);
+  const gz1 = Math.floor((z + SHAFT_REACH) / SHAFT_GRID);
+  for (let gx = gx0; gx <= gx1; gx++) {
+    for (let gz = gz0; gz <= gz1; gz++) {
+      const o = shaftOrigin(gx, gz);
+      if (o && pointInShaft(o, gx, gz, x, y, z)) return o;
+    }
+  }
+  return null;
+}
+
+// Вирізати в чанку всі штольні, що його перетинають (викликається з genChunkData)
+function carveMineshafts(cx, cz, data) {
+  const wx0 = cx * CHUNK, wz0 = cz * CHUNK;
+  const gx0 = Math.floor((wx0 - SHAFT_REACH) / SHAFT_GRID);
+  const gx1 = Math.floor((wx0 + CHUNK - 1 + SHAFT_REACH) / SHAFT_GRID);
+  const gz0 = Math.floor((wz0 - SHAFT_REACH) / SHAFT_GRID);
+  const gz1 = Math.floor((wz0 + CHUNK - 1 + SHAFT_REACH) / SHAFT_GRID);
+  for (let gx = gx0; gx <= gx1; gx++) {
+    for (let gz = gz0; gz <= gz1; gz++) {
+      const o = shaftOrigin(gx, gz);
+      if (!o) continue;
+      if (o.x + SHAFT_REACH < wx0 || o.x - SHAFT_REACH >= wx0 + CHUNK ||
+          o.z + SHAFT_REACH < wz0 || o.z - SHAFT_REACH >= wz0 + CHUNK) continue;
+      carveShaftIntoChunk(o, gx, gz, wx0, wz0, data);
+    }
+  }
+}
+
+function carveShaftIntoChunk(o, gx, gz, wx0, wz0, data) {
+  // Кеш висоти колон — heightAt небезкоштовний, а клітинок у споруди чимало
+  const colH = new Map();
+  const hAt = (x, z) => {
+    const k = x + ',' + z;
+    let h = colH.get(k);
+    if (h === undefined) { h = heightAt(x, z); colH.set(k, h); }
+    return h;
+  };
+  // Клітинка споруди: лише в межах чанка, не проколює приповерхневі шари
+  // (щоб хід не відкривався в озеро чи під ноги) і не чіпає воду та лаву
+  const cell = (x, y, z, id) => {
+    const lx = x - wx0, lz = z - wz0;
+    if (lx < 0 || lx >= CHUNK || lz < 0 || lz >= CHUNK || y < 1 || y >= HEIGHT) return;
+    if (y > hAt(x, z) - SHAFT_GAP) return;
+    const i = blockIndex(lx, y, lz);
+    if (isFluid(data[i])) return;
+    data[i] = id;
+  };
+
+  // Зала: інтер'єр 7×7×3 з дощаною підлогою
+  for (let x = o.x - SHAFT_ROOM; x <= o.x + SHAFT_ROOM; x++) {
+    for (let z = o.z - SHAFT_ROOM; z <= o.z + SHAFT_ROOM; z++) {
+      for (let y = o.y; y <= o.y + 2; y++) cell(x, y, z, AIR);
+      cell(x, o.y - 1, z, PLANK);
+    }
+  }
+  // Скриня припасів у центрі зали
+  cell(o.x, o.y, o.z, TREASURE);
+
+  // Галереї: хід 3×3 зі стежкою з дощок і опорною рамою кожні 5 блоків
+  for (const g of shaftGalleries(gx, gz)) {
+    for (let s = SHAFT_ROOM + 1; s <= SHAFT_ROOM + g.len; s++) {
+      const axx = o.x + g.dx * s, azz = o.z + g.dz * s;
+      for (let w = -1; w <= 1; w++) {
+        const x = g.dx !== 0 ? axx : o.x + w;
+        const z = g.dx !== 0 ? o.z + w : azz;
+        for (let y = o.y; y <= o.y + 2; y++) cell(x, y, z, AIR);
+      }
+      cell(axx, o.y - 1, azz, PLANK);   // стежка по осі ходу
+      if ((s - SHAFT_ROOM) % 5 === 0) { // опорна рама: колоди + балка з дощок
+        for (const w of [-1, 1]) {
+          const x = g.dx !== 0 ? axx : o.x + w;
+          const z = g.dx !== 0 ? o.z + w : azz;
+          cell(x, o.y, z, LOG);
+          cell(x, o.y + 1, z, LOG);
+        }
+        for (let w = -1; w <= 1; w++) {
+          const x = g.dx !== 0 ? axx : o.x + w;
+          const z = g.dx !== 0 ? o.z + w : azz;
+          cell(x, o.y + 2, z, PLANK);
+        }
+      }
+    }
+  }
+}
+
 function genChunkData(cx, cz) {
   const data = new Uint8Array(CHUNK * HEIGHT * CHUNK);
   const wx0 = cx * CHUNK, wz0 = cz * CHUNK;
@@ -1355,6 +1503,9 @@ function genChunkData(cx, cz) {
       for (let dy = 1; dy <= ch; dy++) setInChunk(tx, h + dy, tz, CACTUS, true);
     }
   }
+
+  // Покинуті штольні надр (перед правками гравця, щоб ті мали останнє слово)
+  carveMineshafts(cx, cz, data);
 
   // Зміни гравця
   for (const [key, id] of edits) {
@@ -3104,6 +3255,9 @@ function updateSurvival(dt) {
     achEnvTimer = 0.4;
     if (player.pos.y < 6) unlockAch('deep');
     if (player.pos.y > 52) unlockAch('peak');
+    achEnvRuns++;
+    if (!achUnlocked.has('shaft') &&
+        mineshaftAt(player.pos.x, player.pos.y, player.pos.z)) unlockAch('shaft');
     if (player.prevInWater) unlockAch('swim');
     const b = biomeAt(Math.floor(player.pos.x), Math.floor(player.pos.z));
     unlockAch(b === BIOME.FOREST ? 'biome_forest'
@@ -3112,6 +3266,7 @@ function updateSurvival(dt) {
   }
 }
 let achEnvTimer = 0;
+let achEnvRuns = 0;
 
 // З'їсти золоте яблуко: цілком угамовує голод і добряче загоює рани.
 // Окремим кроком, бо його беруть із двох місць eatFood (аварійний запас
@@ -7286,6 +7441,41 @@ function onTreasureMined(x, y, z) {
     { radius: 0.5, speed: 4.5, upBias: 2.5, life: 1.0, size: 0.14, gravity: 6 });
 }
 
+// ===== Скриня припасів у покинутій штольні =====
+// Луут згенерованої скрині — припаси копачів минулого: руди в торбу кузні,
+// кістки й павутина — фермі та повідцю, зрідка золоте яблуко. Згенерована
+// скриня відрізняється від поставленої гравцем тим, що її нема в edits
+// (та сама перевірка, що боронить руди від «постав-вибий»).
+function onShaftChestMined(x, y, z) {
+  const gained = [];
+  const oreGain = {
+    coal: 3 + Math.floor(Math.random() * 4),
+    iron: 2 + Math.floor(Math.random() * 3),
+    gold: 1 + Math.floor(Math.random() * 2),
+    diam: Math.random() < 0.35 ? 1 : 0,
+  };
+  let oreTaken = false;
+  for (const [k, n] of Object.entries(oreGain)) {
+    const add = Math.min(n, ORE_MAX[k] - player[k]);
+    if (add > 0) { player[k] += add; oreTaken = true; gained.push(`+${add} ${ORE_GOODS[k].icon}`); }
+  }
+  if (oreTaken) updateOreHud();
+  const bones = Math.min(2 + Math.floor(Math.random() * 3), BONES_MAX - player.bones);
+  if (bones > 0) { player.bones += bones; updateBoneHud(); gained.push(`+${bones} 🦴`); }
+  const silk = Math.min(2 + Math.floor(Math.random() * 2), SILK_MAX - player.silk);
+  if (silk > 0) { player.silk += silk; updateSilkHud(); gained.push(`+${silk} 🕸`); }
+  if (Math.random() < 0.25 && player.gapple < GAPPLE_MAX) {
+    player.gapple++; updateGappleHud(); gained.push('+1 🍏');
+  }
+  sleepToast(gained.length
+    ? `📦 Припаси копачів: ${gained.join(', ')}`
+    : '📦 Скриня зі штольні — та торба вщерть повна');
+  Sound.trade();
+  spawnParticles(x + 0.5, y + 0.5, z + 0.5, new THREE.Color(0xd9a66b), 24,
+    { radius: 0.5, speed: 4, upBias: 2, life: 0.9, size: 0.13, gravity: 6 });
+  unlockAch('shaft_loot');
+}
+
 // Сторожовий тік: якщо скриню знищив не гравець (вибух динаміту, кріпера чи
 // метеорит), мапа згасає — інакше ✕ вічно вказував би на порожнє місце
 function updateTreasure(dt) {
@@ -9445,6 +9635,9 @@ function updateMining(dt, hit) {
     // Руда, поставлена гравцем із меню, лишила слід у edits — така в торбу
     // не йде (інакше «постав-вибий» друкував би сировину з повітря)
     const oreFromWorld = ORE_OF_BLOCK_ID[id] && edits.get(key) !== id;
+    // Так само й скриня: згенерована в штольні (нема в edits) — з припасами,
+    // а поставлена гравцем чи закопана мапою — ні
+    const chestFromWorld = id === TREASURE && edits.get(key) !== id;
     setBlock(x, y, z, AIR);
     validateTorches();  // міг зникнути блок-опора смолоскипа
     validateCrops();    // ... або грунт під посівом
@@ -9473,7 +9666,10 @@ function updateMining(dt, hit) {
     else if (id === GOLD) unlockAch('gold');
     else if (id === DIAMOND) unlockAch('diamond');
     else if (id === STARBLOCK) unlockAch('star');
-    else if (id === TREASURE) onTreasureMined(x, y, z);
+    else if (id === TREASURE) {
+      if (chestFromWorld) onShaftChestMined(x, y, z);
+      else onTreasureMined(x, y, z);
+    }
     if (oreFromWorld) collectOre(id);
     resetMining();
     return;
@@ -17050,6 +17246,8 @@ const ACHIEVEMENTS = [
   { id: 'taster',      icon: '⚗',  title: 'Дегустатор',         desc: 'Скуштувати всі три зілля казана' },
   { id: 'temper_heat', icon: '🌡', title: 'Білий жар',          desc: 'Розжарити алмазний клинок у джерелі лави' },
   { id: 'flame_sword', icon: '🔥', title: 'Полум\'яний клинок', desc: 'Загартувати розжарений клинок у воді' },
+  { id: 'shaft',       icon: '🏚', title: 'Покинута штольня',   desc: 'Натрапити на стару штольню в надрах' },
+  { id: 'shaft_loot',  icon: '📦', title: 'Припаси копачів',    desc: 'Забрати скриню з припасами зі штольні' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -17241,6 +17439,92 @@ window.MCDebug = {
              dist: treasureHunt.active
                ? +Math.hypot(treasureHunt.x + 0.5 - player.pos.x,
                              treasureHunt.z + 0.5 - player.pos.z).toFixed(1) : null };
+  },
+  // ===== Покинуті штольні (для тестів) =====
+  get envProbe() {
+    return {
+      timer: +achEnvTimer.toFixed(3), runs: achEnvRuns,
+      active: gameActive(), dead: player.dead,
+      sleeping, y: +player.pos.y.toFixed(2),
+      inShaft: !!mineshaftAt(player.pos.x, player.pos.y, player.pos.z),
+      has: achUnlocked.has('shaft'),
+    };
+  },
+  // Найближча штольня в радіусі r клітинок ґратки
+  nearestShaft: (r = 3) => {
+    const px = player.pos.x, pz = player.pos.z;
+    const cgx = Math.floor(px / SHAFT_GRID), cgz = Math.floor(pz / SHAFT_GRID);
+    let best = null;
+    for (let gx = cgx - r; gx <= cgx + r; gx++) {
+      for (let gz = cgz - r; gz <= cgz + r; gz++) {
+        const o = shaftOrigin(gx, gz);
+        if (!o) continue;
+        const d = Math.hypot(o.x + 0.5 - px, o.z + 0.5 - pz);
+        if (!best || d < best.dist) {
+          best = { x: o.x, y: o.y, z: o.z, gx, gz, dist: +d.toFixed(1) };
+        }
+      }
+    }
+    return best;
+  },
+  // Телепорт у залу найближчої штольні (поряд зі скринею)
+  tpToShaft: () => {
+    const s = MCDebug.nearestShaft();
+    if (!s) return 'штолень поблизу немає';
+    player.pos.set(s.x + 1.5, s.y + 0.02, s.z + 0.5);
+    player.vel.set(0, 0, 0);
+    player.fallPeakY = player.pos.y;   // телепорт — не падіння
+    return MCDebug.shaftInfo;
+  },
+  // Розкрити згенеровану скриню найближчої штольні (як від кирки)
+  digShaftChest: () => {
+    const s = MCDebug.nearestShaft();
+    if (!s) return 'штолень поблизу немає';
+    if (blockAt(s.x, s.y, s.z) !== TREASURE) return 'скрині немає (уже забрана?)';
+    setBlock(s.x, s.y, s.z, AIR);
+    onShaftChestMined(s.x, s.y, s.z);
+    return MCDebug.shaftInfo;
+  },
+  get shaftInfo() {
+    const s = MCDebug.nearestShaft();
+    return {
+      nearest: s,
+      inShaft: !!mineshaftAt(player.pos.x, player.pos.y, player.pos.z),
+      chestBlock: s ? blockAt(s.x, s.y, s.z) : null,   // 48 = TREASURE, якщо на місці
+      galleries: s ? shaftGalleries(s.gx, s.gz) : null,
+    };
+  },
+  // Перепис вокселів найближчої штольні: скільки інтер'єру вирізано,
+  // скільки дощок і колод поставлено (для тестів генерації)
+  shaftScan: () => {
+    const s = MCDebug.nearestShaft();
+    if (!s) return 'штолень поблизу немає';
+    const c = { air: 0, plank: 0, log: 0, treasure: 0, other: 0, interior: 0 };
+    const look = (x, y, z) => {
+      c.interior++;
+      const id = blockAt(x, y, z);
+      if (id === AIR) c.air++;
+      else if (id === PLANK) c.plank++;
+      else if (id === LOG) c.log++;
+      else if (id === TREASURE) c.treasure++;
+      else c.other++;
+    };
+    for (let x = s.x - SHAFT_ROOM; x <= s.x + SHAFT_ROOM; x++) {
+      for (let z = s.z - SHAFT_ROOM; z <= s.z + SHAFT_ROOM; z++) {
+        for (let y = s.y; y <= s.y + 2; y++) look(x, y, z);
+      }
+    }
+    for (const g of shaftGalleries(s.gx, s.gz)) {
+      for (let st = SHAFT_ROOM + 1; st <= SHAFT_ROOM + g.len; st++) {
+        const axx = s.x + g.dx * st, azz = s.z + g.dz * st;
+        for (let w = -1; w <= 1; w++) {
+          const x = g.dx !== 0 ? axx : s.x + w;
+          const z = g.dx !== 0 ? s.z + w : azz;
+          for (let y = s.y; y <= s.y + 2; y++) look(x, y, z);
+        }
+      }
+    }
+    return { ...c, shaft: s };
   },
   get starInfo() {
     return { meteorActive: !!meteor, meteorDelay: +meteorDelay.toFixed(1),
