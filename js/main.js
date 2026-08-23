@@ -243,6 +243,13 @@ const MILL = 62;
 // Казан — алхімія настоянок: відро води (чи дощ просто неба) плюс жменя
 // здобичі виварюються в зілля з часовою дією. ПКМ по готовому казану — випити.
 const CAULDRON = 63;
+// Натискна плита — перший механізм гри: дерев'яна плита-сутність (як рейка,
+// не воксель), що ставиться ПКМ на тверду опору й реагує на вагу. Хтось стане
+// зверху — гравець, нечисть, тварина чи вагонетка — плита клацає і вмикається:
+// відчиняє сусідні двері та хвіртки (і тримає, поки вага не зійде) та
+// підпалює динаміт упритул. Світ уперше відповідає на дію без кліку:
+// автоматичні двері двору чи пастка на нечисть складаються з наявних частин.
+const PLATE = 64;
 const FLOWER_BAG_MAX = 16;      // максимум квітів кожного виду в торбі
 // Вид квітки (0 мак / 1 кульбаба / 2 волошка): предмет, назва, пелюстки,
 // осердя й вовна, у яку вона фарбує
@@ -380,6 +387,7 @@ const BLOCK_NAMES = {
   [WOOL_BLUE]: 'Синя вовна',
   [MILL]: 'Вітряк',
   [CAULDRON]: 'Казан',
+  [PLATE]: 'Натискна плита',
 };
 
 // Яка руда з торби відповідає воксельному блоку руди
@@ -395,7 +403,7 @@ const ALL_BLOCKS = [
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
-  GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON,
+  GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
 
@@ -671,6 +679,7 @@ function saveGame() {
       cauldrons: [...cauldrons.values()].map((c) =>
         [c.x, c.y, c.z, c.state, c.kind, +c.brewT.toFixed(1), +c.rainT.toFixed(1)]),
       lightningRods: [...lightningRods.values()].map((r) => [r.x, r.y, r.z]),
+      plates: [...plates.values()].map((p) => [p.x, p.y, p.z]),
       mushrooms: [...mushrooms.values()].map((m) =>
         [m.x, m.y, m.z, m.kind, m.farmed ? 1 : 0]),
       flowers: [...flowers.values()].map((f) =>
@@ -868,6 +877,12 @@ const Sound = (() => {
         tone({ freq: 230, dur: 0.18, type: 'square', gain: 0.045, slideTo: 120 });
         noise({ dur: 0.1, gain: 0.15, type: 'lowpass', freq: 420, q: 0.8 });
       }
+    },
+    plate(on) {
+      // Клац механізму: короткий дерев'яний стук; відпускання — глухіше й нижче
+      noise({ dur: 0.05, gain: 0.14, type: 'lowpass', freq: on ? 900 : 600, q: 1 });
+      tone({ freq: on ? 320 : 240, dur: 0.07, type: 'square', gain: 0.05,
+             slideTo: on ? 390 : 170 });
     },
     jump() { tone({ freq: 260, dur: 0.16, type: 'sine', gain: 0.1, slideTo: 440 }); },
     land() { noise({ dur: 0.14, gain: 0.18, type: 'lowpass', freq: 300, q: 0.7 }); },
@@ -6934,6 +6949,11 @@ function startBreakOrAttack() {
         triggerSwing();
         return;
       }
+      if (plates.has(key)) {
+        breakPlate(key);
+        triggerSwing();
+        return;
+      }
       const crop = crops.get(key);
       if (crop) {
         harvestCrop(crop);
@@ -8067,7 +8087,7 @@ function placeTorch(hit) {
       scarecrows.has(torchKey(x, y, z)) || anvils.has(torchKey(x, y, z)) || mills.has(torchKey(x, y, z)) ||
       lightningRods.has(torchKey(x, y, z)) ||
       mushrooms.has(torchKey(x, y, z)) ||
-      flowers.has(torchKey(x, y, z))) return false;
+      flowers.has(torchKey(x, y, z)) || plates.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -8231,7 +8251,7 @@ function placeLadder(hit) {
       scarecrows.has(ladderKey(x, y, z)) || anvils.has(ladderKey(x, y, z)) || mills.has(ladderKey(x, y, z)) ||
       lightningRods.has(ladderKey(x, y, z)) ||
       mushrooms.has(ladderKey(x, y, z)) ||
-      flowers.has(ladderKey(x, y, z))) return false;
+      flowers.has(ladderKey(x, y, z)) || plates.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -8442,7 +8462,7 @@ function placeDoor(hit) {
         saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
         beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
         lightningRods.has(k) ||
-        mushrooms.has(k) || flowers.has(k)) return false;
+        mushrooms.has(k) || flowers.has(k) || plates.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -8709,7 +8729,7 @@ function fenceCellFree(x, y, z) {
          !saplings.has(k) && !signs.has(k) && !rails.has(k) && !campfires.has(k) &&
          !beehives.has(k) && !scarecrows.has(k) && !anvils.has(k) && !mills.has(k) &&
          !lightningRods.has(k) &&
-         !mushrooms.has(k) && !flowers.has(k);
+         !mushrooms.has(k) && !flowers.has(k) && !plates.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -8882,7 +8902,7 @@ function plantCrop(hit) {
       beehives.has(cropKey(x, y, z)) || scarecrows.has(cropKey(x, y, z)) ||
       anvils.has(cropKey(x, y, z)) || mills.has(cropKey(x, y, z)) || lightningRods.has(cropKey(x, y, z)) ||
       mushrooms.has(cropKey(x, y, z)) ||
-      flowers.has(cropKey(x, y, z))) return false;
+      flowers.has(cropKey(x, y, z)) || plates.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -9054,7 +9074,7 @@ function plantSapling(hit) {
       scarecrows.has(saplingKey(x, y, z)) || anvils.has(saplingKey(x, y, z)) || mills.has(saplingKey(x, y, z)) ||
       lightningRods.has(saplingKey(x, y, z)) ||
       mushrooms.has(saplingKey(x, y, z)) ||
-      flowers.has(saplingKey(x, y, z))) return false;
+      flowers.has(saplingKey(x, y, z)) || plates.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -9218,7 +9238,7 @@ function placeBed(hit) {
       scarecrows.has(bedKey(x, y, z)) || anvils.has(bedKey(x, y, z)) || mills.has(bedKey(x, y, z)) ||
       lightningRods.has(bedKey(x, y, z)) ||
       mushrooms.has(bedKey(x, y, z)) ||
-      flowers.has(bedKey(x, y, z))) return false;
+      flowers.has(bedKey(x, y, z)) || plates.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -10020,7 +10040,7 @@ function placeRail(hit) {
   if (rails.has(k) || torches.has(k) || crops.has(k) || beds.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) || mushrooms.has(k) ||
-      flowers.has(k) ||
+      flowers.has(k) || plates.has(k) ||
       lightningRods.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
@@ -10369,6 +10389,213 @@ if (savedGame && Array.isArray(savedGame.carts)) {
 }
 
 // ============================================================
+// Натискні плити: перший механізм — світ реагує на вагу
+// ============================================================
+// Плита — сутність у клітинці (як рейка, воксельну сітку не змінює):
+// дощаний обідок і кришка, що просідає під вагою. Стає хтось зверху —
+// гравець, нечисть, тварина чи вагонетка — плита клацає й вмикається:
+// відчиняє сусідні зачинені двері та хвіртки й тримає їх, поки вага не
+// зійде (тоді сама дочиняє, якщо прохід вільний і їх не тримає інша
+// плита); динаміт упритул займається від натискання — пастка готова.
+// Двері, відчинені рукою, плита не чіпає. ЛКМ — розібрати.
+const plates = new Map();              // "x,y,z" -> { x, y, z, group, top, pressed, press, offT, held }
+const PLATE_MAX = 256;                 // межа, щоб збереження не розросталося
+const PLATE_LINK_R = 1;                // радіус (Чебишева) до дверей/хвірток
+const PLATE_OFF_DELAY = 0.35;          // затримка відпускання, с (без брязкоту)
+const PLATE_COLOR = new THREE.Color(0xb08d57);
+
+// Спільні ресурси моделі (геометрії/матеріали не дублюються на кожну плиту)
+const PLATE_RIM_GEO = new THREE.BoxGeometry(0.84, 0.05, 0.84);
+const PLATE_TOP_GEO = new THREE.BoxGeometry(0.68, 0.045, 0.68);
+const PLATE_RIM_MAT = new THREE.MeshLambertMaterial({ color: 0x8a6a3f });
+const PLATE_TOP_MAT = new THREE.MeshLambertMaterial({ color: 0xb08d57 });
+
+const plateKey = (x, y, z) => x + ',' + y + ',' + z;
+
+// Модель: дощаний обідок і робоча кришка, що просідає під вагою
+function makePlateModel() {
+  const g = new THREE.Group();
+  const rim = new THREE.Mesh(PLATE_RIM_GEO, PLATE_RIM_MAT);
+  rim.position.y = 0.025;
+  g.add(rim);
+  const top = new THREE.Mesh(PLATE_TOP_GEO, PLATE_TOP_MAT);
+  top.position.y = 0.07;
+  g.add(top);
+  return { g, top };
+}
+
+function addPlate(x, y, z) {
+  const key = plateKey(x, y, z);
+  if (plates.has(key) || plates.size >= PLATE_MAX) return false;
+  const { g, top } = makePlateModel();
+  g.position.set(x + 0.5, y, z + 0.5);
+  scene.add(g);
+  plates.set(key, { x, y, z, group: g, top,
+                    pressed: false, press: 0, offT: 0, held: new Set() });
+  return true;
+}
+
+function removePlate(key) {
+  const p = plates.get(key);
+  if (!p) return;
+  scene.remove(p.group);   // геометрії/матеріали спільні — не dispose
+  plates.delete(key);
+}
+
+// Розібрати плиту ударом (чи втратою опори): тріски й стук; відчинене нею —
+// спробувати дочинити наостанок
+function breakPlate(key) {
+  const p = plates.get(key);
+  if (!p) return;
+  p.pressed = false;
+  retryReleasePlate(p);
+  spawnParticles(p.x + 0.5, p.y + 0.12, p.z + 0.5, PLATE_COLOR, 6,
+    { radius: 0.3, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 10 });
+  Sound.breakBlock(PLANK);
+  removePlate(key);
+}
+
+// Поставити плиту в клітинку перед прицілом (лише на тверду підлогу)
+function placePlate(hit) {
+  const [x, y, z] = hit.prev;
+  const k = plateKey(x, y, z);
+  if (blockAt(x, y, z) !== AIR || plates.has(k) || torches.has(k) ||
+      ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
+      saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
+      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
+      cauldrons.has(k) || lightningRods.has(k) || crops.has(k) || beds.has(k) ||
+      mushrooms.has(k) || flowers.has(k)) return false;
+  if (!isSolid(blockAt(x, y - 1, z))) return false;
+  if (!addPlate(x, y, z)) return false;
+  Sound.place(PLANK);
+  unlockAch('plate');
+  spawnParticles(x + 0.5, y + 0.12, z + 0.5, PLATE_COLOR, 6,
+    { radius: 0.3, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
+  return true;
+}
+
+// Чи стоїть сутність із позицією pos (ноги) на плиті: центр у клітинці плити,
+// ноги — на рівні її кришки
+function standsOnPlate(p, pos) {
+  return Math.floor(pos.x) === p.x && Math.floor(pos.z) === p.z &&
+         pos.y > p.y - 0.35 && pos.y < p.y + 0.7;
+}
+
+// Хто тисне на плиту? Нечисть рахуємо окремо — вона вмикає пастку
+function weighPlate(p) {
+  if (standsOnPlate(p, player.pos)) return 'player';
+  for (const m of mobs) {
+    if (m.health > 0 && standsOnPlate(p, m.pos)) return 'mob';
+  }
+  for (const a of animals) {
+    if (standsOnPlate(p, a.pos)) return 'animal';
+  }
+  for (const c of carts) {
+    if (standsOnPlate(p, c.pos)) return 'cart';
+  }
+  return null;
+}
+
+// Двері та хвіртки поруч із плитою (по горизонталі в радіусі PLATE_LINK_R,
+// по вертикалі — на рівні плити чи сходинку вище/нижче)
+function plateNeighbours(p) {
+  const list = [];
+  for (const d of doors.values()) {
+    if (Math.abs(d.x - p.x) <= PLATE_LINK_R && Math.abs(d.z - p.z) <= PLATE_LINK_R &&
+        Math.abs(d.y - p.y) <= 1) {
+      list.push({ kind: 'door', e: d, tag: 'door:' + doorKey(d.x, d.y, d.z) });
+    }
+  }
+  for (const g of gates.values()) {
+    if (Math.abs(g.x - p.x) <= PLATE_LINK_R && Math.abs(g.z - p.z) <= PLATE_LINK_R &&
+        Math.abs(g.y - p.y) <= 1) {
+      list.push({ kind: 'gate', e: g, tag: 'gate:' + fenceKey(g.x, g.y, g.z) });
+    }
+  }
+  return list;
+}
+
+// Натискання: відчинити сусідні зачинені двері/хвіртки й запам'ятати їх
+// (відчинені рукою — не чіпати); динаміт упритул — підпалити
+function pressPlate(p, by) {
+  p.pressed = true;
+  Sound.plate(true);
+  if (by === 'mob') unlockAch('trap');
+  for (const n of plateNeighbours(p)) {
+    if (!n.e.open && (n.kind === 'door' ? toggleDoor(n.e) : toggleGate(n.e))) {
+      p.held.add(n.tag);
+    }
+  }
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        if (blockAt(p.x + dx, p.y + dy, p.z + dz) === TNT) {
+          igniteTnt(p.x + dx, p.y + dy, p.z + dz, 0.9 + Math.random() * 0.4);
+        }
+      }
+    }
+  }
+}
+
+// Чи тримає ці двері/хвіртку інша натиснута плита
+function heldByOtherPlate(tag, self) {
+  for (const q of plates.values()) {
+    if (q !== self && q.pressed && q.held.has(tag)) return true;
+  }
+  return false;
+}
+
+// Дочинити «борги» відпущеної плити: зачинити відчинене нею, щойно прохід
+// вільний (toggleDoor/toggleGate не зачиняють крізь істоту) і його не тримає
+// інша плита; що не вдалося — лишається в held до наступного кадру
+function retryReleasePlate(p) {
+  for (const tag of [...p.held]) {
+    const sep = tag.indexOf(':');
+    const kind = tag.slice(0, sep), key = tag.slice(sep + 1);
+    const e = kind === 'door' ? doors.get(key) : gates.get(key);
+    if (!e || !e.open) { p.held.delete(tag); continue; }
+    if (heldByOtherPlate(tag, p)) { p.held.delete(tag); continue; }
+    if (kind === 'door' ? toggleDoor(e) : toggleGate(e)) p.held.delete(tag);
+  }
+}
+
+// Тик плит: перевірити опору, зважити вагу, клацнути краями натискання
+// та просісти/підвестися кришкою
+function updatePlates(dt) {
+  if (plates.size === 0) return;
+  for (const [key, p] of plates) {
+    // Блок зайняв клітинку плити або зникла опора — розібрати
+    if (isSolid(blockAt(p.x, p.y, p.z)) || !isSolid(blockAt(p.x, p.y - 1, p.z))) {
+      breakPlate(key);
+      continue;
+    }
+    const by = weighPlate(p);
+    if (by) {
+      p.offT = PLATE_OFF_DELAY;
+      if (!p.pressed) pressPlate(p, by);
+    } else if (p.pressed) {
+      p.offT -= dt;
+      if (p.offT <= 0) {
+        p.pressed = false;
+        Sound.plate(false);
+      }
+    }
+    if (!p.pressed && p.held.size > 0) retryReleasePlate(p);
+    // Кришка просідає під вагою і підводиться слідом
+    const target = p.pressed ? 1 : 0;
+    p.press += (target - p.press) * Math.min(1, dt * 14);
+    p.top.position.y = 0.07 - p.press * 0.035;
+  }
+}
+
+// Відновити збережені плити (сумісно зі старими сейвами)
+if (savedGame && Array.isArray(savedGame.plates)) {
+  for (const e of savedGame.plates) {
+    if (Array.isArray(e) && e.length >= 3) addPlate(e[0], e[1], e[2]);
+  }
+}
+
+// ============================================================
 // Багаття: вогнище для приготування їжі
 // ============================================================
 // Багаття — сутність у клітинці (як смолоскип, воксельну сітку не змінює):
@@ -10591,7 +10818,7 @@ function placeCampfire(hit) {
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
       rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
-      mushrooms.has(k) || flowers.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k) || plates.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
   Sound.torch(0.2);
@@ -11040,7 +11267,7 @@ function placeBeehive(hit) {
       gates.has(k) || crops.has(k) || beds.has(k) || saplings.has(k) ||
       signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
-      mushrooms.has(k) || flowers.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k) || plates.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addBeehive(x, y, z)) return false;
   Sound.place(PLANK);
@@ -11236,7 +11463,7 @@ function placeScarecrow(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
-      mushrooms.has(k) || flowers.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k) || plates.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addScarecrow(x, y, z)) return false;
   Sound.place(PLANK);
@@ -11374,7 +11601,8 @@ function placeLightningRod(hit) {
       beehives.has(k) || campfires.has(k) || torches.has(k) || ladders.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
-      anvils.has(k) || mills.has(k) || mushrooms.has(k) || flowers.has(k)) return false;
+      anvils.has(k) || mills.has(k) || mushrooms.has(k) || flowers.has(k) ||
+      plates.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!Object.entries(LROD_COST).every(([ore, n]) => (player[ore] || 0) >= n)) {
     flashItemName('Потрібно ⛓ 2 × залізо + 🟡 1 × золото з торби');
@@ -11624,7 +11852,7 @@ function placeAnvil(hit) {
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) ||
-      mushrooms.has(k) || flowers.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k) || plates.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addAnvil(x, y, z)) return false;
   Sound.place(STONE);
@@ -12047,7 +12275,8 @@ function placeMill(hit) {
       torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) ||
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
-      lightningRods.has(k) || mushrooms.has(k) || flowers.has(k)) return false;
+      lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
+      plates.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addMill(x, y, z)) return false;
   Sound.place(PLANK);
@@ -12261,7 +12490,8 @@ function placeCauldron(hit) {
       torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) ||
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
-      lightningRods.has(k) || mushrooms.has(k) || flowers.has(k)) return false;
+      lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
+      plates.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCauldron(x, y, z)) return false;
   Sound.place(STONE);
@@ -13460,7 +13690,7 @@ const flowerSupportable = (id, planted) => id === GRASS || (planted && id === DI
 // Клітинка вільна для квітки: повітря на ґрунті, без інших сутностей
 function flowerCellFree(x, y, z, planted = false) {
   const k = flowerKey(x, y, z);
-  if (flowers.has(k) || mushrooms.has(k) || torches.has(k) || crops.has(k) ||
+  if (flowers.has(k) || mushrooms.has(k) || plates.has(k) || torches.has(k) || crops.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       campfires.has(k) || beehives.has(k) || scarecrows.has(k) ||
       anvils.has(k) || mills.has(k) || beds.has(k) || lightningRods.has(k) || fences.has(k) ||
@@ -14013,6 +14243,12 @@ function placeBlock() {
   // Рейки — сутність на твердій опорі, сама з'єднується із сусідніми рейками
   if (id === RAIL) {
     placeRail(hit);
+    return;
+  }
+
+  // Натискна плита — механізм на твердій підлозі: реагує на вагу зверху
+  if (id === PLATE) {
+    placePlate(hit);
     return;
   }
 
@@ -16012,6 +16248,20 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(3, 4, 10, 1);
     return;
   }
+  if (id === PLATE) {
+    // Процедурна іконка натискної плити: тінь, дощаний обідок і кришка
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#6b4a2b';                 // тінь під плитою
+    ctx.fillRect(2, 12, 12, 2);
+    ctx.fillStyle = '#8a6a3f';                 // дощаний обідок
+    ctx.fillRect(2, 10, 12, 3);
+    ctx.fillStyle = '#b08d57';                 // робоча кришка
+    ctx.fillRect(4, 8, 8, 3);
+    ctx.fillStyle = '#caa36b';                 // відблиск кришки
+    ctx.fillRect(4, 8, 8, 1);
+    return;
+  }
   if (id === MILL) {
     // Процедурна іконка вітряка: кам'яний низ, дощана вежа й хрест крил
     const ctx = canvas.getContext('2d');
@@ -17248,6 +17498,8 @@ const ACHIEVEMENTS = [
   { id: 'flame_sword', icon: '🔥', title: 'Полум\'яний клинок', desc: 'Загартувати розжарений клинок у воді' },
   { id: 'shaft',       icon: '🏚', title: 'Покинута штольня',   desc: 'Натрапити на стару штольню в надрах' },
   { id: 'shaft_loot',  icon: '📦', title: 'Припаси копачів',    desc: 'Забрати скриню з припасами зі штольні' },
+  { id: 'plate',       icon: '⚙',  title: 'Механік',            desc: 'Поставити натискну плиту' },
+  { id: 'trap',        icon: '🪤', title: 'Пастка!',            desc: 'Нечисть сама наступила на твою плиту' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -19292,6 +19544,15 @@ window.MCDebug = {
   get bag() { return { food: player.food, cooked: player.cooked, eggs: player.eggs }; },
   // Вітряк і зерновий ланцюжок (для тестів)
   giveMill: () => { assignBlockToSlot(MILL); return BLOCK_NAMES[MILL]; },
+  // Натискні плити (для тестів)
+  givePlate: () => { assignBlockToSlot(PLATE); return BLOCK_NAMES[PLATE]; },
+  get plateInfo() {
+    return [...plates.values()].map((p) =>
+      ({ x: p.x, y: p.y, z: p.z, pressed: p.pressed, held: [...p.held] }));
+  },
+  placePlateAt: (x, y, z) => placePlate({ prev: [x, y, z] }),
+  placeDoorAt: (x, y, z, dx = 1, dz = 0) => addDoor(x, y, z, dx, dz),
+  placeGateAt: (x, y, z, dx = 1, dz = 0) => addGate(x, y, z, dx, dz),
   giveWheat: (n = 6) => {
     player.wheat = Math.min(WHEAT_MAX, player.wheat + n);
     updateGrainHud();
@@ -19464,6 +19725,7 @@ function animate() {
     updateFlowers(dt);
     updateDoors(dt);
     updateGates(dt);
+    updatePlates(dt);
     if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
     updateArrows(dt);
     updateGroundEggs(dt);
