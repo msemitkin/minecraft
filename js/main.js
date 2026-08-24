@@ -250,6 +250,21 @@ const CAULDRON = 63;
 // підпалює динаміт упритул. Світ уперше відповідає на дію без кліку:
 // автоматичні двері двору чи пастка на нечисть складаються з наявних частин.
 const PLATE = 64;
+
+// Гарбуз, ліхтар Джека та гарбузова маска — перший стелс гри. Гарбузи ростуть
+// на луках рівнин; ПКМ по гарбузу вирізає ліхтар Джека — він світить уночі
+// власним вогнем і відлякує нечисть, як смолоскип. Гарбузова маска (меню Tab)
+// вдягається ПКМ: нечисть приймає гравця за свого й помічає лише впритул,
+// але маска звужує огляд. Ватажка облоги не обдуриш; зачеплена ударом
+// нечисть пам'ятає кривдника й більше не ведеться на маску.
+const PUMPKIN = 65;             // блок гарбуза (воксель): росте на рівнинах
+const JACK = 66;                // ліхтар Джека: лише вирізається з гарбуза, не з меню
+const MASK = 67;                // гарбузова маска: предмет-перевдягання
+const MASK_SEE_R = 6;           // радіус, з якого нечисть бачить гравця в масці (звично 26)
+const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
+const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
+const jackCells = new Set();    // "x,y,z" — клітинки ліхтарів Джека (реєстр, як зоряний камінь)
+
 const FLOWER_BAG_MAX = 16;      // максимум квітів кожного виду в торбі
 // Вид квітки (0 мак / 1 кульбаба / 2 волошка): предмет, назва, пелюстки,
 // осердя й вовна, у яку вона фарбує
@@ -388,6 +403,7 @@ const BLOCK_NAMES = {
   [MILL]: 'Вітряк',
   [CAULDRON]: 'Казан',
   [PLATE]: 'Натискна плита',
+  [PUMPKIN]: 'Гарбуз', [JACK]: 'Ліхтар Джека', [MASK]: 'Гарбузова маска',
 };
 
 // Яка руда з торби відповідає воксельному блоку руди
@@ -403,7 +419,7 @@ const ALL_BLOCKS = [
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
-  GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE,
+  GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, PUMPKIN, MASK,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
 
@@ -440,6 +456,7 @@ const BLOCK_HARDNESS = {
   [SNOW]: 0.4, [CACTUS]: 0.5, [GRAVEL]: 0.7, [GLASS]: 0.35, [WOOL]: 0.45,
   [WOOL_RED]: 0.45, [WOOL_YELLOW]: 0.45, [WOOL_BLUE]: 0.45,
   [STARBLOCK]: 3.0, [TREASURE]: 1.2,
+  [PUMPKIN]: 0.5, [JACK]: 0.5,
 };
 const DEFAULT_HARDNESS = 0.6;
 
@@ -515,6 +532,10 @@ const treeAt = (x, z) => ihash(x + 39163, z - 21577) < TREE_DENSITY[biomeAt(x, z
 // Кактус: поодинокі стовпи 1–3 блоки лише на сухій поверхні пустелі.
 const cactusAt = (x, z) => biomeAt(x, z) === BIOME.DESERT &&
   ihash(x + 14771, z - 50261) < 0.020;
+
+// Гарбуз: поодинокі плоди на трав'янистих луках рівнин (не під деревом).
+const pumpkinAt = (x, z) => biomeAt(x, z) === BIOME.PLAINS &&
+  ihash(x - 33629, z + 47837) < 0.006 && !treeAt(x, z);
 
 // ===== Печери: 3D-шум вирізає тунелі =====
 function ihash3(x, y, z) {
@@ -642,6 +663,7 @@ function saveGame() {
         shieldTier: player.shieldTier,
         armorTier: player.armorTier,
         armorHp: player.armorHp,
+        masked: player.masked ? 1 : 0,
         flying: player.flying,
         effNight: +player.effNight.toFixed(1),
         effSpeed: +player.effSpeed.toFixed(1),
@@ -904,6 +926,17 @@ const Sound = (() => {
     torch(gain = 0.12) {
       noise({ dur: 0.12, gain, type: 'highpass', freq: 1900, q: 0.6, attack: 0.002 });
       noise({ dur: 0.07, gain: gain * 0.7, type: 'bandpass', freq: 900, q: 0.8 });
+    },
+    // Різьблення гарбуза: соковитий скрипучий надріз
+    carve() {
+      noise({ dur: 0.1, gain: 0.15, type: 'bandpass', freq: 680, q: 2.4 });
+      tone({ freq: 320, dur: 0.14, type: 'square', gain: 0.05, slideTo: 170 });
+    },
+    // Гарбузова маска: глухе «надів» на голову / світліше «зняв»
+    mask(on) {
+      noise({ dur: 0.08, gain: 0.12, type: 'lowpass', freq: on ? 700 : 520, q: 0.8 });
+      tone({ freq: on ? 210 : 260, dur: 0.12, type: 'sine', gain: 0.07,
+        slideTo: on ? 120 : 330 });
     },
     // Лава: глухе булькотливе гудіння (фон поблизу озера)
     lava(gain = 0.05) {
@@ -1519,6 +1552,16 @@ function genChunkData(cx, cz) {
     }
   }
 
+  // Гарбузи: поодинокі плоди на траві рівнин (та сама схема, що кактуси)
+  for (let tx = wx0; tx < wx0 + CHUNK; tx++) {
+    for (let tz = wz0; tz < wz0 + CHUNK; tz++) {
+      const h = heightAt(tx, tz);
+      if (h <= SEA + 1 || !pumpkinAt(tx, tz)) continue;
+      if (caveAt(tx, h, tz, h)) continue; // не ставити над входом у печеру
+      setInChunk(tx, h + 1, tz, PUMPKIN, true);
+    }
+  }
+
   // Покинуті штольні надр (перед правками гравця, щоб ті мали останнє слово)
   carveMineshafts(cx, cz, data);
 
@@ -1560,6 +1603,9 @@ function setBlock(wx, wy, wz, id) {
   // Реєстр зоряного каменю: світло та відлякування нечисті йдуть від клітинок
   if (id === STARBLOCK) starCells.add(editKey);
   else starCells.delete(editKey);
+  // Реєстр ліхтарів Джека: відлякування нечисті йде від клітинок
+  if (id === JACK) jackCells.add(editKey);
+  else jackCells.delete(editKey);
   dirtyChunks.add(chunkKey(cx, cz));
   if (lx === 0) dirtyChunks.add(chunkKey(cx - 1, cz));
   if (lx === CHUNK - 1) dirtyChunks.add(chunkKey(cx + 1, cz));
@@ -1754,7 +1800,7 @@ function processLavaQueue() {
 // ============================================================
 // Текстурний атлас (малюється на canvas, без зовнішніх файлів)
 // ============================================================
-const TILE = 16, ATLAS_COLS = 4, ATLAS_ROWS = 7;
+const TILE = 16, ATLAS_COLS = 4, ATLAS_ROWS = 8;
 let atlasCanvas;
 
 function makeAtlas() {
@@ -1926,6 +1972,25 @@ function makeAtlas() {
     dyedWool(27, [96, 126, 196], [72, 100, 168], [128, 156, 218]);   // 27 синя вовна
   }
 
+  // Гарбуз: соковитий помаранчевий бік із темнішими ребрами
+  paint(28, (x) => (x % 4 === 1) ? vary(198, 96, 26, 8) : vary(228, 132, 38, 12)); // 28 гарбуз (бік)
+
+  // Зріз гарбуза: ті самі ребра по краях і зелений хвостик у центрі
+  paint(29, (x, y) => (x >= 7 && x <= 8 && y >= 7 && y <= 8)
+    ? vary(92, 122, 48, 8)
+    : (x % 4 === 1 || y % 4 === 1) ? vary(198, 96, 26, 8) : vary(228, 132, 38, 12)); // 29 гарбуз (зріз)
+
+  // Ліхтар Джека: вирізане обличчя — трикутні очі та зубата усмішка сяють
+  // зсередини теплим вогнем (грань рендериться завжди яскравою)
+  paint(30, (x, y) => {
+    const eye = (cx) => y >= 4 && y <= 6 && Math.abs(x - cx) <= (y - 4);
+    const mouth = (y === 10 && x >= 4 && x <= 11) ||
+                  (y === 11 && x >= 3 && x <= 12) ||
+                  (y === 12 && x >= 4 && x <= 11 && x % 3 !== 0);
+    if (eye(4) || eye(11) || mouth) return vary(255, 214, 92, 10);
+    return (x % 4 === 1) ? vary(198, 96, 26, 8) : vary(228, 132, 38, 12);
+  });                                                                              // 30 ліхтар Джека
+
   const tex = new THREE.CanvasTexture(atlasCanvas);
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
@@ -1965,6 +2030,8 @@ const BLOCK_TILES = {
   [WOOL_RED]:    { top: 25, bottom: 25, side: 25 },
   [WOOL_YELLOW]: { top: 26, bottom: 26, side: 26 },
   [WOOL_BLUE]:   { top: 27, bottom: 27, side: 27 },
+  [PUMPKIN]:     { top: 29, bottom: 29, side: 28 },
+  [JACK]:        { top: 29, bottom: 29, side: 30 },
 };
 
 function tileUV(tile) {
@@ -2019,7 +2086,9 @@ function buildChunkMesh(cx, cz, scene, materials) {
               : nb === AIR || isFluid(nb) || nb === GLASS;
           if (!visible) continue;
 
-          const buf = idLava ? lava : idWater ? water : idGlass ? glass : solid;
+          // Ліхтар Джека йде в буфер лави (MeshBasicMaterial без освітлення):
+          // вирізане обличчя сяє власним вогнем навіть глупої ночі
+          const buf = idLava || id === JACK ? lava : idWater ? water : idGlass ? glass : solid;
           const { u0, u1, v0, v1 } = tileUV(BLOCK_TILES[id][face]);
           const uvCorners = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
           const base = buf.pos.length / 3;
@@ -2694,6 +2763,7 @@ const player = {
   armorTier: 0,         // рівень обладунку (0..3): 0 — без захисту, кується на ковадлі
   armorHp: 0,           // міцність обладунку: -1 за прийнятий удар, 0 — розбитий
   blocking: false,      // стійка оборони: щит піднято (утримується C чи кнопка 🛡)
+  masked: false,        // гарбузова маска вдягнена: нечисть бачить лише впритул
   starveTick: 0,        // таймер шкоди від голоду
   eatTimer: 0,          // перезарядка поїдання
   dead: false,
@@ -2821,6 +2891,7 @@ if (savedGame && savedGame.player) {
       : ARMOR_TIERS[player.armorTier].hp;
   }
   player.flying = !!p.flying;
+  player.masked = p.masked === 1;   // оверлей маски наздожене updateMaskOverlay() нижче
   // Дія зіль переживає перезавантаження (недопиті секунди — чесно гравцеві)
   if (Number.isFinite(p.effNight)) player.effNight = Math.max(0, Math.min(300, p.effNight));
   if (Number.isFinite(p.effSpeed)) player.effSpeed = Math.max(0, Math.min(300, p.effSpeed));
@@ -6282,6 +6353,8 @@ function trySpawnMob() {
   const guardR = bloodNight ? BLOOD_GUARD_R : 7;
   if (torchNear(x + 0.5, h + 1, z + 0.5, guardR)) return;
   if (campfireNear(x + 0.5, h + 1, z + 0.5, guardR)) return;
+  // Вогняна усмішка ліхтаря Джека тримає нечисть трохи далі за смолоскип
+  if (jackNear(x + 0.5, h + 1, z + 0.5, bloodNight ? JACK_BLOOD_GUARD_R : JACK_GUARD_R)) return;
   // Зоряний камінь світить далі за смолоскип — і навіть кривавої ночі тримає
   // нечисть трохи далі, ніж звичайний вогонь
   if (starNear(x + 0.5, h + 1, z + 0.5, bloodNight ? STAR_BLOOD_GUARD_R : STAR_GUARD_R)) return;
@@ -6418,9 +6491,18 @@ function updateMob(m, dt) {
   const dz = player.pos.z - m.pos.z;
   const distH = Math.hypot(dx, dz);
   const hostile = !isSpider || dayNightSun <= 0.15 || m.angry;
+  // Гарбузова маска: нечисть приймає гравця за свого й помічає лише впритул.
+  // Ватажка облоги не обдуриш, а зачеплена ударом нечисть (angry) пам'ятає
+  // кривдника й полює, наче маски й немає.
+  const fooled = player.masked && !isWarlord && !m.angry;
   // Ватажок чує гравця вдвічі далі — від нього не сховатися за пагорбом
-  const chase = distH < (isWarlord ? 48 : 26) && !player.dead && hostile && !curing;
+  const chase = distH < (isWarlord ? 48 : fooled ? MASK_SEE_R : 26) &&
+    !player.dead && hostile && !curing;
   if (chase) m.targetYaw = Math.atan2(-dx, -dz); // дивиться в -Z
+
+  // Прокрастися в масці впритул до нечисті, що полювала б, — і лишитися
+  // непоміченим: досягнення стелсу
+  if (fooled && hostile && !chase && !curing && distH < 4 && !player.dead) unlockAch('sneak');
 
   // Нейтральний павук неквапом блукає, час від часу міняючи напрямок
   let wander = false;
@@ -6830,6 +6912,9 @@ function damageEntity(entity, isAnimal, dmg, kx, kz, kup) {
       Sound.mobHit();
     }
   } else {
+    // Удар зриває облуду: зачеплена нечисть пам'ятає кривдника — гарбузова
+    // маска її більше не дурить (павук саме так стає денним мисливцем)
+    entity.angry = true;
     Sound.mobHit();
   }
 }
@@ -14068,9 +14153,41 @@ function updateTemper(dt) {
   }
 }
 
+// ============================================================
+// Гарбуз, ліхтар Джека та гарбузова маска: стелс
+// ============================================================
+const maskVignetteEl = document.getElementById('mask-vignette');
+const PUMPKIN_FLESH_COLOR = new THREE.Color(0xe8973a);
+
+function updateMaskOverlay() {
+  if (maskVignetteEl) maskVignetteEl.style.opacity = player.masked ? 1 : 0;
+}
+updateMaskOverlay();   // відновлений сейв міг лишити маску вдягненою
+
+function toggleMask() {
+  player.masked = !player.masked;
+  updateMaskOverlay();
+  Sound.mask(player.masked);
+  flashItemName(player.masked ? 'Гарбузова маска вдягнена' : 'Гарбузова маска знята');
+  if (player.masked) unlockAch('mask');
+  saveGame();
+}
+
+// ПКМ по гарбузу: вирізати ліхтар Джека — бризки м'якоті, скрип ножа
+function carvePumpkin(x, y, z) {
+  setBlock(x, y, z, JACK);
+  Sound.carve();
+  spawnParticles(x + 0.5, y + 0.5, z + 0.5, PUMPKIN_FLESH_COLOR, 10,
+    { radius: 0.45, speed: 1.8, upBias: 0.6, life: 0.5, size: 0.11, gravity: 8 });
+  unlockAch('carve');
+}
+
 function placeBlock() {
   if (player.blocking) return;             // щит займає руки
   triggerSwing();
+
+  // Гарбузова маска в руці (ПКМ) → вдягнути чи зняти, приціл не потрібен
+  if (hotbar[selectedSlot] === MASK) { toggleMask(); return; }
 
   // Човен поряд (ПКМ) → сісти в нього, з будь-яким предметом у руці. Робимо це
   // до raycast, бо над відкритою водою промінь може не знайти твердого блока.
@@ -14134,6 +14251,12 @@ function placeBlock() {
 
   const hit = raycastBlock();
   if (!hit || !hit.prev) return;
+
+  // Гарбуз у прицілі (ПКМ) → вирізати ліхтар Джека, з будь-яким предметом у руці
+  if (blockAt(hit.block[0], hit.block[1], hit.block[2]) === PUMPKIN) {
+    carvePumpkin(hit.block[0], hit.block[1], hit.block[2]);
+    return;
+  }
 
   // Табличка в прицілі (ПКМ) → редагувати напис, з будь-яким предметом у руці
   if (signs.size > 0) {
@@ -14873,8 +14996,22 @@ let meteorDelay = 0;              // секунд до появи метеори
 let meteor = null;                // активний метеорит { pos, vel, group, light }
 let meteorsFallen = 0;            // лічильник для дебагу
 
-// Відновити реєстр зоряного каменю зі збережених правок світу
-for (const [k, id] of edits) if (id === STARBLOCK) starCells.add(k);
+// Відновити реєстри зоряного каменю та ліхтарів Джека зі збережених правок світу
+for (const [k, id] of edits) {
+  if (id === STARBLOCK) starCells.add(k);
+  if (id === JACK) jackCells.add(k);
+}
+
+// Чи є ліхтар Джека в радіусі r від точки (реєстр малий — простий перебір)
+function jackNear(x, y, z, r) {
+  const r2 = r * r;
+  for (const k of jackCells) {
+    const p = k.split(',');
+    const dx = +p[0] + 0.5 - x, dy = +p[1] + 0.5 - y, dz = +p[2] + 0.5 - z;
+    if (dx * dx + dy * dy + dz * dz <= r2) return true;
+  }
+  return false;
+}
 
 // Чи є зоряний камінь у радіусі r від точки (реєстр малий — простий перебір)
 function starNear(x, y, z, r) {
@@ -16652,6 +16789,24 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(4, 6, 6, 1);
     return;
   }
+  if (id === MASK) {
+    // Процедурна іконка гарбузової маски: гарбуз із прорізами очей і усмішки
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#e28224';
+    ctx.fillRect(2, 3, 12, 11);                   // гарбуз
+    ctx.fillStyle = '#c46018';
+    ctx.fillRect(5, 3, 1, 11);                    // ребра
+    ctx.fillRect(10, 3, 1, 11);
+    ctx.fillStyle = '#5c7a2a';
+    ctx.fillRect(7, 1, 2, 2);                     // хвостик
+    ctx.fillStyle = '#2b1608';
+    ctx.fillRect(4, 6, 3, 2);                     // прорізи очей
+    ctx.fillRect(9, 6, 3, 2);
+    ctx.fillRect(4, 10, 8, 1);                    // зубата усмішка
+    ctx.fillRect(6, 11, 4, 1);
+    return;
+  }
   const tile = BLOCK_TILES[id].side;
   canvas.getContext('2d').drawImage(
     atlasCanvas,
@@ -17500,6 +17655,9 @@ const ACHIEVEMENTS = [
   { id: 'shaft_loot',  icon: '📦', title: 'Припаси копачів',    desc: 'Забрати скриню з припасами зі штольні' },
   { id: 'plate',       icon: '⚙',  title: 'Механік',            desc: 'Поставити натискну плиту' },
   { id: 'trap',        icon: '🪤', title: 'Пастка!',            desc: 'Нечисть сама наступила на твою плиту' },
+  { id: 'carve',       icon: '🎃', title: 'Різьбяр',            desc: 'Вирізати ліхтар Джека з гарбуза' },
+  { id: 'mask',        icon: '🎭', title: 'Маскарад',           desc: 'Вдягнути гарбузову маску' },
+  { id: 'sneak',       icon: '🥷', title: 'Свій серед нечисті', desc: 'У масці прокрастися впритул до нечисті непоміченим' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -19546,6 +19704,40 @@ window.MCDebug = {
   giveMill: () => { assignBlockToSlot(MILL); return BLOCK_NAMES[MILL]; },
   // Натискні плити (для тестів)
   givePlate: () => { assignBlockToSlot(PLATE); return BLOCK_NAMES[PLATE]; },
+  givePumpkin: () => { assignBlockToSlot(PUMPKIN); return BLOCK_NAMES[PUMPKIN]; },
+  giveMask: () => { assignBlockToSlot(MASK); return BLOCK_NAMES[MASK]; },
+  wearMask: () => { toggleMask(); return MCDebug.maskInfo; },
+  carveAt: (x, y, z) => {
+    if (blockAt(x, y, z) !== PUMPKIN) setBlock(x, y, z, PUMPKIN);
+    carvePumpkin(x, y, z);
+    return MCDebug.maskInfo;
+  },
+  nearestPumpkin: (r = 96) => {
+    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+    let best = null, bd = Infinity;
+    for (let x = px - r; x <= px + r; x++) {
+      for (let z = pz - r; z <= pz + r; z++) {
+        if (!pumpkinAt(x, z)) continue;
+        const h = heightAt(x, z);
+        if (h <= SEA + 1) continue;
+        const d = (x - px) * (x - px) + (z - pz) * (z - pz);
+        if (d < bd) { bd = d; best = [x, h + 1, z]; }
+      }
+    }
+    return best;
+  },
+  get maskInfo() {
+    return { masked: player.masked, jacks: jackCells.size,
+             angryMobs: mobs.filter((m) => m.angry).length, mobs: mobs.length };
+  },
+  get playerPos() {
+    return { x: player.pos.x, y: player.pos.y, z: player.pos.z };
+  },
+  groundY: (x, z) => heightAt(Math.floor(x), Math.floor(z)),
+  clearMobs: () => {
+    for (const m of mobs) m.health = 0;
+    return mobs.length;
+  },
   get plateInfo() {
     return [...plates.values()].map((p) =>
       ({ x: p.x, y: p.y, z: p.z, pressed: p.pressed, held: [...p.held] }));

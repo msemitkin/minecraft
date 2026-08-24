@@ -671,6 +671,18 @@ kbd {
   transition: opacity 0.12s linear;
 }
 
+/* ===== Огляд крізь гарбузову маску: темні краї прорізів ===== */
+#mask-vignette {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 6;
+  background: radial-gradient(ellipse at center,
+    rgba(30, 12, 0, 0) 36%, rgba(46, 18, 0, 0.55) 66%, rgba(14, 5, 0, 0.94) 100%);
+  transition: opacity 0.25s ease;
+}
+
 /* ===== Екран смерті ===== */
 #death-overlay {
   position: fixed;
