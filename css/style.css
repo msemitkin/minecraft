@@ -27,14 +27,25 @@ canvas {
   position: fixed;
   inset: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  padding: 24px 16px;
   background: rgba(10, 15, 30, 0.85);
   backdrop-filter: blur(4px);
   z-index: 10;
+  /* Довідка може бути вищою за екран — даємо оверлею прокручуватися,
+     інакше заголовок і кнопки виїжджають за верхню межу й обрізаються */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
 }
 
 #overlay-content {
+  /* auto-поля центрують вміст, поки він вміщається, і не обрізають його,
+     коли він вищий за екран (на відміну від align-items: center) */
+  margin: auto;
+  max-width: 900px;
   text-align: center;
   color: #fff;
 }
@@ -91,8 +102,42 @@ canvas {
   display: none;
 }
 
+/* Довідка згорнута за замовчуванням, щоб кнопки старту завжди були на екрані */
+.controls-box {
+  margin-top: 24px;
+}
+
+.controls-box > summary {
+  display: inline-block;
+  padding: 6px 18px;
+  cursor: pointer;
+  color: #ddd;
+  background: #333;
+  border: 2px solid #222;
+  border-bottom-width: 4px;
+  border-radius: 4px;
+  font-size: 14px;
+  list-style: none;
+}
+
+.controls-box > summary::-webkit-details-marker {
+  display: none;
+}
+
+.controls-box > summary:hover {
+  background: #444;
+}
+
+.controls-box > summary::after {
+  content: ' ▾';
+}
+
+.controls-box[open] > summary::after {
+  content: ' ▴';
+}
+
 .controls {
-  margin-top: 28px;
+  margin-top: 20px;
   display: inline-block;
   text-align: left;
   color: #ccc;
@@ -1256,6 +1301,9 @@ kbd {
   #btn-pause {
     top: 116px;
     right: 62px;
+  }
+  #overlay {
+    padding: 16px 12px;
   }
   #overlay-content h1 {
     font-size: 40px;
