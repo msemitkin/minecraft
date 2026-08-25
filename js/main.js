@@ -251,6 +251,16 @@ const CAULDRON = 63;
 // автоматичні двері двору чи пастка на нечисть складаються з наявних частин.
 const PLATE = 64;
 
+// Нотний блок — музика нарешті стає дією, а механізми дістають перший
+// «вихід» сигналу: дерев'яний блок-сутність (як плита, не воксель) із
+// власним тоном. ПКМ по блоку крутить тон на пів тону вгору (25 нот — дві
+// октави від фа-дієза) і одразу грає його — блок підстрибує, над ним
+// злітає кольорова нота. Натиснута плита поруч б'є по всіх нотних блоках
+// довкола (дальні — з крихітною затримкою: ряд блоків грає арпеджіо):
+// плита при порозі — дверний дзвінок, плита при мурі — сигналізація, що
+// серед кривавої ночі сама повідомить про непрохану нечисть. ЛКМ — розібрати.
+const NOTE = 68;
+
 // Гарбуз, ліхтар Джека та гарбузова маска — перший стелс гри. Гарбузи ростуть
 // на луках рівнин; ПКМ по гарбузу вирізає ліхтар Джека — він світить уночі
 // власним вогнем і відлякує нечисть, як смолоскип. Гарбузова маска (меню Tab)
@@ -403,6 +413,7 @@ const BLOCK_NAMES = {
   [MILL]: 'Вітряк',
   [CAULDRON]: 'Казан',
   [PLATE]: 'Натискна плита',
+  [NOTE]: 'Нотний блок',
   [PUMPKIN]: 'Гарбуз', [JACK]: 'Ліхтар Джека', [MASK]: 'Гарбузова маска',
 };
 
@@ -419,7 +430,7 @@ const ALL_BLOCKS = [
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
-  GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, PUMPKIN, MASK,
+  GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, PUMPKIN, MASK,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
 
@@ -702,6 +713,7 @@ function saveGame() {
         [c.x, c.y, c.z, c.state, c.kind, +c.brewT.toFixed(1), +c.rainT.toFixed(1)]),
       lightningRods: [...lightningRods.values()].map((r) => [r.x, r.y, r.z]),
       plates: [...plates.values()].map((p) => [p.x, p.y, p.z]),
+      notes: [...notes.values()].map((n) => [n.x, n.y, n.z, n.pitch]),
       mushrooms: [...mushrooms.values()].map((m) =>
         [m.x, m.y, m.z, m.kind, m.farmed ? 1 : 0]),
       flowers: [...flowers.values()].map((f) =>
@@ -905,6 +917,14 @@ const Sound = (() => {
       noise({ dur: 0.05, gain: 0.14, type: 'lowpass', freq: on ? 900 : 600, q: 1 });
       tone({ freq: on ? 320 : 240, dur: 0.07, type: 'square', gain: 0.05,
              slideTo: on ? 390 : 170 });
+    },
+    // Нотний блок: дзвінкий щипок «арфи» — основа з октавним і квінтовим
+    // обертонами, швидке загасання. pitch 0..24 — пів тони від фа-дієза
+    note(pitch = 0) {
+      const f = 185 * Math.pow(2, pitch / 12);
+      tone({ freq: f, dur: 0.55, type: 'sine', gain: 0.2, attack: 0.003 });
+      tone({ freq: f * 2, dur: 0.28, type: 'triangle', gain: 0.06, attack: 0.003 });
+      tone({ freq: f * 3, dur: 0.14, type: 'sine', gain: 0.025, attack: 0.003 });
     },
     jump() { tone({ freq: 260, dur: 0.16, type: 'sine', gain: 0.1, slideTo: 440 }); },
     land() { noise({ dur: 0.14, gain: 0.18, type: 'lowpass', freq: 300, q: 0.7 }); },
@@ -7039,6 +7059,11 @@ function startBreakOrAttack() {
         triggerSwing();
         return;
       }
+      if (notes.has(key)) {
+        breakNote(key);
+        triggerSwing();
+        return;
+      }
       const crop = crops.get(key);
       if (crop) {
         harvestCrop(crop);
@@ -8172,7 +8197,8 @@ function placeTorch(hit) {
       scarecrows.has(torchKey(x, y, z)) || anvils.has(torchKey(x, y, z)) || mills.has(torchKey(x, y, z)) ||
       lightningRods.has(torchKey(x, y, z)) ||
       mushrooms.has(torchKey(x, y, z)) ||
-      flowers.has(torchKey(x, y, z)) || plates.has(torchKey(x, y, z))) return false;
+      flowers.has(torchKey(x, y, z)) || plates.has(torchKey(x, y, z)) ||
+      notes.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -8336,7 +8362,8 @@ function placeLadder(hit) {
       scarecrows.has(ladderKey(x, y, z)) || anvils.has(ladderKey(x, y, z)) || mills.has(ladderKey(x, y, z)) ||
       lightningRods.has(ladderKey(x, y, z)) ||
       mushrooms.has(ladderKey(x, y, z)) ||
-      flowers.has(ladderKey(x, y, z)) || plates.has(ladderKey(x, y, z))) return false;
+      flowers.has(ladderKey(x, y, z)) || plates.has(ladderKey(x, y, z)) ||
+      notes.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -8547,7 +8574,7 @@ function placeDoor(hit) {
         saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
         beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
         lightningRods.has(k) ||
-        mushrooms.has(k) || flowers.has(k) || plates.has(k)) return false;
+        mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -8814,7 +8841,7 @@ function fenceCellFree(x, y, z) {
          !saplings.has(k) && !signs.has(k) && !rails.has(k) && !campfires.has(k) &&
          !beehives.has(k) && !scarecrows.has(k) && !anvils.has(k) && !mills.has(k) &&
          !lightningRods.has(k) &&
-         !mushrooms.has(k) && !flowers.has(k) && !plates.has(k);
+         !mushrooms.has(k) && !flowers.has(k) && !plates.has(k) && !notes.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -8987,7 +9014,8 @@ function plantCrop(hit) {
       beehives.has(cropKey(x, y, z)) || scarecrows.has(cropKey(x, y, z)) ||
       anvils.has(cropKey(x, y, z)) || mills.has(cropKey(x, y, z)) || lightningRods.has(cropKey(x, y, z)) ||
       mushrooms.has(cropKey(x, y, z)) ||
-      flowers.has(cropKey(x, y, z)) || plates.has(cropKey(x, y, z))) return false;
+      flowers.has(cropKey(x, y, z)) || plates.has(cropKey(x, y, z)) ||
+      notes.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -9159,7 +9187,8 @@ function plantSapling(hit) {
       scarecrows.has(saplingKey(x, y, z)) || anvils.has(saplingKey(x, y, z)) || mills.has(saplingKey(x, y, z)) ||
       lightningRods.has(saplingKey(x, y, z)) ||
       mushrooms.has(saplingKey(x, y, z)) ||
-      flowers.has(saplingKey(x, y, z)) || plates.has(saplingKey(x, y, z))) return false;
+      flowers.has(saplingKey(x, y, z)) || plates.has(saplingKey(x, y, z)) ||
+      notes.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -9323,7 +9352,8 @@ function placeBed(hit) {
       scarecrows.has(bedKey(x, y, z)) || anvils.has(bedKey(x, y, z)) || mills.has(bedKey(x, y, z)) ||
       lightningRods.has(bedKey(x, y, z)) ||
       mushrooms.has(bedKey(x, y, z)) ||
-      flowers.has(bedKey(x, y, z)) || plates.has(bedKey(x, y, z))) return false;
+      flowers.has(bedKey(x, y, z)) || plates.has(bedKey(x, y, z)) ||
+      notes.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -9555,7 +9585,7 @@ function signCellFree(x, y, z) {
          !anvils.has(k) && !mills.has(k) && !lightningRods.has(k) &&
          !crops.has(k) && !beds.has(k) && !ladders.has(k) && !doorAtCell(x, y, z) &&
          !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k) &&
-         !flowers.has(k);
+         !flowers.has(k) && !plates.has(k) && !notes.has(k);
 }
 
 // ===== Редактор напису (створюється в JS — без правок HTML) =====
@@ -10125,7 +10155,7 @@ function placeRail(hit) {
   if (rails.has(k) || torches.has(k) || crops.has(k) || beds.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) || mushrooms.has(k) ||
-      flowers.has(k) || plates.has(k) ||
+      flowers.has(k) || plates.has(k) || notes.has(k) ||
       lightningRods.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
@@ -10544,7 +10574,7 @@ function breakPlate(key) {
 function placePlate(hit) {
   const [x, y, z] = hit.prev;
   const k = plateKey(x, y, z);
-  if (blockAt(x, y, z) !== AIR || plates.has(k) || torches.has(k) ||
+  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
@@ -10606,6 +10636,7 @@ function pressPlate(p, by) {
   p.pressed = true;
   Sound.plate(true);
   if (by === 'mob') unlockAch('trap');
+  strikeNotesAround(p, by);
   for (const n of plateNeighbours(p)) {
     if (!n.e.open && (n.kind === 'door' ? toggleDoor(n.e) : toggleGate(n.e))) {
       p.held.add(n.tag);
@@ -10677,6 +10708,183 @@ function updatePlates(dt) {
 if (savedGame && Array.isArray(savedGame.plates)) {
   for (const e of savedGame.plates) {
     if (Array.isArray(e) && e.length >= 3) addPlate(e[0], e[1], e[2]);
+  }
+}
+
+// ============================================================
+// Нотний блок: музика як дія та перший «вихід» механізмів
+// ============================================================
+// Нотний блок — сутність у клітинці (як плита, воксельну сітку не змінює):
+// дерев'яна скринька з власним тоном. ПКМ крутить тон на пів тону вгору
+// (25 нот — дві октави від фа-дієза F#3, як у Minecraft) і одразу грає:
+// блок пружно підстрибує, над ним злітає нота в колір тону. Натиснута
+// плита поруч (Чебишев ≤ NOTE_LINK_R по горизонталі, ±1 по вертикалі) б'є
+// по всіх нотних блоках довкола — дальні з крихітною затримкою за
+// відстанню, тож ряд блоків грає арпеджіо. ЛКМ — розібрати.
+const notes = new Map();               // "x,y,z" -> { x, y, z, pitch, group, body, kick }
+const NOTE_MAX = 128;                  // межа, щоб збереження не розросталося
+const NOTE_PITCHES = 25;               // дві октави пів тонами
+const NOTE_LINK_R = 2;                 // радіус, з якого плита б'є по блоку
+const NOTE_ARP_DELAY = 0.12;           // с затримки удару на клітинку відстані
+// Українські назви пів тонів від фа-дієза (для підказки настроювання)
+const NOTE_NAMES = ['Фа♯', 'Соль', 'Соль♯', 'Ля', 'Ля♯', 'Сі',
+                    'До', 'До♯', 'Ре', 'Ре♯', 'Мі', 'Фа'];
+const noteStrikes = [];                // відкладені удари: { n, t }
+
+const noteKey = (x, y, z) => x + ',' + y + ',' + z;
+
+// Спільна процедурна текстура боків: дощаний ящик із білою нотою
+function makeNoteTexture(top) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 32;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = top ? '#4a3018' : '#5a3d22';
+  ctx.fillRect(0, 0, 32, 32);
+  ctx.fillStyle = top ? '#3c2814' : '#4a3018';   // шви дощок
+  for (let i = 0; i < 32; i += 8) ctx.fillRect(0, i, 32, 1);
+  if (top) {
+    // Верх: темна «мембрана» з світлим обідком, по якій б'є механізм
+    ctx.strokeStyle = '#8a6a3f';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(16, 16, 10, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#2b1c0e';
+    ctx.beginPath(); ctx.arc(16, 16, 8, 0, Math.PI * 2); ctx.fill();
+  } else {
+    // Бік: біла восьма нота
+    ctx.fillStyle = '#f4efe2';
+    ctx.fillRect(18, 8, 2, 12);                       // штиль
+    ctx.beginPath(); ctx.ellipse(15, 21, 4, 3, -0.35, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath();                                  // прапорець
+    ctx.moveTo(20, 8); ctx.quadraticCurveTo(25, 10, 22, 15);
+    ctx.quadraticCurveTo(23, 11, 20, 11); ctx.closePath(); ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  return tex;
+}
+const NOTE_BODY_GEO = new THREE.BoxGeometry(0.88, 0.72, 0.88);
+const NOTE_SIDE_MAT = new THREE.MeshLambertMaterial({ map: makeNoteTexture(false) });
+const NOTE_TOP_MAT = new THREE.MeshLambertMaterial({ map: makeNoteTexture(true) });
+const NOTE_MATS = [NOTE_SIDE_MAT, NOTE_SIDE_MAT, NOTE_TOP_MAT,
+                   NOTE_TOP_MAT, NOTE_SIDE_MAT, NOTE_SIDE_MAT];
+
+function makeNoteModel() {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(NOTE_BODY_GEO, NOTE_MATS);
+  body.position.y = 0.36;
+  g.add(body);
+  return { g, body };
+}
+
+function addNote(x, y, z, pitch = 0) {
+  const key = noteKey(x, y, z);
+  if (notes.has(key) || notes.size >= NOTE_MAX) return false;
+  const { g, body } = makeNoteModel();
+  g.position.set(x + 0.5, y, z + 0.5);
+  scene.add(g);
+  notes.set(key, { x, y, z, group: g, body,
+                   pitch: ((pitch % NOTE_PITCHES) + NOTE_PITCHES) % NOTE_PITCHES,
+                   kick: 0 });
+  return true;
+}
+
+function removeNote(key) {
+  const n = notes.get(key);
+  if (!n) return;
+  scene.remove(n.group);   // геометрія/матеріали спільні — не dispose
+  notes.delete(key);
+}
+
+// Розібрати блок ударом (чи втратою опори): тріски, стук і прощальний тон
+function breakNote(key) {
+  const n = notes.get(key);
+  if (!n) return;
+  spawnParticles(n.x + 0.5, n.y + 0.5, n.z + 0.5, new THREE.Color(0x5a3d22), 7,
+    { radius: 0.3, speed: 1.6, upBias: 0.5, life: 0.45, size: 0.09, gravity: 10 });
+  Sound.breakBlock(PLANK);
+  removeNote(key);
+}
+
+// Поставити нотний блок у клітинку перед прицілом (лише на тверду підлогу)
+function placeNote(hit) {
+  const [x, y, z] = hit.prev;
+  const k = noteKey(x, y, z);
+  if (blockAt(x, y, z) !== AIR || notes.has(k) || plates.has(k) || torches.has(k) ||
+      ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
+      saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
+      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
+      cauldrons.has(k) || lightningRods.has(k) || crops.has(k) || beds.has(k) ||
+      mushrooms.has(k) || flowers.has(k)) return false;
+  if (!isSolid(blockAt(x, y - 1, z))) return false;
+  if (!addNote(x, y, z)) return false;
+  Sound.place(PLANK);
+  spawnParticles(x + 0.5, y + 0.5, z + 0.5, new THREE.Color(0x8a6a3f), 6,
+    { radius: 0.3, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
+  return true;
+}
+
+// Удар по блоку: щипок тону, пружний підскок і нота в колір висоти звуку
+function strikeNote(n) {
+  Sound.note(n.pitch);
+  n.kick = 1;
+  const color = new THREE.Color().setHSL((n.pitch / NOTE_PITCHES) * 0.85, 0.75, 0.62);
+  spawnParticles(n.x + 0.5, n.y + 0.85, n.z + 0.5, color, 3,
+    { radius: 0.18, speed: 0.7, upBias: 1.6, life: 0.7, size: 0.11, gravity: -1.5 });
+}
+
+// Настроїти (ПКМ): пів тону вгору по колу з миттєвим програванням
+function tuneNote(n) {
+  n.pitch = (n.pitch + 1) % NOTE_PITCHES;
+  strikeNote(n);
+  unlockAch('tune');
+  const octave = Math.floor(n.pitch / 12) + 1;
+  flashItemName(`🎵 ${NOTE_NAMES[n.pitch % 12]} · тон ${n.pitch + 1}/${NOTE_PITCHES}` +
+    (octave > 1 ? ' (октавою вище)' : ''));
+}
+
+// Плита натиснулась: ударити по нотних блоках довкола. Сусідні грають
+// одразу, дальші — з затримкою за відстанню (ряд блоків — арпеджіо).
+// Вага без гравця (нечисть, тварина, вагонетка) — сигналізація спрацювала.
+function strikeNotesAround(p, by) {
+  for (const n of notes.values()) {
+    const d = Math.max(Math.abs(n.x - p.x), Math.abs(n.z - p.z));
+    if (d > NOTE_LINK_R || Math.abs(n.y - p.y) > 1) continue;
+    if (d <= 1) strikeNote(n);
+    else noteStrikes.push({ n, t: (d - 1) * NOTE_ARP_DELAY });
+    if (by !== 'player') unlockAch('alarm');
+  }
+}
+
+// Тик: перевірити опору, програти відкладені удари, згасити підскок
+function updateNotes(dt) {
+  if (notes.size === 0 && noteStrikes.length === 0) return;
+  for (const [key, n] of notes) {
+    // Блок зайняв клітинку чи зникла опора — розібрати
+    if (isSolid(blockAt(n.x, n.y, n.z)) || !isSolid(blockAt(n.x, n.y - 1, n.z))) {
+      breakNote(key);
+      continue;
+    }
+    if (n.kick > 0) {
+      n.kick = Math.max(0, n.kick - dt * 5);
+      const s = 1 - n.kick * 0.14;
+      n.body.scale.y = s;
+      n.body.position.y = 0.36 * s;
+    }
+  }
+  for (let i = noteStrikes.length - 1; i >= 0; i--) {
+    const q = noteStrikes[i];
+    q.t -= dt;
+    if (q.t > 0) continue;
+    noteStrikes.splice(i, 1);
+    if (notes.has(noteKey(q.n.x, q.n.y, q.n.z))) strikeNote(q.n);
+  }
+}
+
+// Відновити збережені нотні блоки (сумісно зі старими сейвами)
+if (savedGame && Array.isArray(savedGame.notes)) {
+  for (const e of savedGame.notes) {
+    if (Array.isArray(e) && e.length >= 3) addNote(e[0], e[1], e[2], e[3] | 0);
   }
 }
 
@@ -10903,7 +11111,7 @@ function placeCampfire(hit) {
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
       rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
-      mushrooms.has(k) || flowers.has(k) || plates.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
   Sound.torch(0.2);
@@ -11352,7 +11560,7 @@ function placeBeehive(hit) {
       gates.has(k) || crops.has(k) || beds.has(k) || saplings.has(k) ||
       signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
-      mushrooms.has(k) || flowers.has(k) || plates.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addBeehive(x, y, z)) return false;
   Sound.place(PLANK);
@@ -11548,7 +11756,7 @@ function placeScarecrow(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
-      mushrooms.has(k) || flowers.has(k) || plates.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addScarecrow(x, y, z)) return false;
   Sound.place(PLANK);
@@ -11687,7 +11895,7 @@ function placeLightningRod(hit) {
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       anvils.has(k) || mills.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k)) return false;
+      plates.has(k) || notes.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!Object.entries(LROD_COST).every(([ore, n]) => (player[ore] || 0) >= n)) {
     flashItemName('Потрібно ⛓ 2 × залізо + 🟡 1 × золото з торби');
@@ -11937,7 +12145,7 @@ function placeAnvil(hit) {
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) ||
-      mushrooms.has(k) || flowers.has(k) || plates.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addAnvil(x, y, z)) return false;
   Sound.place(STONE);
@@ -12361,7 +12569,7 @@ function placeMill(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k)) return false;
+      plates.has(k) || notes.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addMill(x, y, z)) return false;
   Sound.place(PLANK);
@@ -12576,7 +12784,7 @@ function placeCauldron(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k)) return false;
+      plates.has(k) || notes.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCauldron(x, y, z)) return false;
   Sound.place(STONE);
@@ -12816,7 +13024,7 @@ function mushCellFree(x, y, z) {
   if (mushrooms.has(k) || torches.has(k) || crops.has(k) || ladders.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) || beds.has(k) ||
-      lightningRods.has(k) ||
+      lightningRods.has(k) || plates.has(k) || notes.has(k) ||
       fences.has(k) || gates.has(k) || doorAtCell(x, y, z)) return false;
   if (blockAt(x, y, z) !== AIR) return false;
   return mushSupportable(blockAt(x, y - 1, z));
@@ -13775,7 +13983,8 @@ const flowerSupportable = (id, planted) => id === GRASS || (planted && id === DI
 // Клітинка вільна для квітки: повітря на ґрунті, без інших сутностей
 function flowerCellFree(x, y, z, planted = false) {
   const k = flowerKey(x, y, z);
-  if (flowers.has(k) || mushrooms.has(k) || plates.has(k) || torches.has(k) || crops.has(k) ||
+  if (flowers.has(k) || mushrooms.has(k) || plates.has(k) || notes.has(k) ||
+      torches.has(k) || crops.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       campfires.has(k) || beehives.has(k) || scarecrows.has(k) ||
       anvils.has(k) || mills.has(k) || beds.has(k) || lightningRods.has(k) || fences.has(k) ||
@@ -14301,6 +14510,12 @@ function placeBlock() {
     if (cauldrons.has(ck)) { tryCauldronAt(cauldrons.get(ck)); return; }
   }
 
+  // Нотний блок у прицілі (ПКМ) → настроїти тон, з будь-яким предметом у руці
+  if (notes.size > 0) {
+    const nk = noteKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    if (notes.has(nk)) { tuneNote(notes.get(nk)); return; }
+  }
+
   if (hotbar[selectedSlot] === BOW) return;   // луком не ставлять блок
   if (hotbar[selectedSlot] === ROD) return;   // вудкою теж не ставлять блок
 
@@ -14372,6 +14587,12 @@ function placeBlock() {
   // Натискна плита — механізм на твердій підлозі: реагує на вагу зверху
   if (id === PLATE) {
     placePlate(hit);
+    return;
+  }
+
+  // Нотний блок — музична сутність на твердій підлозі: ПКМ по ній настроює тон
+  if (id === NOTE) {
+    placeNote(hit);
     return;
   }
 
@@ -16399,6 +16620,24 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(4, 8, 8, 1);
     return;
   }
+  if (id === NOTE) {
+    // Процедурна іконка нотного блока: дощаний ящик із білою нотою
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#5a3d22';                 // корпус
+    ctx.fillRect(1, 2, 14, 13);
+    ctx.fillStyle = '#4a3018';                 // верхня дошка й шви
+    ctx.fillRect(1, 2, 14, 3);
+    ctx.fillRect(1, 9, 14, 1);
+    ctx.fillStyle = '#2b1c0e';                 // щілина «мембрани»
+    ctx.fillRect(3, 3, 10, 1);
+    ctx.fillStyle = '#f4efe2';                 // восьма нота
+    ctx.fillRect(9, 6, 1, 6);                  // штиль
+    ctx.fillRect(10, 6, 2, 1);                 // прапорець
+    ctx.fillRect(11, 7, 1, 2);
+    ctx.beginPath(); ctx.ellipse(8, 12.5, 2.3, 1.7, -0.35, 0, Math.PI * 2); ctx.fill();
+    return;
+  }
   if (id === MILL) {
     // Процедурна іконка вітряка: кам'яний низ, дощана вежа й хрест крил
     const ctx = canvas.getContext('2d');
@@ -17658,6 +17897,8 @@ const ACHIEVEMENTS = [
   { id: 'carve',       icon: '🎃', title: 'Різьбяр',            desc: 'Вирізати ліхтар Джека з гарбуза' },
   { id: 'mask',        icon: '🎭', title: 'Маскарад',           desc: 'Вдягнути гарбузову маску' },
   { id: 'sneak',       icon: '🥷', title: 'Свій серед нечисті', desc: 'У масці прокрастися впритул до нечисті непоміченим' },
+  { id: 'tune',        icon: '🎵', title: 'Настроювач',         desc: 'Настроїти тон нотного блока' },
+  { id: 'alarm',       icon: '🔔', title: 'Сигналізація',       desc: 'Плита без гравця сама вдарила по нотному блоку' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -19743,6 +19984,29 @@ window.MCDebug = {
       ({ x: p.x, y: p.y, z: p.z, pressed: p.pressed, held: [...p.held] }));
   },
   placePlateAt: (x, y, z) => placePlate({ prev: [x, y, z] }),
+  // Нотні блоки (для тестів)
+  giveNote: () => { assignBlockToSlot(NOTE); return BLOCK_NAMES[NOTE]; },
+  placeNoteAt: (x, y, z, pitch = 0) => {
+    if (!placeNote({ prev: [x, y, z] })) return false;
+    const n = notes.get(noteKey(x, y, z));
+    n.pitch = ((pitch % NOTE_PITCHES) + NOTE_PITCHES) % NOTE_PITCHES;
+    return { x, y, z, pitch: n.pitch };
+  },
+  tuneNoteAt: (x, y, z) => {
+    const n = notes.get(noteKey(x, y, z));
+    if (!n) return null;
+    tuneNote(n);
+    return n.pitch;
+  },
+  ringNoteAt: (x, y, z) => {
+    const n = notes.get(noteKey(x, y, z));
+    if (!n) return null;
+    strikeNote(n);
+    return n.pitch;
+  },
+  get noteInfo() {
+    return [...notes.values()].map((n) => ({ x: n.x, y: n.y, z: n.z, pitch: n.pitch }));
+  },
   placeDoorAt: (x, y, z, dx = 1, dz = 0) => addDoor(x, y, z, dx, dz),
   placeGateAt: (x, y, z, dx = 1, dz = 0) => addGate(x, y, z, dx, dz),
   giveWheat: (n = 6) => {
@@ -19918,6 +20182,7 @@ function animate() {
     updateDoors(dt);
     updateGates(dt);
     updatePlates(dt);
+    updateNotes(dt);
     if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
     updateArrows(dt);
     updateGroundEggs(dt);
