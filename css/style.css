@@ -1098,7 +1098,8 @@ kbd {
 
 /* ===== Ятка мандрівного торговця ===== */
 #trade-panel,
-#forge-panel {
+#forge-panel,
+#chest-panel {
   position: fixed;
   inset: 0;
   display: flex;
@@ -1110,12 +1111,14 @@ kbd {
 }
 
 #trade-panel[hidden],
-#forge-panel[hidden] {
+#forge-panel[hidden],
+#chest-panel[hidden] {
   display: none;
 }
 
 #trade-panel-inner,
-#forge-panel-inner {
+#forge-panel-inner,
+#chest-panel-inner {
   position: relative;
   width: min(94vw, 480px);
   max-height: 86vh;
@@ -1129,14 +1132,16 @@ kbd {
 }
 
 #trade-panel-inner h2,
-#forge-panel-inner h2 {
+#forge-panel-inner h2,
+#chest-panel-inner h2 {
   font-size: 22px;
   letter-spacing: 1px;
   text-shadow: 2px 2px 0 #1a1a1a;
 }
 
 #trade-close,
-#forge-close {
+#forge-close,
+#chest-close {
   position: absolute;
   top: 10px;
   right: 12px;
@@ -1151,7 +1156,8 @@ kbd {
 }
 
 #trade-close:hover,
-#forge-close:hover {
+#forge-close:hover,
+#chest-close:hover {
   background: #663333;
 }
 
@@ -1221,10 +1227,22 @@ kbd {
 }
 
 #trade-bag,
-#forge-bag {
+#forge-bag,
+#chest-bag {
   margin: 12px 0 0;
   font-size: 13px;
   color: #aab;
+}
+
+/* Кнопки перекладання скрині: вужчі за торгові, вміщаються по чотири в ряд */
+.chest-btn {
+  padding: 8px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+#chest-panel-inner {
+  width: min(94vw, 560px);
 }
 
 /* Вузькі екрани: менший хотбар, приховати десктопну довідку */
