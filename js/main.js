@@ -261,6 +261,17 @@ const PLATE = 64;
 // серед кривавої ночі сама повідомить про непрохану нечисть. ЛКМ — розібрати.
 const NOTE = 68;
 
+// Скриня — перше сховище гри: торба тримає кожен крам суворим капом
+// (8 алмазів, 3 корони, 16 золота), а надлишку досі не було куди подіти.
+// Дощана скриня (меню Tab) ставиться ПКМ на тверду опору; ПКМ по скрині
+// відчиняє віко, і кожен вид краму лягає на власну «полицю» стосом до
+// CHEST_STACK штук — запаси нарешті живуть у базі, а не губляться на межі
+// капу. ЛКМ розбирає лише порожню скриню (добро не пропадає мовчки);
+// вміст кожної скрині зберігається зі світом.
+const CHEST = 69;
+const CHEST_STACK = 64;         // стос одного краму на полиці скрині
+const CHEST_MAX = 16;           // межа скринь, щоб збереження не розросталося
+
 // Гарбуз, ліхтар Джека та гарбузова маска — перший стелс гри. Гарбузи ростуть
 // на луках рівнин; ПКМ по гарбузу вирізає ліхтар Джека — він світить уночі
 // власним вогнем і відлякує нечисть, як смолоскип. Гарбузова маска (меню Tab)
@@ -414,6 +425,7 @@ const BLOCK_NAMES = {
   [CAULDRON]: 'Казан',
   [PLATE]: 'Натискна плита',
   [NOTE]: 'Нотний блок',
+  [CHEST]: 'Скриня',
   [PUMPKIN]: 'Гарбуз', [JACK]: 'Ліхтар Джека', [MASK]: 'Гарбузова маска',
 };
 
@@ -430,7 +442,7 @@ const ALL_BLOCKS = [
   TNT, COAL, IRON, GOLD, DIAMOND, CACTUS, TORCH, SEEDS, SAPLING, BOW, ROD, BED,
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
-  GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, PUMPKIN, MASK,
+  GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
 
@@ -714,6 +726,8 @@ function saveGame() {
       lightningRods: [...lightningRods.values()].map((r) => [r.x, r.y, r.z]),
       plates: [...plates.values()].map((p) => [p.x, p.y, p.z]),
       notes: [...notes.values()].map((n) => [n.x, n.y, n.z, n.pitch]),
+      chests: [...chests.values()].map((c) =>
+        [c.x, c.y, c.z, Object.entries(c.store).filter(([, n]) => n > 0)]),
       mushrooms: [...mushrooms.values()].map((m) =>
         [m.x, m.y, m.z, m.kind, m.farmed ? 1 : 0]),
       flowers: [...flowers.values()].map((f) =>
@@ -2981,7 +2995,8 @@ function updatePlayer(dt) {
   player.blocking = player.shieldTier > 0 && !player.dead &&
     (keys['KeyC'] || touchShieldHeld) &&
     !ridingBoat && !ridingHorse && !ridingCart && gameActive() &&
-    !blockMenuOpen && !forgeOpen && !achPanelOpen && !tradeOpen && !signEditorOpen;
+    !blockMenuOpen && !forgeOpen && !achPanelOpen && !tradeOpen && !signEditorOpen &&
+    !chestOpen;
   if (player.blocking && (mining || bow.drawing)) {
     mining = false;                        // щит займає руки: ні копати, ні цілитись
     cancelBowDraw();
@@ -4996,6 +5011,7 @@ function openTradePanel(keeper = trader) {
   if (blockMenuOpen) closeBlockMenu();
   if (achPanelOpen) closeAchPanel();
   if (forgeOpen) closeForgePanel();
+  if (chestOpen) closeChestPanel();
   shopKeeper = keeper;
   const titleEl = document.getElementById('trade-title');
   if (titleEl) {
@@ -6971,7 +6987,8 @@ function startBreakOrAttack() {
       signs.size > 0 || rails.size > 0 || campfires.size > 0 || beehives.size > 0 ||
       scarecrows.size > 0 || mushrooms.size > 0 || anvils.size > 0 ||
       oysters.size > 0 || cactusFruits.size > 0 || lightningRods.size > 0 ||
-      flowers.size > 0 || mills.size > 0 || cauldrons.size > 0) {
+      flowers.size > 0 || mills.size > 0 || cauldrons.size > 0 ||
+      plates.size > 0 || notes.size > 0 || chests.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -6997,6 +7014,11 @@ function startBreakOrAttack() {
       }
       if (anvils.has(key)) {
         breakAnvil(key);
+        triggerSwing();
+        return;
+      }
+      if (chests.has(key)) {
+        breakChest(key);
         triggerSwing();
         return;
       }
@@ -7693,6 +7715,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateBeehives();  // ... і опору вуликів
   validateScarecrows(); // ... і опору опудал
   validateAnvils();    // ... і опору ковадел
+  validateChests();
   validateMills();    // ... і опору вітряків
   validateCauldrons(); // ... і опору казанів
   validateLightningRods(); // ... і опору громовідводів
@@ -7849,6 +7872,7 @@ function updateFallingBlocks(dt) {
       validateBeehives();
       validateScarecrows();
       validateAnvils();
+      validateChests();
       validateMills();
       validateCauldrons();
       validateLightningRods();
@@ -8194,7 +8218,7 @@ function placeTorch(hit) {
       saplings.has(torchKey(x, y, z)) || signs.has(torchKey(x, y, z)) ||
       rails.has(torchKey(x, y, z)) || campfires.has(torchKey(x, y, z)) ||
       beehives.has(torchKey(x, y, z)) ||
-      scarecrows.has(torchKey(x, y, z)) || anvils.has(torchKey(x, y, z)) || mills.has(torchKey(x, y, z)) ||
+      scarecrows.has(torchKey(x, y, z)) || anvils.has(torchKey(x, y, z)) || chests.has(torchKey(x, y, z)) || mills.has(torchKey(x, y, z)) ||
       lightningRods.has(torchKey(x, y, z)) ||
       mushrooms.has(torchKey(x, y, z)) ||
       flowers.has(torchKey(x, y, z)) || plates.has(torchKey(x, y, z)) ||
@@ -8359,7 +8383,7 @@ function placeLadder(hit) {
       gates.has(ladderKey(x, y, z)) || saplings.has(ladderKey(x, y, z)) ||
       signs.has(ladderKey(x, y, z)) || rails.has(ladderKey(x, y, z)) ||
       campfires.has(ladderKey(x, y, z)) || beehives.has(ladderKey(x, y, z)) ||
-      scarecrows.has(ladderKey(x, y, z)) || anvils.has(ladderKey(x, y, z)) || mills.has(ladderKey(x, y, z)) ||
+      scarecrows.has(ladderKey(x, y, z)) || anvils.has(ladderKey(x, y, z)) || chests.has(ladderKey(x, y, z)) || mills.has(ladderKey(x, y, z)) ||
       lightningRods.has(ladderKey(x, y, z)) ||
       mushrooms.has(ladderKey(x, y, z)) ||
       flowers.has(ladderKey(x, y, z)) || plates.has(ladderKey(x, y, z)) ||
@@ -8572,7 +8596,7 @@ function placeDoor(hit) {
     if (doorAtCell(x, cy, z) || torches.has(k) || crops.has(k) ||
         beds.has(k) || ladders.has(k) || fences.has(k) || gates.has(k) ||
         saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
-        beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
+        beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
         lightningRods.has(k) ||
         mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k)) return false;
   }
@@ -8839,7 +8863,7 @@ function fenceCellFree(x, y, z) {
   return !fences.has(k) && !gates.has(k) && !doorAtCell(x, y, z) &&
          !torches.has(k) && !crops.has(k) && !beds.has(k) && !ladders.has(k) &&
          !saplings.has(k) && !signs.has(k) && !rails.has(k) && !campfires.has(k) &&
-         !beehives.has(k) && !scarecrows.has(k) && !anvils.has(k) && !mills.has(k) &&
+         !beehives.has(k) && !scarecrows.has(k) && !anvils.has(k) && !chests.has(k) && !mills.has(k) &&
          !lightningRods.has(k) &&
          !mushrooms.has(k) && !flowers.has(k) && !plates.has(k) && !notes.has(k);
 }
@@ -9012,7 +9036,7 @@ function plantCrop(hit) {
       saplings.has(cropKey(x, y, z)) || signs.has(cropKey(x, y, z)) ||
       rails.has(cropKey(x, y, z)) || campfires.has(cropKey(x, y, z)) ||
       beehives.has(cropKey(x, y, z)) || scarecrows.has(cropKey(x, y, z)) ||
-      anvils.has(cropKey(x, y, z)) || mills.has(cropKey(x, y, z)) || lightningRods.has(cropKey(x, y, z)) ||
+      anvils.has(cropKey(x, y, z)) || chests.has(cropKey(x, y, z)) || mills.has(cropKey(x, y, z)) || lightningRods.has(cropKey(x, y, z)) ||
       mushrooms.has(cropKey(x, y, z)) ||
       flowers.has(cropKey(x, y, z)) || plates.has(cropKey(x, y, z)) ||
       notes.has(cropKey(x, y, z))) return false;
@@ -9184,7 +9208,7 @@ function plantSapling(hit) {
       fences.has(saplingKey(x, y, z)) || gates.has(saplingKey(x, y, z)) ||
       signs.has(saplingKey(x, y, z)) || rails.has(saplingKey(x, y, z)) ||
       campfires.has(saplingKey(x, y, z)) || beehives.has(saplingKey(x, y, z)) ||
-      scarecrows.has(saplingKey(x, y, z)) || anvils.has(saplingKey(x, y, z)) || mills.has(saplingKey(x, y, z)) ||
+      scarecrows.has(saplingKey(x, y, z)) || anvils.has(saplingKey(x, y, z)) || chests.has(saplingKey(x, y, z)) || mills.has(saplingKey(x, y, z)) ||
       lightningRods.has(saplingKey(x, y, z)) ||
       mushrooms.has(saplingKey(x, y, z)) ||
       flowers.has(saplingKey(x, y, z)) || plates.has(saplingKey(x, y, z)) ||
@@ -9242,6 +9266,7 @@ function growSaplingTree(s) {
   validateBeehives();
   validateScarecrows();
   validateAnvils();
+  validateChests();
   validateMills();
   validateCauldrons();
   validateLightningRods();
@@ -9349,7 +9374,7 @@ function placeBed(hit) {
       gates.has(bedKey(x, y, z)) || saplings.has(bedKey(x, y, z)) ||
       signs.has(bedKey(x, y, z)) || rails.has(bedKey(x, y, z)) ||
       campfires.has(bedKey(x, y, z)) || beehives.has(bedKey(x, y, z)) ||
-      scarecrows.has(bedKey(x, y, z)) || anvils.has(bedKey(x, y, z)) || mills.has(bedKey(x, y, z)) ||
+      scarecrows.has(bedKey(x, y, z)) || anvils.has(bedKey(x, y, z)) || chests.has(bedKey(x, y, z)) || mills.has(bedKey(x, y, z)) ||
       lightningRods.has(bedKey(x, y, z)) ||
       mushrooms.has(bedKey(x, y, z)) ||
       flowers.has(bedKey(x, y, z)) || plates.has(bedKey(x, y, z)) ||
@@ -9582,7 +9607,7 @@ function signCellFree(x, y, z) {
   const k = signKey(x, y, z);
   return blockAt(x, y, z) === AIR && !signs.has(k) && !torches.has(k) && !rails.has(k) &&
          !campfires.has(k) && !beehives.has(k) && !scarecrows.has(k) &&
-         !anvils.has(k) && !mills.has(k) && !lightningRods.has(k) &&
+         !anvils.has(k) && !chests.has(k) && !mills.has(k) && !lightningRods.has(k) &&
          !crops.has(k) && !beds.has(k) && !ladders.has(k) && !doorAtCell(x, y, z) &&
          !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k) &&
          !flowers.has(k) && !plates.has(k) && !notes.has(k);
@@ -9787,6 +9812,7 @@ function updateMining(dt, hit) {
     validateBeehives();  // ... або опору вулика
     validateScarecrows(); // ... або опору опудала
     validateAnvils();    // ... або опору ковадла
+    validateChests();
     validateMills();    // ... або опору вітряка
     validateCauldrons(); // ... або опору казана
     validateLightningRods(); // ... або опору громовідводу
@@ -10154,7 +10180,7 @@ function placeRail(hit) {
   if (blockAt(x, y, z) !== AIR || !isSolid(blockAt(x, y - 1, z))) return false;
   if (rails.has(k) || torches.has(k) || crops.has(k) || beds.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
-      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) || mushrooms.has(k) ||
+      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) ||
       flowers.has(k) || plates.has(k) || notes.has(k) ||
       lightningRods.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
@@ -10577,7 +10603,7 @@ function placePlate(hit) {
   if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
-      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
+      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       cauldrons.has(k) || lightningRods.has(k) || crops.has(k) || beds.has(k) ||
       mushrooms.has(k) || flowers.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
@@ -10813,7 +10839,7 @@ function placeNote(hit) {
   if (blockAt(x, y, z) !== AIR || notes.has(k) || plates.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
-      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
+      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       cauldrons.has(k) || lightningRods.has(k) || crops.has(k) || beds.has(k) ||
       mushrooms.has(k) || flowers.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
@@ -11109,7 +11135,7 @@ function placeCampfire(hit) {
   if (blockAt(x, y, z) !== AIR || campfires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
-      rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
+      rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
@@ -11558,7 +11584,7 @@ function placeBeehive(hit) {
   if (blockAt(x, y, z) !== AIR || beehives.has(k) || campfires.has(k) ||
       torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) ||
       gates.has(k) || crops.has(k) || beds.has(k) || saplings.has(k) ||
-      signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) ||
+      signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
@@ -11754,7 +11780,7 @@ function placeScarecrow(hit) {
   if (blockAt(x, y, z) !== AIR || scarecrows.has(k) || beehives.has(k) ||
       campfires.has(k) || torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) ||
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
-      saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) || mills.has(k) ||
+      saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
@@ -11894,7 +11920,7 @@ function placeLightningRod(hit) {
       beehives.has(k) || campfires.has(k) || torches.has(k) || ladders.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
-      anvils.has(k) || mills.has(k) || mushrooms.has(k) || flowers.has(k) ||
+      anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) || flowers.has(k) ||
       plates.has(k) || notes.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!Object.entries(LROD_COST).every(([ore, n]) => (player[ore] || 0) >= n)) {
@@ -12140,7 +12166,7 @@ function validateAnvils() {
 function placeAnvil(hit) {
   const [x, y, z] = hit.prev;
   const k = anvilKey(x, y, z);
-  if (blockAt(x, y, z) !== AIR || anvils.has(k) || mills.has(k) || scarecrows.has(k) ||
+  if (blockAt(x, y, z) !== AIR || anvils.has(k) || chests.has(k) || mills.has(k) || scarecrows.has(k) ||
       beehives.has(k) || campfires.has(k) || torches.has(k) || ladders.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
@@ -12433,6 +12459,7 @@ function openForgePanel(anvil) {
   if (blockMenuOpen) closeBlockMenu();
   if (achPanelOpen) closeAchPanel();
   if (tradeOpen) closeTradePanel();
+  if (chestOpen) closeChestPanel();
   forgeOpen = true;
   forgeAnvil = anvil || null;
   mining = false;
@@ -12460,6 +12487,348 @@ if (savedGame && Array.isArray(savedGame.anvils)) {
   for (const e of savedGame.anvils) {
     if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
       addAnvil(e[0], e[1], e[2]);
+    }
+  }
+}
+
+// ============================================================
+// Скриня: перше сховище — стоси краму понад місткість торби
+// ============================================================
+// Скриня — сутність у клітинці (як ковадло, воксельну сітку не змінює):
+// дощаний короб із віком на завісах і залізною защіпкою. ПКМ по скрині
+// відчиняє віко (воно плавно піднімається) і панель перекладання: кожен
+// вид краму лягає на власну «полицю» стосом до CHEST_STACK штук — торба
+// тримає 8 алмазів, скриня ж прийме цілий стос. ЛКМ розбирає лише
+// порожню скриню: добро ніколи не зникає мовчки. Вміст кожної скрині
+// зберігається зі світом.
+const chests = new Map();              // "x,y,z" -> { x, y, z, group, lid, openT, store }
+const CHEST_WOOD = 0x8a5a2b;
+const CHEST_WOOD_DARK = 0x63401f;
+const CHEST_IRON = 0xaeb6c2;
+
+const chestKey = (x, y, z) => x + ',' + y + ',' + z;
+
+// Увесь крам, що лягає на полиці скрині: значок, назва й кап торби
+// (повернення зі скрині шанує місткість торби)
+const CHEST_GOODS = {
+  food:    { icon: '🍖', name: "сире м'ясо",    max: FOOD_MAX },
+  cooked:  { icon: '🍗', name: 'смаженина',     max: COOKED_MAX },
+  honey:   { icon: '🍯', name: 'мед',           max: HONEY_MAX },
+  eggs:    { icon: '🥚', name: 'яйця',          max: EGG_MAX },
+  bones:   { icon: '🦴', name: 'кістки',        max: BONES_MAX },
+  silk:    { icon: '🕸', name: 'павутина',      max: SILK_MAX },
+  mush:    { icon: '🍄', name: 'сирі гриби',    max: MUSH_MAX },
+  roast:   { icon: '🍢', name: 'печені гриби',  max: ROAST_MAX },
+  gapple:  { icon: '🍏', name: 'золоті яблука', max: GAPPLE_MAX },
+  oyster:  { icon: '🦪', name: 'устриці',       max: OYSTER_MAX },
+  mollusk: { icon: '🍤', name: "м'ясо молюска", max: MOLLUSK_MAX },
+  pearl:   { icon: '⚪', name: 'перлини',       max: PEARL_MAX },
+  fruit:   { icon: '🌵', name: 'плоди опунції', max: FRUIT_MAX },
+  baked:   { icon: '🍠', name: 'печені опунції', max: BAKED_MAX },
+  truffle: { icon: '🌰', name: 'трюфелі',       max: TRUFFLE_MAX },
+  crown:   { icon: '👑', name: 'корони',        max: CROWN_MAX },
+  poppy:   { icon: '🌹', name: 'маки',          max: FLOWER_BAG_MAX },
+  dand:    { icon: '🌼', name: 'кульбаби',      max: FLOWER_BAG_MAX },
+  corn:    { icon: '🌸', name: 'волошки',       max: FLOWER_BAG_MAX },
+  wheat:   { icon: '🌾', name: 'колоски',       max: WHEAT_MAX },
+  flour:   { icon: '🥣', name: 'борошно',       max: FLOUR_MAX },
+  bread:   { icon: '🍞', name: 'хліб',          max: BREAD_MAX },
+  coal:    { icon: '⚫', name: 'вугілля',       max: ORE_MAX.coal },
+  iron:    { icon: '⛓', name: 'залізо',        max: ORE_MAX.iron },
+  gold:    { icon: '🟡', name: 'золото',        max: ORE_MAX.gold },
+  diam:    { icon: '💎', name: 'алмази',        max: ORE_MAX.diam },
+};
+
+// Оновити плашку HUD того краму, що його щойно переклали
+function updateChestKindHud(kind) {
+  if (kind === 'food') updateFoodHud();
+  else if (kind === 'cooked') updateCookedHud();
+  else if (kind === 'honey') updateHoneyHud();
+  else if (kind === 'eggs') updateEggHud();
+  else if (kind === 'bones') updateBoneHud();
+  else if (kind === 'silk') updateSilkHud();
+  else if (kind === 'mush') updateMushHud();
+  else if (kind === 'roast') updateRoastHud();
+  else if (kind === 'gapple') updateGappleHud();
+  else if (kind === 'oyster') updateOysterHud();
+  else if (kind === 'mollusk') updateMolluskHud();
+  else if (kind === 'pearl') updatePearlHud();
+  else if (kind === 'fruit') updateFruitHud();
+  else if (kind === 'baked') updateBakedHud();
+  else if (kind === 'truffle') updateTruffleHud();
+  else if (kind === 'crown') updateCrownHud();
+  else if (kind === 'poppy' || kind === 'dand' || kind === 'corn') updateFlowerHud();
+  else if (kind === 'wheat' || kind === 'flour' || kind === 'bread') updateGrainHud();
+  else updateOreHud();
+}
+
+function makeChestModel() {
+  const g = new THREE.Group();
+  animalBox(g, 0.88, 0.06, 0.6, CHEST_WOOD_DARK, 0, 0.03, 0);   // дно-полоззя
+  animalBox(g, 0.84, 0.5, 0.56, CHEST_WOOD, 0, 0.31, 0);        // короб
+  animalBox(g, 0.86, 0.04, 0.58, CHEST_WOOD_DARK, 0, 0.54, 0);  // обідок під віком
+  // Віко на завісах при задній стінці: обертається окремою групою
+  const lid = new THREE.Group();
+  lid.position.set(0, 0.56, -0.29);                             // вісь завіс
+  animalBox(lid, 0.88, 0.14, 0.62, CHEST_WOOD, 0, 0.07, 0.29);  // кришка
+  animalBox(lid, 0.1, 0.1, 0.05, CHEST_IRON, 0, 0.04, 0.6);     // защіпка
+  g.add(lid);
+  return { group: g, lid };
+}
+
+function addChest(x, y, z, store = {}) {
+  const key = chestKey(x, y, z);
+  if (chests.has(key) || chests.size >= CHEST_MAX) return false;
+  const { group, lid } = makeChestModel();
+  group.position.set(x + 0.5, y, z + 0.5);
+  scene.add(group);
+  chests.set(key, { x, y, z, group, lid, openT: 0, store });
+  return true;
+}
+
+function removeChest(key) {
+  const c = chests.get(key);
+  if (!c) return;
+  scene.remove(c.group);
+  c.group.traverse((o) => {
+    if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
+  });
+  chests.delete(key);
+}
+
+// Скільки всього краму лежить на полицях скрині
+function chestTotal(c) {
+  return Object.values(c.store).reduce((s, n) => s + n, 0);
+}
+
+// Розібрати скриню ударом: лише порожню — добро не пропадає мовчки
+function breakChest(key) {
+  const c = chests.get(key);
+  if (!c) return;
+  if (chestTotal(c) > 0) {
+    flashItemName('📦 Скриня не порожня — спершу забери добро');
+    return;
+  }
+  if (chestOpen && chestCur === c) closeChestPanel();
+  spawnParticles(c.x + 0.5, c.y + 0.4, c.z + 0.5, new THREE.Color(CHEST_WOOD), 10,
+    { radius: 0.3, speed: 1.8, upBias: 0.8, life: 0.5, size: 0.09, gravity: 8 });
+  Sound.breakBlock(PLANK);
+  removeChest(key);
+}
+
+// Скриня втратила опору чи її клітинку зайняв блок: короб розлітається,
+// добро повертається в торбу, скільки влізе (решта, на жаль, пропадає)
+function forceBreakChest(key) {
+  const c = chests.get(key);
+  if (!c) return;
+  if (chestOpen && chestCur === c) closeChestPanel();
+  let taken = 0, lost = 0;
+  for (const [kind, n] of Object.entries(c.store)) {
+    const good = CHEST_GOODS[kind];
+    if (!good || n <= 0) continue;
+    const fit = Math.min(n, Math.max(0, good.max - (player[kind] || 0)));
+    if (fit > 0) { player[kind] += fit; taken += fit; updateChestKindHud(kind); }
+    lost += n - fit;
+  }
+  if (taken > 0 || lost > 0) {
+    flashItemName(lost > 0
+      ? `📦 Скриня розбита: ${taken} шт у торбу, ${lost} шт розсипалося`
+      : `📦 Скриня розбита: ${taken} шт краму вернулося в торбу`);
+  }
+  spawnParticles(c.x + 0.5, c.y + 0.4, c.z + 0.5, new THREE.Color(CHEST_WOOD), 12,
+    { radius: 0.35, speed: 2, upBias: 0.9, life: 0.5, size: 0.09, gravity: 8 });
+  Sound.breakBlock(PLANK);
+  removeChest(key);
+}
+
+// Зняти скрині, що втратили опору або клітинку яких зайняв блок
+function validateChests() {
+  if (chests.size === 0) return;
+  for (const [key, c] of chests) {
+    const occupied = isSolid(blockAt(c.x, c.y, c.z));
+    const supported = isSolid(blockAt(c.x, c.y - 1, c.z));
+    if (occupied || !supported) forceBreakChest(key);
+  }
+}
+
+// Поставити скриню в клітинку перед прицілом (лише на тверду підлогу)
+function placeChest(hit) {
+  const [x, y, z] = hit.prev;
+  const k = chestKey(x, y, z);
+  if (blockAt(x, y, z) !== AIR || chests.has(k) || anvils.has(k) || mills.has(k) ||
+      scarecrows.has(k) || beehives.has(k) || campfires.has(k) || torches.has(k) ||
+      ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
+      crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
+      rails.has(k) || lightningRods.has(k) || cauldrons.has(k) ||
+      mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k)) return false;
+  if (!isSolid(blockAt(x, y - 1, z))) return false;
+  if (!addChest(x, y, z)) return false;
+  Sound.place(PLANK);
+  spawnParticles(x + 0.5, y + 0.4, z + 0.5, new THREE.Color(CHEST_WOOD), 7,
+    { radius: 0.3, speed: 1.4, upBias: 0.8, life: 0.45, size: 0.08, gravity: 8 });
+  return true;
+}
+
+// Віко живе: плавно відчиняється, поки панель цієї скрині відкрита
+function updateChests(dt) {
+  if (chests.size === 0) return;
+  for (const c of chests.values()) {
+    const target = (chestOpen && chestCur === c) ? 1 : 0;
+    if (c.openT === target) continue;
+    c.openT = THREE.MathUtils.clamp(
+      c.openT + (target > c.openT ? dt * 5 : -dt * 5), 0, 1);
+    c.lid.rotation.x = -c.openT * 1.15;
+  }
+}
+
+// ===== Панель скрині: перекладання краму між торбою та полицями =====
+const chestPanelEl = document.getElementById('chest-panel');
+const chestListEl = document.getElementById('chest-list');
+const chestBagEl = document.getElementById('chest-bag');
+let chestOpen = false;
+let chestCur = null;                   // скриня, чия панель відкрита
+
+// Покласти n штук краму з торби на полицю скрині
+function chestDeposit(kind, n) {
+  const c = chestCur;
+  const good = CHEST_GOODS[kind];
+  if (!c || !good) return;
+  const have = player[kind] || 0;
+  const room = CHEST_STACK - (c.store[kind] || 0);
+  const move = Math.min(n, have, room);
+  if (move <= 0) return;
+  player[kind] -= move;
+  c.store[kind] = (c.store[kind] || 0) + move;
+  Sound.eggPop();
+  unlockAch('chest_store');
+  if (c.store[kind] >= CHEST_STACK) unlockAch('chest_stack');
+  updateChestKindHud(kind);
+  renderChestPanel();
+  saveGame();
+}
+
+// Узяти n штук краму з полиці скрині назад у торбу (шануючи кап торби)
+function chestWithdraw(kind, n) {
+  const c = chestCur;
+  const good = CHEST_GOODS[kind];
+  if (!c || !good) return;
+  const have = c.store[kind] || 0;
+  const room = good.max - (player[kind] || 0);
+  const move = Math.min(n, have, room);
+  if (move <= 0) {
+    if (have > 0 && room <= 0) flashItemName(`Торба повна — ${good.icon} ${good.name} нікуди класти`);
+    return;
+  }
+  c.store[kind] -= move;
+  if (c.store[kind] <= 0) delete c.store[kind];
+  player[kind] = (player[kind] || 0) + move;
+  Sound.eggPop();
+  updateChestKindHud(kind);
+  renderChestPanel();
+  saveGame();
+}
+
+// Кнопка перекладання: підпис, скільки посунеться, і чи є що сунути
+function chestBtn(label, title, enabled, fn) {
+  const btn = document.createElement('button');
+  btn.className = 'trade-btn chest-btn';
+  btn.textContent = label;
+  btn.title = title;
+  btn.disabled = !enabled;
+  btn.addEventListener('click', fn);
+  return btn;
+}
+
+function renderChestPanel() {
+  if (!chestListEl || !chestCur) return;
+  chestListEl.innerHTML = '';
+  const c = chestCur;
+  let rows = 0;
+  for (const [kind, good] of Object.entries(CHEST_GOODS)) {
+    const bag = player[kind] || 0;
+    const stored = c.store[kind] || 0;
+    if (bag <= 0 && stored <= 0) continue;
+    rows++;
+    const row = document.createElement('div');
+    row.className = 'trade-row';
+    const goods = document.createElement('div');
+    goods.className = 'trade-goods';
+    const line = document.createElement('div');
+    line.textContent = `${good.icon} ${good.name}`;
+    const status = document.createElement('div');
+    status.className = 'trade-stock';
+    status.textContent = `у торбі ${bag} / ${good.max} · на полиці ${stored} / ${CHEST_STACK}`;
+    goods.append(line, status);
+    row.append(goods);
+    const room = CHEST_STACK - stored;
+    const bagRoom = good.max - bag;
+    row.append(
+      chestBtn('▼ 1', 'Покласти 1 у скриню', bag > 0 && room > 0,
+        () => chestDeposit(kind, 1)),
+      chestBtn('▼ все', 'Покласти все у скриню', bag > 0 && room > 0,
+        () => chestDeposit(kind, bag)),
+      chestBtn('▲ 1', 'Узяти 1 в торбу', stored > 0 && bagRoom > 0,
+        () => chestWithdraw(kind, 1)),
+      chestBtn('▲ все', 'Узяти все в торбу', stored > 0 && bagRoom > 0,
+        () => chestWithdraw(kind, stored)));
+    chestListEl.appendChild(row);
+  }
+  if (rows === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'forge-sub';
+    empty.textContent = 'Торба порожня і полиці теж — поки нема чого перекладати';
+    chestListEl.appendChild(empty);
+  }
+  const total = chestTotal(c);
+  const kinds = Object.keys(c.store).filter((k) => c.store[k] > 0).length;
+  chestBagEl.textContent = total > 0
+    ? `На полицях: ${total} шт краму (${kinds} ${kinds === 1 ? 'вид' : kinds < 5 ? 'види' : 'видів'})`
+    : 'Полиці порожні — стос кожного краму до ' + CHEST_STACK + ' шт';
+}
+
+function openChestPanel(chest) {
+  if (chestOpen) return;
+  if (blockMenuOpen) closeBlockMenu();
+  if (achPanelOpen) closeAchPanel();
+  if (tradeOpen) closeTradePanel();
+  if (forgeOpen) closeForgePanel();
+  chestOpen = true;
+  chestCur = chest || null;
+  mining = false;
+  cancelBowDraw();
+  renderChestPanel();
+  chestPanelEl.hidden = false;
+  Sound.door(true);
+  if (isLocked()) document.exitPointerLock();   // звільнити курсор для кліків
+}
+
+function closeChestPanel() {
+  if (!chestOpen) return;
+  chestOpen = false;
+  chestCur = null;
+  chestPanelEl.hidden = true;
+  Sound.door(false);
+  if (!IS_TOUCH && !mobilePlaying && renderer.domElement.requestPointerLock) {
+    renderer.domElement.requestPointerLock();
+  }
+}
+
+document.getElementById('chest-close').addEventListener('click', closeChestPanel);
+chestPanelEl.addEventListener('click', (e) => { if (e.target === chestPanelEl) closeChestPanel(); });
+
+// Відновити збережені скрині (формат: [x, y, z, [[крам, кількість], ...]])
+if (savedGame && Array.isArray(savedGame.chests)) {
+  for (const e of savedGame.chests) {
+    if (Array.isArray(e) && e.length >= 3 && [e[0], e[1], e[2]].every(Number.isFinite)) {
+      const store = {};
+      if (Array.isArray(e[3])) {
+        for (const p of e[3]) {
+          if (Array.isArray(p) && CHEST_GOODS[p[0]] && Number.isFinite(p[1]) && p[1] > 0) {
+            store[p[0]] = Math.min(CHEST_STACK, Math.floor(p[1]));
+          }
+        }
+      }
+      addChest(e[0], e[1], e[2], store);
     }
   }
 }
@@ -12563,7 +12932,7 @@ function validateMills() {
 function placeMill(hit) {
   const [x, y, z] = hit.prev;
   const k = millKey(x, y, z);
-  if (blockAt(x, y, z) !== AIR || mills.has(k) || cauldrons.has(k) || anvils.has(k) ||
+  if (blockAt(x, y, z) !== AIR || mills.has(k) || cauldrons.has(k) || anvils.has(k) || chests.has(k) ||
       scarecrows.has(k) || beehives.has(k) || campfires.has(k) ||
       torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) ||
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
@@ -12779,7 +13148,7 @@ function placeCauldron(hit) {
   const [x, y, z] = hit.prev;
   const k = cauldronKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || cauldrons.has(k) || mills.has(k) ||
-      anvils.has(k) || scarecrows.has(k) || beehives.has(k) || campfires.has(k) ||
+      anvils.has(k) || chests.has(k) || scarecrows.has(k) || beehives.has(k) || campfires.has(k) ||
       torches.has(k) || ladders.has(k) || doorAtCell(x, y, z) ||
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
@@ -13023,7 +13392,7 @@ function mushCellFree(x, y, z) {
   const k = mushroomKey(x, y, z);
   if (mushrooms.has(k) || torches.has(k) || crops.has(k) || ladders.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
-      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || mills.has(k) || beds.has(k) ||
+      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || beds.has(k) ||
       lightningRods.has(k) || plates.has(k) || notes.has(k) ||
       fences.has(k) || gates.has(k) || doorAtCell(x, y, z)) return false;
   if (blockAt(x, y, z) !== AIR) return false;
@@ -13451,7 +13820,7 @@ function fruitCellOk(x, y, z) {
   const k = fruitKey(x, y, z);
   if (cactusFruits.has(k) || mushrooms.has(k) || crops.has(k) || saplings.has(k) ||
       torches.has(k) || ladders.has(k) || rails.has(k) || campfires.has(k) ||
-      scarecrows.has(k) || anvils.has(k) || mills.has(k) || beehives.has(k) ||
+      scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || beehives.has(k) ||
       lightningRods.has(k)) return false;
   if (blockAt(x, y, z) !== AIR || blockAt(x, y - 1, z) !== CACTUS) return false;
   return biomeAt(x, z) === BIOME.DESERT;
@@ -13987,7 +14356,7 @@ function flowerCellFree(x, y, z, planted = false) {
       torches.has(k) || crops.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       campfires.has(k) || beehives.has(k) || scarecrows.has(k) ||
-      anvils.has(k) || mills.has(k) || beds.has(k) || lightningRods.has(k) || fences.has(k) ||
+      anvils.has(k) || chests.has(k) || mills.has(k) || beds.has(k) || lightningRods.has(k) || fences.has(k) ||
       gates.has(k) || doorAtCell(x, y, z)) return false;
   if (blockAt(x, y, z) !== AIR) return false;
   return flowerSupportable(blockAt(x, y - 1, z), planted);
@@ -14516,6 +14885,12 @@ function placeBlock() {
     if (notes.has(nk)) { tuneNote(notes.get(nk)); return; }
   }
 
+  // Скриня в прицілі (ПКМ) → відчинити віко й перекласти крам
+  if (chests.size > 0) {
+    const chk = chestKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    if (chests.has(chk)) { openChestPanel(chests.get(chk)); return; }
+  }
+
   if (hotbar[selectedSlot] === BOW) return;   // луком не ставлять блок
   if (hotbar[selectedSlot] === ROD) return;   // вудкою теж не ставлять блок
 
@@ -14593,6 +14968,12 @@ function placeBlock() {
   // Нотний блок — музична сутність на твердій підлозі: ПКМ по ній настроює тон
   if (id === NOTE) {
     placeNote(hit);
+    return;
+  }
+
+  // Скриня — сховище на твердій підлозі: ПКМ по ній відчиняє полиці
+  if (id === CHEST) {
+    placeChest(hit);
     return;
   }
 
@@ -14687,6 +15068,7 @@ function placeBlock() {
   validateBeehives();  // ... або клітинку вулика
   validateScarecrows(); // ... або клітинку опудала
   validateAnvils();    // ... або клітинку ковадла
+  validateChests();
   validateMills();    // ... або клітинку вітряка
   validateCauldrons(); // ... або клітинку казана
   validateLightningRods(); // ... або клітинку громовідводу
@@ -16638,6 +17020,26 @@ function drawBlockIcon(canvas, id) {
     ctx.beginPath(); ctx.ellipse(8, 12.5, 2.3, 1.7, -0.35, 0, Math.PI * 2); ctx.fill();
     return;
   }
+  if (id === CHEST) {
+    // Процедурна іконка скрині: дощаний короб, віко й залізна защіпка
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#63401f';                 // дно-полоззя й тінь
+    ctx.fillRect(1, 13, 14, 2);
+    ctx.fillStyle = '#8a5a2b';                 // короб
+    ctx.fillRect(2, 6, 12, 8);
+    ctx.fillStyle = '#63401f';                 // шов під віком
+    ctx.fillRect(2, 6, 12, 1);
+    ctx.fillStyle = '#9c6a35';                 // віко
+    ctx.fillRect(1, 3, 14, 3);
+    ctx.fillStyle = '#b07c42';                 // відблиск віка
+    ctx.fillRect(1, 3, 14, 1);
+    ctx.fillStyle = '#aeb6c2';                 // залізна защіпка
+    ctx.fillRect(7, 5, 2, 3);
+    ctx.fillStyle = '#2b2b2b';                 // щілина замка
+    ctx.fillRect(7, 6, 2, 1);
+    return;
+  }
   if (id === MILL) {
     // Процедурна іконка вітряка: кам'яний низ, дощана вежа й хрест крил
     const ctx = canvas.getContext('2d');
@@ -17419,6 +17821,10 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     closeForgePanel();
   }
+  if (chestOpen && e.code === 'Escape') {
+    e.preventDefault();
+    closeChestPanel();
+  }
 });
 
 document.addEventListener('keyup', (e) => { keys[e.code] = false; });
@@ -17899,6 +18305,8 @@ const ACHIEVEMENTS = [
   { id: 'sneak',       icon: '🥷', title: 'Свій серед нечисті', desc: 'У масці прокрастися впритул до нечисті непоміченим' },
   { id: 'tune',        icon: '🎵', title: 'Настроювач',         desc: 'Настроїти тон нотного блока' },
   { id: 'alarm',       icon: '🔔', title: 'Сигналізація',       desc: 'Плита без гравця сама вдарила по нотному блоку' },
+  { id: 'chest_store', icon: '📦', title: 'Комора',             desc: 'Покласти крам на полицю скрині' },
+  { id: 'chest_stack', icon: '🧺', title: 'Повний стос',        desc: `Зібрати в скрині стос із ${CHEST_STACK} одного краму` },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -19858,6 +20266,7 @@ window.MCDebug = {
       ores: { coal: player.coal, iron: player.iron, gold: player.gold, diam: player.diam },
       anvils: anvils.size,
       forgeOpen,
+      chestOpen,
     };
   },
   // Обладунок (для тестів): скувати наступний рівень, полагодити, зносити
@@ -20006,6 +20415,35 @@ window.MCDebug = {
   },
   get noteInfo() {
     return [...notes.values()].map((n) => ({ x: n.x, y: n.y, z: n.z, pitch: n.pitch }));
+  },
+  giveChest: () => { assignBlockToSlot(CHEST); return BLOCK_NAMES[CHEST]; },
+  placeChestAt: (x, y, z) => placeChest({ prev: [x, y, z] }),
+  chestNear: (dx = 2, dz = 0) => {
+    const x = Math.floor(player.pos.x) + dx, z = Math.floor(player.pos.z) + dz;
+    let gy = -1;
+    for (let y = HEIGHT - 1; y > 0; y--) {
+      if (isSolid(blockAt(x, y, z))) { gy = y; break; }
+    }
+    if (gy < 0 || isSolid(blockAt(x, gy + 1, z))) return null;
+    return placeChest({ prev: [x, gy + 1, z] }) ? { x, y: gy + 1, z } : null;
+  },
+  openChestAt: (x, y, z) => {
+    const c = chests.get(chestKey(x, y, z));
+    if (!c) return false;
+    openChestPanel(c);
+    return chestOpen;
+  },
+  closeChest: () => { closeChestPanel(); return chestOpen; },
+  chestPutAt: (x, y, z, kind, n = 1) => {
+    const c = chests.get(chestKey(x, y, z));
+    if (!c || !CHEST_GOODS[kind]) return false;
+    c.store[kind] = Math.min(CHEST_STACK, (c.store[kind] || 0) + Math.max(0, Math.floor(n)));
+    if (chestOpen && chestCur === c) renderChestPanel();
+    saveGame();
+    return { ...c.store };
+  },
+  get chestInfo() {
+    return [...chests.values()].map((c) => ({ x: c.x, y: c.y, z: c.z, store: { ...c.store } }));
   },
   placeDoorAt: (x, y, z, dx = 1, dz = 0) => addDoor(x, y, z, dx, dz),
   placeGateAt: (x, y, z, dx = 1, dz = 0) => addGate(x, y, z, dx, dz),
@@ -20183,6 +20621,7 @@ function animate() {
     updateGates(dt);
     updatePlates(dt);
     updateNotes(dt);
+    updateChests(dt);
     if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
     updateArrows(dt);
     updateGroundEggs(dt);
