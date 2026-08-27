@@ -281,6 +281,22 @@ const CHEST_MAX = 16;           // межа скринь, щоб збереже�
 const PUMPKIN = 65;             // блок гарбуза (воксель): росте на рівнинах
 const JACK = 66;                // ліхтар Джека: лише вирізається з гарбуза, не з меню
 const MASK = 67;                // гарбузова маска: предмет-перевдягання
+
+// Важіль — другий «вхід» механізмів після натискної плити: кам'яна основа
+// з дерев'яним держаком, ставиться ПКМ на тверду опору. ПКМ по важелю
+// клацає держаком і фіксує стан: увімкнений тримає сусідні двері й хвіртки
+// відчиненими, б'є по нотних блоках упритул і підпалює динаміт — і живить
+// сигнальну линву. На відміну від плити, стан не залежить від ваги: сигнал
+// тримається, доки рука не клацне знову.
+const LEVER = 70;
+// Сигнальна линва — «провід» механізмів: конопляний шнур на землі, що
+// з'єднується із сусідніми линвами, важелями та плитами (і через сходинку
+// вгору/вниз). Увімкнене джерело (важіль чи натиснута плита) живить увесь
+// з'єднаний ланцюг: линва золотиться, а кожна запалена клітинка тримає
+// сусідні двері/хвіртки, б'є по нотних блоках (дальні — арпеджіо за
+// відстанню) і підпалює динаміт. Сигнал нарешті долає відстань: дзвінок
+// біля воріт, пастка з безпечної схованки, освітлений пультом двір.
+const WIRE = 71;
 const MASK_SEE_R = 6;           // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -427,6 +443,8 @@ const BLOCK_NAMES = {
   [NOTE]: 'Нотний блок',
   [CHEST]: 'Скриня',
   [PUMPKIN]: 'Гарбуз', [JACK]: 'Ліхтар Джека', [MASK]: 'Гарбузова маска',
+  [LEVER]: 'Важіль',
+  [WIRE]: 'Сигнальна линва',
 };
 
 // Яка руда з торби відповідає воксельному блоку руди
@@ -443,6 +461,7 @@ const ALL_BLOCKS = [
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
+  LEVER, WIRE,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
 
@@ -726,6 +745,8 @@ function saveGame() {
       lightningRods: [...lightningRods.values()].map((r) => [r.x, r.y, r.z]),
       plates: [...plates.values()].map((p) => [p.x, p.y, p.z]),
       notes: [...notes.values()].map((n) => [n.x, n.y, n.z, n.pitch]),
+      levers: [...levers.values()].map((l) => [l.x, l.y, l.z, l.on ? 1 : 0]),
+      wires: [...wires.values()].map((w) => [w.x, w.y, w.z]),
       chests: [...chests.values()].map((c) =>
         [c.x, c.y, c.z, Object.entries(c.store).filter(([, n]) => n > 0)]),
       mushrooms: [...mushrooms.values()].map((m) =>
@@ -931,6 +952,13 @@ const Sound = (() => {
       noise({ dur: 0.05, gain: 0.14, type: 'lowpass', freq: on ? 900 : 600, q: 1 });
       tone({ freq: on ? 320 : 240, dur: 0.07, type: 'square', gain: 0.05,
              slideTo: on ? 390 : 170 });
+    },
+    lever(on) {
+      // Клац важеля: сухіший і дзвінкіший за плиту — камінь об камінь
+      // із металевим відзвуком; вимкнення — на пів тону нижче
+      noise({ dur: 0.04, gain: 0.16, type: 'bandpass', freq: on ? 1400 : 1000, q: 2 });
+      tone({ freq: on ? 420 : 330, dur: 0.06, type: 'square', gain: 0.055,
+             slideTo: on ? 520 : 240 });
     },
     // Нотний блок: дзвінкий щипок «арфи» — основа з октавним і квінтовим
     // обертонами, швидке загасання. pitch 0..24 — пів тони від фа-дієза
@@ -6988,7 +7016,8 @@ function startBreakOrAttack() {
       scarecrows.size > 0 || mushrooms.size > 0 || anvils.size > 0 ||
       oysters.size > 0 || cactusFruits.size > 0 || lightningRods.size > 0 ||
       flowers.size > 0 || mills.size > 0 || cauldrons.size > 0 ||
-      plates.size > 0 || notes.size > 0 || chests.size > 0) {
+      plates.size > 0 || notes.size > 0 || chests.size > 0 ||
+      levers.size > 0 || wires.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -7083,6 +7112,16 @@ function startBreakOrAttack() {
       }
       if (notes.has(key)) {
         breakNote(key);
+        triggerSwing();
+        return;
+      }
+      if (levers.has(key)) {
+        breakLever(key);
+        triggerSwing();
+        return;
+      }
+      if (wires.has(key)) {
+        breakWire(key);
         triggerSwing();
         return;
       }
@@ -8222,7 +8261,8 @@ function placeTorch(hit) {
       lightningRods.has(torchKey(x, y, z)) ||
       mushrooms.has(torchKey(x, y, z)) ||
       flowers.has(torchKey(x, y, z)) || plates.has(torchKey(x, y, z)) ||
-      notes.has(torchKey(x, y, z))) return false;
+      notes.has(torchKey(x, y, z)) || levers.has(torchKey(x, y, z)) ||
+      wires.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -8387,7 +8427,8 @@ function placeLadder(hit) {
       lightningRods.has(ladderKey(x, y, z)) ||
       mushrooms.has(ladderKey(x, y, z)) ||
       flowers.has(ladderKey(x, y, z)) || plates.has(ladderKey(x, y, z)) ||
-      notes.has(ladderKey(x, y, z))) return false;
+      notes.has(ladderKey(x, y, z)) || levers.has(ladderKey(x, y, z)) ||
+      wires.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -8598,7 +8639,8 @@ function placeDoor(hit) {
         saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
         beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
         lightningRods.has(k) ||
-        mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k)) return false;
+        mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
+      levers.has(k) || wires.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -8865,7 +8907,8 @@ function fenceCellFree(x, y, z) {
          !saplings.has(k) && !signs.has(k) && !rails.has(k) && !campfires.has(k) &&
          !beehives.has(k) && !scarecrows.has(k) && !anvils.has(k) && !chests.has(k) && !mills.has(k) &&
          !lightningRods.has(k) &&
-         !mushrooms.has(k) && !flowers.has(k) && !plates.has(k) && !notes.has(k);
+         !mushrooms.has(k) && !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
+         !levers.has(k) && !wires.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -9039,7 +9082,8 @@ function plantCrop(hit) {
       anvils.has(cropKey(x, y, z)) || chests.has(cropKey(x, y, z)) || mills.has(cropKey(x, y, z)) || lightningRods.has(cropKey(x, y, z)) ||
       mushrooms.has(cropKey(x, y, z)) ||
       flowers.has(cropKey(x, y, z)) || plates.has(cropKey(x, y, z)) ||
-      notes.has(cropKey(x, y, z))) return false;
+      notes.has(cropKey(x, y, z)) || levers.has(cropKey(x, y, z)) ||
+      wires.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -9212,7 +9256,8 @@ function plantSapling(hit) {
       lightningRods.has(saplingKey(x, y, z)) ||
       mushrooms.has(saplingKey(x, y, z)) ||
       flowers.has(saplingKey(x, y, z)) || plates.has(saplingKey(x, y, z)) ||
-      notes.has(saplingKey(x, y, z))) return false;
+      notes.has(saplingKey(x, y, z)) || levers.has(saplingKey(x, y, z)) ||
+      wires.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -9378,7 +9423,8 @@ function placeBed(hit) {
       lightningRods.has(bedKey(x, y, z)) ||
       mushrooms.has(bedKey(x, y, z)) ||
       flowers.has(bedKey(x, y, z)) || plates.has(bedKey(x, y, z)) ||
-      notes.has(bedKey(x, y, z))) return false;
+      notes.has(bedKey(x, y, z)) || levers.has(bedKey(x, y, z)) ||
+      wires.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -9610,7 +9656,8 @@ function signCellFree(x, y, z) {
          !anvils.has(k) && !chests.has(k) && !mills.has(k) && !lightningRods.has(k) &&
          !crops.has(k) && !beds.has(k) && !ladders.has(k) && !doorAtCell(x, y, z) &&
          !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k) &&
-         !flowers.has(k) && !plates.has(k) && !notes.has(k);
+         !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
+         !levers.has(k) && !wires.has(k);
 }
 
 // ===== Редактор напису (створюється в JS — без правок HTML) =====
@@ -10182,6 +10229,7 @@ function placeRail(hit) {
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) ||
       flowers.has(k) || plates.has(k) || notes.has(k) ||
+      levers.has(k) || wires.has(k) ||
       lightningRods.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
@@ -10600,7 +10648,7 @@ function breakPlate(key) {
 function placePlate(hit) {
   const [x, y, z] = hit.prev;
   const k = plateKey(x, y, z);
-  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || torches.has(k) ||
+  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -10697,6 +10745,8 @@ function retryReleasePlate(p) {
     const e = kind === 'door' ? doors.get(key) : gates.get(key);
     if (!e || !e.open) { p.held.delete(tag); continue; }
     if (heldByOtherPlate(tag, p)) { p.held.delete(tag); continue; }
+    // Двері під напругою мережі важеля/линви — передати борг їй
+    if (heldByPower(tag)) { powerHeld.add(tag); p.held.delete(tag); continue; }
     if (kind === 'door' ? toggleDoor(e) : toggleGate(e)) p.held.delete(tag);
   }
 }
@@ -10836,7 +10886,8 @@ function breakNote(key) {
 function placeNote(hit) {
   const [x, y, z] = hit.prev;
   const k = noteKey(x, y, z);
-  if (blockAt(x, y, z) !== AIR || notes.has(k) || plates.has(k) || torches.has(k) ||
+  if (blockAt(x, y, z) !== AIR || notes.has(k) || plates.has(k) || levers.has(k) ||
+      wires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -10911,6 +10962,379 @@ function updateNotes(dt) {
 if (savedGame && Array.isArray(savedGame.notes)) {
   for (const e of savedGame.notes) {
     if (Array.isArray(e) && e.length >= 3) addNote(e[0], e[1], e[2], e[3] | 0);
+  }
+}
+
+// ============================================================
+// Важіль і сигнальна линва: сигнал долає відстань
+// ============================================================
+// Важіль — «вхід» із фіксованим станом (плита реагує на вагу, важіль — на
+// руку), линва — «провід»: BFS від увімкнених джерел (важелі, натиснуті
+// плити) крізь з'єднані линви щокадру визначає, які клітинки під напругою.
+// Запалена клітинка тримає сусідні двері/хвіртки відчиненими, на фронті
+// сигналу б'є по нотних блоках упритул (дальші линви — пізніше: арпеджіо
+// біжить уздовж шнура) і підпалює динаміт. Ставляться ПКМ на тверду
+// опору, ЛКМ — розібрати; без опори чи під зайнятою клітинкою — спадають.
+const levers = new Map();              // "x,y,z" -> { x, y, z, group, stick, on, flip }
+const wires = new Map();               // "x,y,z" -> { x, y, z, group, powered, dist }
+const LEVER_MAX = 32;                  // межа, щоб збереження не розросталося
+const WIRE_MAX = 192;
+const WIRE_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+const powerHeld = new Set();           // двері/хвіртки, відчинені мережею ("door:key")
+let powerNeed = new Set();             // теги, які мережа хоче тримати цього кадру
+
+const leverKey = (x, y, z) => x + ',' + y + ',' + z;
+const wireKey = leverKey;
+
+const LEVER_BASE_GEO = new THREE.BoxGeometry(0.34, 0.1, 0.24);
+const LEVER_BASE_MAT = new THREE.MeshLambertMaterial({ color: 0x6f7680 });
+const LEVER_STICK_GEO = new THREE.BoxGeometry(0.08, 0.42, 0.08);
+LEVER_STICK_GEO.translate(0, 0.21, 0);          // вісь обертання — біля основи
+const LEVER_STICK_MAT = new THREE.MeshLambertMaterial({ color: 0x8a6a3f });
+const LEVER_KNOB_GEO = new THREE.BoxGeometry(0.12, 0.1, 0.12);
+LEVER_KNOB_GEO.translate(0, 0.42, 0);
+const LEVER_KNOB_MAT = new THREE.MeshLambertMaterial({ color: 0xc0392b });
+const WIRE_ARM_GEO = new THREE.BoxGeometry(0.5, 0.06, 0.1);
+WIRE_ARM_GEO.translate(0.25, 0, 0);             // від вузла до краю клітинки
+const WIRE_KNOT_GEO = new THREE.BoxGeometry(0.16, 0.08, 0.16);
+const WIRE_COIL_GEO = new THREE.BoxGeometry(0.34, 0.06, 0.1);
+const WIRE_MAT = new THREE.MeshLambertMaterial({ color: 0xa58a4f });
+const WIRE_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xffd54a, emissive: 0x8a6a1a });
+
+function makeLeverModel() {
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(LEVER_BASE_GEO, LEVER_BASE_MAT);
+  base.position.y = 0.05;
+  g.add(base);
+  const stick = new THREE.Group();
+  stick.add(new THREE.Mesh(LEVER_STICK_GEO, LEVER_STICK_MAT));
+  stick.add(new THREE.Mesh(LEVER_KNOB_GEO, LEVER_KNOB_MAT));
+  stick.position.y = 0.08;
+  g.add(stick);
+  return { g, stick };
+}
+
+// Чи є в клітинці провідник або джерело сигналу (для з'єднання линв)
+function powerNodeAt(x, y, z) {
+  const k = wireKey(x, y, z);
+  return wires.has(k) || levers.has(k) || plates.has(k);
+}
+
+// Перебудувати модель линви: вузол і рукави до з'єднаних сусідів
+// (через сходинку вгору/вниз — теж), без сусідів — короткий моток
+function rebuildWireMesh(w) {
+  while (w.group.children.length) w.group.remove(w.group.children[0]);
+  const mat = w.powered ? WIRE_ON_MAT : WIRE_MAT;
+  let arms = 0;
+  for (const [dx, dz] of WIRE_DIRS) {
+    let linked = false;
+    for (let dy = -1; dy <= 1 && !linked; dy++) {
+      if (powerNodeAt(w.x + dx, w.y + dy, w.z + dz)) linked = true;
+    }
+    if (!linked) continue;
+    const arm = new THREE.Mesh(WIRE_ARM_GEO, mat);
+    arm.position.y = 0.04;
+    arm.rotation.y = Math.atan2(-dz, dx);
+    w.group.add(arm);
+    arms++;
+  }
+  if (arms > 0) {
+    const knot = new THREE.Mesh(WIRE_KNOT_GEO, mat);
+    knot.position.y = 0.05;
+    w.group.add(knot);
+  } else {
+    const a = new THREE.Mesh(WIRE_COIL_GEO, mat);
+    a.position.y = 0.04; a.rotation.y = 0.6;
+    const b = new THREE.Mesh(WIRE_COIL_GEO, mat);
+    b.position.y = 0.04; b.rotation.y = 0.6 + Math.PI / 2;
+    b.position.x = -0.17 * Math.cos(0.6 + Math.PI / 2);
+    b.position.z = 0.17 * Math.sin(0.6 + Math.PI / 2);
+    a.position.x = -0.17 * Math.cos(0.6);
+    a.position.z = 0.17 * Math.sin(0.6);
+    w.group.add(a, b);
+  }
+}
+
+// Сусідня линва додалась/зникла — перебудувати рукави довкола клітинки
+function refreshWiresAround(x, y, z) {
+  for (const [dx, dz] of WIRE_DIRS) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const w = wires.get(wireKey(x + dx, y + dy, z + dz));
+      if (w) rebuildWireMesh(w);
+    }
+  }
+}
+
+function addLever(x, y, z, on = false) {
+  const key = leverKey(x, y, z);
+  if (levers.has(key) || levers.size >= LEVER_MAX) return false;
+  const { g, stick } = makeLeverModel();
+  g.position.set(x + 0.5, y, z + 0.5);
+  scene.add(g);
+  levers.set(key, { x, y, z, group: g, stick, on: !!on, flip: on ? 1 : 0 });
+  refreshWiresAround(x, y, z);
+  return true;
+}
+
+function removeLever(key) {
+  const l = levers.get(key);
+  if (!l) return;
+  scene.remove(l.group);   // геометрія/матеріали спільні — не dispose
+  levers.delete(key);
+  refreshWiresAround(l.x, l.y, l.z);
+}
+
+function breakLever(key) {
+  const l = levers.get(key);
+  if (!l) return;
+  spawnParticles(l.x + 0.5, l.y + 0.2, l.z + 0.5, new THREE.Color(0x6f7680), 6,
+    { radius: 0.25, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 10 });
+  Sound.breakBlock(STONE);
+  removeLever(key);
+}
+
+function addWire(x, y, z) {
+  const key = wireKey(x, y, z);
+  if (wires.has(key) || wires.size >= WIRE_MAX) return false;
+  const g = new THREE.Group();
+  g.position.set(x + 0.5, y, z + 0.5);
+  scene.add(g);
+  const w = { x, y, z, group: g, powered: false, dist: 0 };
+  wires.set(key, w);
+  rebuildWireMesh(w);
+  refreshWiresAround(x, y, z);
+  return true;
+}
+
+function removeWire(key) {
+  const w = wires.get(key);
+  if (!w) return;
+  scene.remove(w.group);
+  wires.delete(key);
+  refreshWiresAround(w.x, w.y, w.z);
+}
+
+function breakWire(key) {
+  const w = wires.get(key);
+  if (!w) return;
+  spawnParticles(w.x + 0.5, w.y + 0.1, w.z + 0.5, new THREE.Color(0xa58a4f), 5,
+    { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.35, size: 0.07, gravity: 10 });
+  Sound.breakBlock(LEAVES);
+  removeWire(key);
+}
+
+// Спільна перевірка клітинки для важеля/линви (як у плити)
+function powerCellFree(x, y, z) {
+  const k = leverKey(x, y, z);
+  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) ||
+      levers.has(k) || wires.has(k) || torches.has(k) ||
+      ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
+      saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
+      beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
+      cauldrons.has(k) || lightningRods.has(k) || crops.has(k) || beds.has(k) ||
+      mushrooms.has(k) || flowers.has(k)) return false;
+  return isSolid(blockAt(x, y - 1, z));
+}
+
+// Поставити важіль у клітинку перед прицілом (лише на тверду підлогу)
+function placeLever(hit) {
+  const [x, y, z] = hit.prev;
+  if (!powerCellFree(x, y, z)) return false;
+  if (!addLever(x, y, z)) return false;
+  Sound.place(STONE);
+  spawnParticles(x + 0.5, y + 0.2, z + 0.5, new THREE.Color(0x8a6a3f), 6,
+    { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
+  return true;
+}
+
+// Покласти линву в клітинку перед прицілом (лише на тверду підлогу)
+function placeWire(hit) {
+  const [x, y, z] = hit.prev;
+  if (!powerCellFree(x, y, z)) return false;
+  if (!addWire(x, y, z)) return false;
+  Sound.place(LEAVES);
+  spawnParticles(x + 0.5, y + 0.1, z + 0.5, new THREE.Color(0xa58a4f), 5,
+    { radius: 0.25, speed: 1.1, upBias: 0.4, life: 0.35, size: 0.07, gravity: 10 });
+  return true;
+}
+
+// Нотні блоки впритул до запаленої клітинки (для фронту сигналу)
+function powerNotesAround(x, y, z) {
+  const list = [];
+  for (const n of notes.values()) {
+    if (Math.max(Math.abs(n.x - x), Math.abs(n.z - z)) <= 1 &&
+        Math.abs(n.y - y) <= 1) list.push(n);
+  }
+  return list;
+}
+
+// Підпалити динаміт довкола запаленої клітинки (як у натиснутої плити)
+function igniteTntAround(x, y, z) {
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        if (blockAt(x + dx, y + dy, z + dz) === TNT) {
+          igniteTnt(x + dx, y + dy, z + dz, 0.9 + Math.random() * 0.4);
+        }
+      }
+    }
+  }
+}
+
+// Клац рукою: перемкнути стан, ударити по нотних блоках і динаміту впритул
+// (двері й линви підхопить перерахунок мережі цього ж кадру)
+function toggleLever(l) {
+  l.on = !l.on;
+  Sound.lever(l.on);
+  unlockAch('lever');
+  spawnParticles(l.x + 0.5, l.y + 0.35, l.z + 0.5,
+    new THREE.Color(l.on ? 0xffd54a : 0x9aa3ad), 4,
+    { radius: 0.15, speed: 0.9, upBias: 0.8, life: 0.4, size: 0.07, gravity: 2 });
+  if (l.on) {
+    for (const n of powerNotesAround(l.x, l.y, l.z)) strikeNote(n);
+    igniteTntAround(l.x, l.y, l.z);
+  }
+  flashItemName(l.on ? '🎚 Важіль: увімкнено' : '🎚 Важіль: вимкнено');
+}
+
+// BFS від усіх джерел (увімкнені важелі, натиснуті плити) крізь линви:
+// повертає Map ключ->відстань у клітинках (перший візит — найкоротша)
+function computePower() {
+  const powered = new Map();
+  const queue = [];
+  for (const l of levers.values()) if (l.on) queue.push([l.x, l.y, l.z, 0]);
+  for (const p of plates.values()) if (p.pressed) queue.push([p.x, p.y, p.z, 0]);
+  for (let qi = 0; qi < queue.length; qi++) {
+    const [x, y, z, d] = queue[qi];
+    for (const [dx, dz] of WIRE_DIRS) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const k = wireKey(x + dx, y + dy, z + dz);
+        if (powered.has(k)) continue;
+        const w = wires.get(k);
+        if (!w) continue;
+        powered.set(k, d + 1);
+        queue.push([w.x, w.y, w.z, d + 1]);
+      }
+    }
+  }
+  return powered;
+}
+
+// Двері та хвіртки поруч із запаленою клітинкою (радіус як у плити)
+function powerNeighbours(x, y, z) {
+  const list = [];
+  for (const d of doors.values()) {
+    if (Math.abs(d.x - x) <= PLATE_LINK_R && Math.abs(d.z - z) <= PLATE_LINK_R &&
+        Math.abs(d.y - y) <= 1) {
+      list.push({ kind: 'door', e: d, tag: 'door:' + doorKey(d.x, d.y, d.z) });
+    }
+  }
+  for (const g of gates.values()) {
+    if (Math.abs(g.x - x) <= PLATE_LINK_R && Math.abs(g.z - z) <= PLATE_LINK_R &&
+        Math.abs(g.y - y) <= 1) {
+      list.push({ kind: 'gate', e: g, tag: 'gate:' + fenceKey(g.x, g.y, g.z) });
+    }
+  }
+  return list;
+}
+
+// Чи тримає мережа цей тег (щоб плита не зачиняла двері під напругою)
+const heldByPower = (tag) => powerHeld.has(tag) || powerNeed.has(tag);
+
+// Тик мережі: опора, BFS, фронт сигналу (ноти, динаміт, іскри) і борги
+// дверей — усе після updatePlates, щоб бачити свіжий стан ваги
+function updatePower(dt) {
+  if (levers.size === 0 && wires.size === 0 && powerHeld.size === 0) return;
+  // Опора й зайняті клітинки
+  for (const [key, l] of levers) {
+    if (isSolid(blockAt(l.x, l.y, l.z)) || !isSolid(blockAt(l.x, l.y - 1, l.z))) {
+      breakLever(key);
+      continue;
+    }
+    // Плавний перекид держака
+    const target = l.on ? 1 : 0;
+    if (l.flip !== target) {
+      l.flip += Math.sign(target - l.flip) * Math.min(dt * 8, Math.abs(target - l.flip));
+      l.stick.rotation.x = 0.75 - l.flip * 1.5;
+    } else {
+      l.stick.rotation.x = 0.75 - l.flip * 1.5;
+    }
+  }
+  for (const [key, w] of wires) {
+    if (isSolid(blockAt(w.x, w.y, w.z)) || !isSolid(blockAt(w.x, w.y - 1, w.z))) {
+      breakWire(key);
+    }
+  }
+  // Хто під напругою
+  const powered = computePower();
+  for (const [key, w] of wires) {
+    const now = powered.has(key);
+    if (now && !w.powered) {
+      // Фронт сигналу дійшов сюди: золотимось, дзвонимо, підпалюємо
+      w.powered = true;
+      w.dist = powered.get(key);
+      rebuildWireMesh(w);
+      spawnParticles(w.x + 0.5, w.y + 0.15, w.z + 0.5, new THREE.Color(0xffd54a), 3,
+        { radius: 0.2, speed: 0.6, upBias: 1.2, life: 0.5, size: 0.07, gravity: -1 });
+      const hadEffect = { v: false };
+      for (const n of powerNotesAround(w.x, w.y, w.z)) {
+        hadEffect.v = true;
+        if (w.dist <= 1) strikeNote(n);
+        else noteStrikes.push({ n, t: (w.dist - 1) * NOTE_ARP_DELAY });
+      }
+      igniteTntAround(w.x, w.y, w.z);
+      if (w.dist >= 3 &&
+          (hadEffect.v || powerNeighbours(w.x, w.y, w.z).length > 0)) {
+        unlockAch('circuit');
+      }
+    } else if (!now && w.powered) {
+      w.powered = false;
+      w.dist = 0;
+      rebuildWireMesh(w);
+    }
+  }
+  // Які двері/хвіртки мережа хоче тримати: сусіди запалених линв і
+  // увімкнених важелів (натиснута плита тримає своїх сусідів сама)
+  const need = new Map();
+  for (const l of levers.values()) {
+    if (!l.on) continue;
+    for (const n of powerNeighbours(l.x, l.y, l.z)) need.set(n.tag, n);
+  }
+  for (const w of wires.values()) {
+    if (!w.powered) continue;
+    for (const n of powerNeighbours(w.x, w.y, w.z)) need.set(n.tag, n);
+  }
+  powerNeed = new Set(need.keys());
+  // Відчинити нове (відчинене рукою — не чіпати, як і плита)
+  for (const [tag, n] of need) {
+    if (powerHeld.has(tag)) continue;
+    if (!n.e.open && (n.kind === 'door' ? toggleDoor(n.e) : toggleGate(n.e))) {
+      powerHeld.add(tag);
+    }
+  }
+  // Дочинити борги: сигнал зійшов — зачинити, щойно прохід вільний і
+  // дверей не тримає натиснута плита
+  for (const tag of [...powerHeld]) {
+    if (need.has(tag)) continue;
+    const sep = tag.indexOf(':');
+    const kind = tag.slice(0, sep), key = tag.slice(sep + 1);
+    const e = kind === 'door' ? doors.get(key) : gates.get(key);
+    if (!e || !e.open) { powerHeld.delete(tag); continue; }
+    if (heldByOtherPlate(tag, null)) { powerHeld.delete(tag); continue; }
+    if (kind === 'door' ? toggleDoor(e) : toggleGate(e)) powerHeld.delete(tag);
+  }
+}
+
+// Відновити збережені важелі й линви (сумісно зі старими сейвами)
+if (savedGame && Array.isArray(savedGame.levers)) {
+  for (const e of savedGame.levers) {
+    if (Array.isArray(e) && e.length >= 3) addLever(e[0], e[1], e[2], !!e[3]);
+  }
+}
+if (savedGame && Array.isArray(savedGame.wires)) {
+  for (const e of savedGame.wires) {
+    if (Array.isArray(e) && e.length >= 3) addWire(e[0], e[1], e[2]);
   }
 }
 
@@ -11137,7 +11561,8 @@ function placeCampfire(hit) {
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
       rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
-      mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
+      levers.has(k) || wires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
   Sound.torch(0.2);
@@ -11586,7 +12011,8 @@ function placeBeehive(hit) {
       gates.has(k) || crops.has(k) || beds.has(k) || saplings.has(k) ||
       signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
-      mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
+      levers.has(k) || wires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addBeehive(x, y, z)) return false;
   Sound.place(PLANK);
@@ -11782,7 +12208,8 @@ function placeScarecrow(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
-      mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
+      levers.has(k) || wires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addScarecrow(x, y, z)) return false;
   Sound.place(PLANK);
@@ -11921,7 +12348,7 @@ function placeLightningRod(hit) {
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!Object.entries(LROD_COST).every(([ore, n]) => (player[ore] || 0) >= n)) {
     flashItemName('Потрібно ⛓ 2 × залізо + 🟡 1 × золото з торби');
@@ -12171,7 +12598,8 @@ function placeAnvil(hit) {
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) ||
-      mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
+      levers.has(k) || wires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addAnvil(x, y, z)) return false;
   Sound.place(STONE);
@@ -12660,7 +13088,8 @@ function placeChest(hit) {
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
       rails.has(k) || lightningRods.has(k) || cauldrons.has(k) ||
-      mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k)) return false;
+      mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
+      levers.has(k) || wires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addChest(x, y, z)) return false;
   Sound.place(PLANK);
@@ -12938,7 +13367,7 @@ function placeMill(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addMill(x, y, z)) return false;
   Sound.place(PLANK);
@@ -13153,7 +13582,7 @@ function placeCauldron(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCauldron(x, y, z)) return false;
   Sound.place(STONE);
@@ -13394,6 +13823,7 @@ function mushCellFree(x, y, z) {
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || beds.has(k) ||
       lightningRods.has(k) || plates.has(k) || notes.has(k) ||
+      levers.has(k) || wires.has(k) ||
       fences.has(k) || gates.has(k) || doorAtCell(x, y, z)) return false;
   if (blockAt(x, y, z) !== AIR) return false;
   return mushSupportable(blockAt(x, y - 1, z));
@@ -14353,6 +14783,7 @@ const flowerSupportable = (id, planted) => id === GRASS || (planted && id === DI
 function flowerCellFree(x, y, z, planted = false) {
   const k = flowerKey(x, y, z);
   if (flowers.has(k) || mushrooms.has(k) || plates.has(k) || notes.has(k) ||
+      levers.has(k) || wires.has(k) ||
       torches.has(k) || crops.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       campfires.has(k) || beehives.has(k) || scarecrows.has(k) ||
@@ -14879,6 +15310,12 @@ function placeBlock() {
     if (cauldrons.has(ck)) { tryCauldronAt(cauldrons.get(ck)); return; }
   }
 
+  // Важіль у прицілі (ПКМ) → клацнути, з будь-яким предметом у руці
+  if (levers.size > 0) {
+    const lk = leverKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    if (levers.has(lk)) { toggleLever(levers.get(lk)); return; }
+  }
+
   // Нотний блок у прицілі (ПКМ) → настроїти тон, з будь-яким предметом у руці
   if (notes.size > 0) {
     const nk = noteKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -14974,6 +15411,18 @@ function placeBlock() {
   // Скриня — сховище на твердій підлозі: ПКМ по ній відчиняє полиці
   if (id === CHEST) {
     placeChest(hit);
+    return;
+  }
+
+  // Важіль — вхід механізмів із фіксованим станом: ПКМ по ньому клацає
+  if (id === LEVER) {
+    placeLever(hit);
+    return;
+  }
+
+  // Сигнальна линва — провід механізмів: з'єднується із сусідами сама
+  if (id === WIRE) {
+    placeWire(hit);
     return;
   }
 
@@ -17002,6 +17451,43 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(4, 8, 8, 1);
     return;
   }
+  if (id === LEVER) {
+    // Процедурна іконка важеля: кам'яна основа й перекинутий держак
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тінь під основою
+    ctx.fillRect(3, 13, 10, 2);
+    ctx.fillStyle = '#6f7680';                 // кам'яна основа
+    ctx.fillRect(3, 10, 10, 3);
+    ctx.fillStyle = '#8a929c';                 // відблиск основи
+    ctx.fillRect(3, 10, 10, 1);
+    ctx.strokeStyle = '#8a6a3f';               // дерев'яний держак
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(8, 10); ctx.lineTo(12, 3); ctx.stroke();
+    ctx.fillStyle = '#c0392b';                 // головка
+    ctx.fillRect(11, 1, 3, 3);
+    return;
+  }
+  if (id === WIRE) {
+    // Процедурна іконка сигнальної линви: шнур із провисом і золоті іскри
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.strokeStyle = '#a58a4f';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(1, 5); ctx.quadraticCurveTo(5, 9, 8, 8);
+    ctx.quadraticCurveTo(12, 7, 15, 11);
+    ctx.stroke();
+    ctx.strokeStyle = '#7d6636';               // обмотка шнура
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(4, 6.5); ctx.lineTo(5, 8.5); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(10, 7); ctx.lineTo(11, 9); ctx.stroke();
+    ctx.fillStyle = '#ffd54a';                 // золоті іскри сигналу
+    ctx.fillRect(7, 4, 2, 2);
+    ctx.fillRect(13, 8, 1, 1);
+    ctx.fillRect(2, 3, 1, 1);
+    return;
+  }
   if (id === NOTE) {
     // Процедурна іконка нотного блока: дощаний ящик із білою нотою
     const ctx = canvas.getContext('2d');
@@ -18307,6 +18793,8 @@ const ACHIEVEMENTS = [
   { id: 'alarm',       icon: '🔔', title: 'Сигналізація',       desc: 'Плита без гравця сама вдарила по нотному блоку' },
   { id: 'chest_store', icon: '📦', title: 'Комора',             desc: 'Покласти крам на полицю скрині' },
   { id: 'chest_stack', icon: '🧺', title: 'Повний стос',        desc: `Зібрати в скрині стос із ${CHEST_STACK} одного краму` },
+  { id: 'lever',       icon: '🎚', title: 'Рубильник',          desc: 'Клацнути важелем' },
+  { id: 'circuit',     icon: '🔌', title: 'Сигнал у линві',     desc: 'Сигнал пробіг линвою три клітинки й спрацював' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -20445,6 +20933,25 @@ window.MCDebug = {
   get chestInfo() {
     return [...chests.values()].map((c) => ({ x: c.x, y: c.y, z: c.z, store: { ...c.store } }));
   },
+  // Важіль і сигнальна линва (для тестів)
+  giveLever: () => { assignBlockToSlot(LEVER); return BLOCK_NAMES[LEVER]; },
+  giveWire: () => { assignBlockToSlot(WIRE); return BLOCK_NAMES[WIRE]; },
+  placeLeverAt: (x, y, z) => placeLever({ prev: [x, y, z] }),
+  placeWireAt: (x, y, z) => placeWire({ prev: [x, y, z] }),
+  toggleLeverAt: (x, y, z) => {
+    const l = levers.get(leverKey(x, y, z));
+    if (!l) return null;
+    toggleLever(l);
+    return l.on;
+  },
+  get powerInfo() {
+    return {
+      levers: [...levers.values()].map((l) => ({ x: l.x, y: l.y, z: l.z, on: l.on })),
+      wires: [...wires.values()].map((w) =>
+        ({ x: w.x, y: w.y, z: w.z, powered: w.powered, dist: w.dist })),
+      held: [...powerHeld],
+    };
+  },
   placeDoorAt: (x, y, z, dx = 1, dz = 0) => addDoor(x, y, z, dx, dz),
   placeGateAt: (x, y, z, dx = 1, dz = 0) => addGate(x, y, z, dx, dz),
   giveWheat: (n = 6) => {
@@ -20621,6 +21128,7 @@ function animate() {
     updateGates(dt);
     updatePlates(dt);
     updateNotes(dt);
+    updatePower(dt);
     updateChests(dt);
     if (bow.drawing) bow.charge = Math.min(1, bow.charge + dt / BOW_DRAW_TIME);
     updateArrows(dt);
