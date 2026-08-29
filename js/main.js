@@ -305,6 +305,13 @@ const WIRE = 71;
 // мережі або спрацьовували раз (нота, вибух), або рухались (двері). Запалена
 // лампа світить власним теплим світлом і відлякує нечисть, як смолоскип.
 const LAMP = 72;
+// Датчик світла — перший «вхід», що діє без руки й ваги: кам'яна основа з
+// кристалом-оком, що міряє небо. Денний режим живить мережу, доки сонце
+// високо; ПКМ по датчику перемикає на нічний — сигнал з'являється в
+// сутінках і тане на світанку. З линвою та лампою складається перша
+// автоматика гри: ліхтарі самі спалахують надвечір, дзвінок б'є на
+// смерканні, а двір прокидається без жодного дотику.
+const SENSOR = 73;
 const MASK_SEE_R = 6;           // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -454,6 +461,7 @@ const BLOCK_NAMES = {
   [LEVER]: 'Важіль',
   [WIRE]: 'Сигнальна линва',
   [LAMP]: 'Сигнальна лампа',
+  [SENSOR]: 'Датчик світла',
 };
 
 // Яка руда з торби відповідає воксельному блоку руди
@@ -470,7 +478,7 @@ const ALL_BLOCKS = [
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
-  LEVER, WIRE, LAMP,
+  LEVER, WIRE, LAMP, SENSOR,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
 
@@ -757,6 +765,7 @@ function saveGame() {
       levers: [...levers.values()].map((l) => [l.x, l.y, l.z, l.on ? 1 : 0]),
       wires: [...wires.values()].map((w) => [w.x, w.y, w.z]),
       lamps: [...lamps.values()].map((l) => [l.x, l.y, l.z]),
+      sensors: [...sensors.values()].map((s) => [s.x, s.y, s.z, s.mode]),
       chests: [...chests.values()].map((c) =>
         [c.x, c.y, c.z, Object.entries(c.store).filter(([, n]) => n > 0)]),
       mushrooms: [...mushrooms.values()].map((m) =>
@@ -976,6 +985,13 @@ const Sound = (() => {
       tone({ freq: on ? 880 : 620, dur: 0.07, type: 'sine', gain: on ? 0.07 : 0.05,
              slideTo: on ? 1240 : 400 });
       if (on) tone({ freq: 190, dur: 0.28, type: 'triangle', gain: 0.03, attack: 0.02 });
+    },
+    sensor(on) {
+      // Датчик світла: скляний «тік» фотоелемента з м'яким дзвоном —
+      // спрацювання вище й світліше, згасання — нижче і глухіше
+      tone({ freq: on ? 740 : 520, dur: 0.06, type: 'sine', gain: 0.055,
+             slideTo: on ? 990 : 350 });
+      noise({ dur: 0.03, gain: 0.08, type: 'bandpass', freq: on ? 1800 : 1200, q: 3 });
     },
     // Нотний блок: дзвінкий щипок «арфи» — основа з октавним і квінтовим
     // обертонами, швидке загасання. pitch 0..24 — пів тони від фа-дієза
@@ -7036,7 +7052,7 @@ function startBreakOrAttack() {
       oysters.size > 0 || cactusFruits.size > 0 || lightningRods.size > 0 ||
       flowers.size > 0 || mills.size > 0 || cauldrons.size > 0 ||
       plates.size > 0 || notes.size > 0 || chests.size > 0 ||
-      levers.size > 0 || wires.size > 0 || lamps.size > 0) {
+      levers.size > 0 || wires.size > 0 || lamps.size > 0 || sensors.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -7146,6 +7162,11 @@ function startBreakOrAttack() {
       }
       if (lamps.has(key)) {
         breakLamp(key);
+        triggerSwing();
+        return;
+      }
+      if (sensors.has(key)) {
+        breakSensor(key);
         triggerSwing();
         return;
       }
@@ -8286,7 +8307,8 @@ function placeTorch(hit) {
       mushrooms.has(torchKey(x, y, z)) ||
       flowers.has(torchKey(x, y, z)) || plates.has(torchKey(x, y, z)) ||
       notes.has(torchKey(x, y, z)) || levers.has(torchKey(x, y, z)) ||
-      wires.has(torchKey(x, y, z)) || lamps.has(torchKey(x, y, z))) return false;
+      wires.has(torchKey(x, y, z)) || lamps.has(torchKey(x, y, z)) ||
+      sensors.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -8452,7 +8474,8 @@ function placeLadder(hit) {
       mushrooms.has(ladderKey(x, y, z)) ||
       flowers.has(ladderKey(x, y, z)) || plates.has(ladderKey(x, y, z)) ||
       notes.has(ladderKey(x, y, z)) || levers.has(ladderKey(x, y, z)) ||
-      wires.has(ladderKey(x, y, z)) || lamps.has(ladderKey(x, y, z))) return false;
+      wires.has(ladderKey(x, y, z)) || lamps.has(ladderKey(x, y, z)) ||
+      sensors.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -8664,7 +8687,7 @@ function placeDoor(hit) {
         beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
         lightningRods.has(k) ||
         mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -8932,7 +8955,7 @@ function fenceCellFree(x, y, z) {
          !beehives.has(k) && !scarecrows.has(k) && !anvils.has(k) && !chests.has(k) && !mills.has(k) &&
          !lightningRods.has(k) &&
          !mushrooms.has(k) && !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
-         !levers.has(k) && !wires.has(k) && !lamps.has(k);
+         !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -9107,7 +9130,8 @@ function plantCrop(hit) {
       mushrooms.has(cropKey(x, y, z)) ||
       flowers.has(cropKey(x, y, z)) || plates.has(cropKey(x, y, z)) ||
       notes.has(cropKey(x, y, z)) || levers.has(cropKey(x, y, z)) ||
-      wires.has(cropKey(x, y, z)) || lamps.has(cropKey(x, y, z))) return false;
+      wires.has(cropKey(x, y, z)) || lamps.has(cropKey(x, y, z)) ||
+      sensors.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -9281,7 +9305,8 @@ function plantSapling(hit) {
       mushrooms.has(saplingKey(x, y, z)) ||
       flowers.has(saplingKey(x, y, z)) || plates.has(saplingKey(x, y, z)) ||
       notes.has(saplingKey(x, y, z)) || levers.has(saplingKey(x, y, z)) ||
-      wires.has(saplingKey(x, y, z)) || lamps.has(saplingKey(x, y, z))) return false;
+      wires.has(saplingKey(x, y, z)) || lamps.has(saplingKey(x, y, z)) ||
+      sensors.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -9448,7 +9473,8 @@ function placeBed(hit) {
       mushrooms.has(bedKey(x, y, z)) ||
       flowers.has(bedKey(x, y, z)) || plates.has(bedKey(x, y, z)) ||
       notes.has(bedKey(x, y, z)) || levers.has(bedKey(x, y, z)) ||
-      wires.has(bedKey(x, y, z)) || lamps.has(bedKey(x, y, z))) return false;
+      wires.has(bedKey(x, y, z)) || lamps.has(bedKey(x, y, z)) ||
+      sensors.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -9681,7 +9707,7 @@ function signCellFree(x, y, z) {
          !crops.has(k) && !beds.has(k) && !ladders.has(k) && !doorAtCell(x, y, z) &&
          !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k) &&
          !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
-         !levers.has(k) && !wires.has(k) && !lamps.has(k);
+         !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k);
 }
 
 // ===== Редактор напису (створюється в JS — без правок HTML) =====
@@ -10253,7 +10279,7 @@ function placeRail(hit) {
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) ||
       flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) ||
       lightningRods.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
@@ -10672,7 +10698,7 @@ function breakPlate(key) {
 function placePlate(hit) {
   const [x, y, z] = hit.prev;
   const k = plateKey(x, y, z);
-  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || torches.has(k) ||
+  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -10911,7 +10937,7 @@ function placeNote(hit) {
   const [x, y, z] = hit.prev;
   const k = noteKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || notes.has(k) || plates.has(k) || levers.has(k) ||
-      wires.has(k) || lamps.has(k) || torches.has(k) ||
+      wires.has(k) || lamps.has(k) || sensors.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -11001,6 +11027,9 @@ if (savedGame && Array.isArray(savedGame.notes)) {
 // опору, ЛКМ — розібрати; без опори чи під зайнятою клітинкою — спадають.
 const levers = new Map();              // "x,y,z" -> { x, y, z, group, stick, on, flip }
 const wires = new Map();               // "x,y,z" -> { x, y, z, group, powered, dist }
+const sensors = new Map();             // датчики світла (секція нижче); реєстр
+                                       // оголошено тут, бо мережа й відновлення
+                                       // сейву звертаються до нього раніше
 const LEVER_MAX = 32;                  // межа, щоб збереження не розросталося
 const WIRE_MAX = 192;
 const WIRE_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -11042,7 +11071,7 @@ function makeLeverModel() {
 // Чи є в клітинці провідник або джерело сигналу (для з'єднання линв)
 function powerNodeAt(x, y, z) {
   const k = wireKey(x, y, z);
-  return wires.has(k) || levers.has(k) || plates.has(k);
+  return wires.has(k) || levers.has(k) || plates.has(k) || sensors.has(k);
 }
 
 // Перебудувати модель линви: вузол і рукави до з'єднаних сусідів
@@ -11124,7 +11153,7 @@ function addWire(x, y, z) {
   const g = new THREE.Group();
   g.position.set(x + 0.5, y, z + 0.5);
   scene.add(g);
-  const w = { x, y, z, group: g, powered: false, dist: 0 };
+  const w = { x, y, z, group: g, powered: false, dist: 0, srcSensor: false };
   wires.set(key, w);
   rebuildWireMesh(w);
   refreshWiresAround(x, y, z);
@@ -11152,7 +11181,8 @@ function breakWire(key) {
 function powerCellFree(x, y, z) {
   const k = leverKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || torches.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) ||
+      torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -11222,23 +11252,25 @@ function toggleLever(l) {
   flashItemName(l.on ? '🎚 Важіль: увімкнено' : '🎚 Важіль: вимкнено');
 }
 
-// BFS від усіх джерел (увімкнені важелі, натиснуті плити) крізь линви:
-// повертає Map ключ->відстань у клітинках (перший візит — найкоротша)
+// BFS від усіх джерел (увімкнені важелі, натиснуті плити, активні датчики)
+// крізь линви: повертає Map ключ -> { d: відстань у клітинках (перший
+// візит — найкоротша), sensor: чи прийшов сигнал від датчика світла }
 function computePower() {
   const powered = new Map();
   const queue = [];
-  for (const l of levers.values()) if (l.on) queue.push([l.x, l.y, l.z, 0]);
-  for (const p of plates.values()) if (p.pressed) queue.push([p.x, p.y, p.z, 0]);
+  for (const l of levers.values()) if (l.on) queue.push([l.x, l.y, l.z, 0, false]);
+  for (const p of plates.values()) if (p.pressed) queue.push([p.x, p.y, p.z, 0, false]);
+  for (const s of sensors.values()) if (s.active) queue.push([s.x, s.y, s.z, 0, true]);
   for (let qi = 0; qi < queue.length; qi++) {
-    const [x, y, z, d] = queue[qi];
+    const [x, y, z, d, fromSensor] = queue[qi];
     for (const [dx, dz] of WIRE_DIRS) {
       for (let dy = -1; dy <= 1; dy++) {
         const k = wireKey(x + dx, y + dy, z + dz);
         if (powered.has(k)) continue;
         const w = wires.get(k);
         if (!w) continue;
-        powered.set(k, d + 1);
-        queue.push([w.x, w.y, w.z, d + 1]);
+        powered.set(k, { d: d + 1, sensor: fromSensor });
+        queue.push([w.x, w.y, w.z, d + 1, fromSensor]);
       }
     }
   }
@@ -11269,7 +11301,8 @@ const heldByPower = (tag) => powerHeld.has(tag) || powerNeed.has(tag);
 // Тик мережі: опора, BFS, фронт сигналу (ноти, динаміт, іскри) і борги
 // дверей — усе після updatePlates, щоб бачити свіжий стан ваги
 function updatePower(dt) {
-  if (levers.size === 0 && wires.size === 0 && powerHeld.size === 0) return;
+  if (levers.size === 0 && wires.size === 0 && sensors.size === 0 &&
+      powerHeld.size === 0) return;
   // Опора й зайняті клітинки
   for (const [key, l] of levers) {
     if (isSolid(blockAt(l.x, l.y, l.z)) || !isSolid(blockAt(l.x, l.y - 1, l.z))) {
@@ -11297,7 +11330,9 @@ function updatePower(dt) {
     if (now && !w.powered) {
       // Фронт сигналу дійшов сюди: золотимось, дзвонимо, підпалюємо
       w.powered = true;
-      w.dist = powered.get(key);
+      const v = powered.get(key);
+      w.dist = v.d;
+      w.srcSensor = v.sensor;
       rebuildWireMesh(w);
       spawnParticles(w.x + 0.5, w.y + 0.15, w.z + 0.5, new THREE.Color(0xffd54a), 3,
         { radius: 0.2, speed: 0.6, upBias: 1.2, life: 0.5, size: 0.07, gravity: -1 });
@@ -11315,7 +11350,13 @@ function updatePower(dt) {
     } else if (!now && w.powered) {
       w.powered = false;
       w.dist = 0;
+      w.srcSensor = false;
       rebuildWireMesh(w);
+    } else if (now) {
+      // Джерело могло змінитися (важіль згас, датчик лишився) — освіжити
+      const v = powered.get(key);
+      w.dist = v.d;
+      w.srcSensor = v.sensor;
     }
   }
   // Які двері/хвіртки мережа хоче тримати: сусіди запалених линв і
@@ -11324,6 +11365,10 @@ function updatePower(dt) {
   for (const l of levers.values()) {
     if (!l.on) continue;
     for (const n of powerNeighbours(l.x, l.y, l.z)) need.set(n.tag, n);
+  }
+  for (const s of sensors.values()) {
+    if (!s.active) continue;
+    for (const n of powerNeighbours(s.x, s.y, s.z)) need.set(n.tag, n);
   }
   for (const w of wires.values()) {
     if (!w.powered) continue;
@@ -11488,11 +11533,22 @@ function updateLamps(dt) {
       breakLamp(key);
     }
   }
-  // Живі клітинки мережі (джерела й запалені линви)
+  // Живі клітинки мережі (джерела й запалені линви); окремо — клітинки,
+  // куди сигнал прийшов від датчика світла (для «Вечірньої варти»)
   const live = new Set();
+  const liveSensor = new Set();
   for (const l of levers.values()) if (l.on) live.add(lampKey(l.x, l.y, l.z));
   for (const p of plates.values()) if (p.pressed) live.add(lampKey(p.x, p.y, p.z));
-  for (const w of wires.values()) if (w.powered) live.add(lampKey(w.x, w.y, w.z));
+  for (const s of sensors.values()) {
+    if (!s.active) continue;
+    live.add(lampKey(s.x, s.y, s.z));
+    liveSensor.add(lampKey(s.x, s.y, s.z));
+  }
+  for (const w of wires.values()) {
+    if (!w.powered) continue;
+    live.add(lampKey(w.x, w.y, w.z));
+    if (w.srcSensor) liveSensor.add(lampKey(w.x, w.y, w.z));
+  }
   let litCount = 0;
   for (const l of lamps.values()) {
     let lit = false;
@@ -11513,6 +11569,20 @@ function updateLamps(dt) {
       spawnParticles(l.x + 0.5, l.y + 0.45, l.z + 0.5, new THREE.Color(0xffe08a), 5,
         { radius: 0.2, speed: 0.7, upBias: 1.2, life: 0.5, size: 0.07, gravity: -1 });
       unlockAch('lamp');
+      // Світло прийшло від датчика в темряві — вечірня варта заступила
+      if (dayNightSun <= SENSOR_DAY_T && liveSensor.size > 0) {
+        outer2:
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dz = -1; dz <= 1; dz++) {
+              if (liveSensor.has(lampKey(l.x + dx, l.y + dy, l.z + dz))) {
+                unlockAch('nightwatch');
+                break outer2;
+              }
+            }
+          }
+        }
+      }
     } else if (!lit && l.lit) {
       l.lit = false;
       l.jar.material = LAMP_JAR_OFF_MAT;
@@ -11562,6 +11632,177 @@ function updateLamps(dt) {
 if (savedGame && Array.isArray(savedGame.lamps)) {
   for (const e of savedGame.lamps) {
     if (Array.isArray(e) && e.length >= 3) addLamp(e[0], e[1], e[2]);
+  }
+}
+
+// ============================================================
+// Датчик світла: мережа вперше діє сама
+// ============================================================
+// Датчик — перший автоматичний «вхід» мережі: кам'яна основа з
+// кристалом-оком, що міряє небо. Денний режим (☀️) живить сусідні линви,
+// лампи та двері, доки сонце вище порога; ПКМ по датчику перемикає на
+// нічний (🌙) — сигнал дзеркальний: з'являється в сутінках, тане на
+// світанку. Пороги збігаються з ігровою темрявою (павуки злішають,
+// нечисть готується), тож нічний датчик засвічує ліхтарну алею саме тоді,
+// коли світло починає важити. Спрацювання поводиться як увімкнення
+// важеля: б'є по нотних блоках упритул і підпалює динаміт — дзвінок сам
+// дзвонить на смерканні. Ставиться ПКМ на тверду опору, ЛКМ — розібрати;
+// без опори чи під зайнятою клітинкою — розсипається.
+const SENSOR_MAX = 32;                 // межа, щоб збереження не розросталося
+const SENSOR_DAY_T = 0.15;             // поріг сонця: вище — «день» (як павуки)
+const sensorKey = leverKey;
+
+const SENSOR_BASE_GEO = new THREE.BoxGeometry(0.34, 0.1, 0.34);
+const SENSOR_BASE_MAT = new THREE.MeshLambertMaterial({ color: 0x6f7680 });
+const SENSOR_RIM_GEO = new THREE.BoxGeometry(0.3, 0.08, 0.3);
+SENSOR_RIM_GEO.translate(0, 0.13, 0);
+const SENSOR_RIM_MAT = new THREE.MeshLambertMaterial({ color: 0x4a4f57 });
+const SENSOR_EYE_GEO = new THREE.BoxGeometry(0.24, 0.1, 0.24);
+SENSOR_EYE_GEO.translate(0, 0.2, 0);
+// Чотири погляди одного ока: бурштин удень, місячна синь уночі;
+// активний стан — розжарений/засвічений варіант того самого кольору
+const SENSOR_DAY_MAT = new THREE.MeshLambertMaterial({ color: 0xb08a3e });
+const SENSOR_DAY_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xffe08a, emissive: 0xcc8a2a, emissiveIntensity: 0.9 });
+const SENSOR_NIGHT_MAT = new THREE.MeshLambertMaterial({ color: 0x54648a });
+const SENSOR_NIGHT_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xa8c4ff, emissive: 0x4a6acc, emissiveIntensity: 0.9 });
+
+function makeSensorModel() {
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(SENSOR_BASE_GEO, SENSOR_BASE_MAT);
+  base.position.y = 0.05;
+  g.add(base);
+  g.add(new THREE.Mesh(SENSOR_RIM_GEO, SENSOR_RIM_MAT));
+  const eye = new THREE.Mesh(SENSOR_EYE_GEO, SENSOR_DAY_MAT);
+  g.add(eye);
+  return { g, eye };
+}
+
+// Чи «бачить» датчик свій час доби (mode 0 — день, 1 — ніч)
+const sensorActive = (s) =>
+  s.mode === 1 ? dayNightSun <= SENSOR_DAY_T : dayNightSun > SENSOR_DAY_T;
+
+// Кристал міняє колір за режимом і станом
+function applySensorLook(s) {
+  s.eye.material = s.mode === 1
+    ? (s.active ? SENSOR_NIGHT_ON_MAT : SENSOR_NIGHT_MAT)
+    : (s.active ? SENSOR_DAY_ON_MAT : SENSOR_DAY_MAT);
+}
+
+// active: null — «ще не міряв»: перший тик виставить стан тихо, без
+// дзвону й пострілів по нотах/динаміту (важливо після завантаження сейву)
+function addSensor(x, y, z, mode = 0) {
+  const key = sensorKey(x, y, z);
+  if (sensors.has(key) || sensors.size >= SENSOR_MAX) return false;
+  const { g, eye } = makeSensorModel();
+  g.position.set(x + 0.5, y, z + 0.5);
+  scene.add(g);
+  const s = { x, y, z, group: g, eye, mode: mode === 1 ? 1 : 0, active: null };
+  s.eye.material = s.mode === 1 ? SENSOR_NIGHT_MAT : SENSOR_DAY_MAT;
+  sensors.set(key, s);
+  refreshWiresAround(x, y, z);
+  return true;
+}
+
+function removeSensor(key) {
+  const s = sensors.get(key);
+  if (!s) return;
+  scene.remove(s.group);   // геометрія/матеріали спільні — не dispose
+  sensors.delete(key);
+  refreshWiresAround(s.x, s.y, s.z);
+}
+
+function breakSensor(key) {
+  const s = sensors.get(key);
+  if (!s) return;
+  spawnParticles(s.x + 0.5, s.y + 0.2, s.z + 0.5, new THREE.Color(0x6f7680), 6,
+    { radius: 0.25, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 10 });
+  Sound.breakBlock(GLASS);
+  removeSensor(key);
+}
+
+// Поставити датчик у клітинку перед прицілом (лише на тверду підлогу)
+function placeSensor(hit) {
+  const [x, y, z] = hit.prev;
+  if (!powerCellFree(x, y, z)) return false;
+  if (!addSensor(x, y, z)) return false;
+  Sound.place(GLASS);
+  spawnParticles(x + 0.5, y + 0.25, z + 0.5, new THREE.Color(0xb08a3e), 6,
+    { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
+  return true;
+}
+
+// ПКМ по датчику: перемкнути режим день/ніч; стан переміряється наступним
+// тиком тихо (рука вже клацнула — без другого дзвону)
+function toggleSensorMode(s) {
+  s.mode = s.mode === 1 ? 0 : 1;
+  s.active = null;
+  s.eye.material = s.mode === 1 ? SENSOR_NIGHT_MAT : SENSOR_DAY_MAT;
+  Sound.lever(s.mode === 1);
+  spawnParticles(s.x + 0.5, s.y + 0.3, s.z + 0.5,
+    new THREE.Color(s.mode === 1 ? 0xa8c4ff : 0xffe08a), 4,
+    { radius: 0.15, speed: 0.9, upBias: 0.8, life: 0.4, size: 0.07, gravity: 2 });
+  flashItemName(s.mode === 1
+    ? '🌙 Датчик: нічний режим — сигнал у темряві'
+    : '☀️ Датчик: денний режим — сигнал за сонця');
+}
+
+// Чи є датчику кого будити: линва впритул, лампа/двері/хвіртка/нота поруч
+function sensorFeedsNetwork(s) {
+  for (const [dx, dz] of WIRE_DIRS) {
+    for (let dy = -1; dy <= 1; dy++) {
+      if (wires.has(wireKey(s.x + dx, s.y + dy, s.z + dz))) return true;
+    }
+  }
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        if (lamps.has(sensorKey(s.x + dx, s.y + dy, s.z + dz))) return true;
+      }
+    }
+  }
+  return powerNotesAround(s.x, s.y, s.z).length > 0 ||
+         powerNeighbours(s.x, s.y, s.z).length > 0;
+}
+
+// Тик датчиків: опора, замір неба й фронт спрацювання — перед updatePower,
+// щоб мережа цього ж кадру бачила свіжий стан
+function updateSensors(dt) {
+  if (sensors.size === 0) return;
+  for (const [key, s] of sensors) {
+    // Блок зайняв клітинку чи зникла опора — розібрати
+    if (isSolid(blockAt(s.x, s.y, s.z)) || !isSolid(blockAt(s.x, s.y - 1, s.z))) {
+      breakSensor(key);
+      continue;
+    }
+    const now = sensorActive(s);
+    if (s.active === null) {           // перший замір — тихо
+      s.active = now;
+      applySensorLook(s);
+      continue;
+    }
+    if (now === s.active) continue;
+    s.active = now;
+    applySensorLook(s);
+    Sound.sensor(now);
+    if (now) {
+      spawnParticles(s.x + 0.5, s.y + 0.3, s.z + 0.5,
+        new THREE.Color(s.mode === 1 ? 0xa8c4ff : 0xffd54a), 4,
+        { radius: 0.2, speed: 0.7, upBias: 1.2, life: 0.5, size: 0.07, gravity: -1 });
+      // Спрацювання поводиться як увімкнення важеля
+      for (const n of powerNotesAround(s.x, s.y, s.z)) strikeNote(n);
+      igniteTntAround(s.x, s.y, s.z);
+      if (sensorFeedsNetwork(s)) unlockAch('sensor');
+    }
+  }
+}
+
+// Відновити збережені датчики (сумісно зі старими сейвами); стан «активний»
+// не зберігається — перший тик переміряє небо тихо
+if (savedGame && Array.isArray(savedGame.sensors)) {
+  for (const e of savedGame.sensors) {
+    if (Array.isArray(e) && e.length >= 3) addSensor(e[0], e[1], e[2], e[3] | 0);
   }
 }
 
@@ -11789,7 +12030,7 @@ function placeCampfire(hit) {
       rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
   Sound.torch(0.2);
@@ -12239,7 +12480,7 @@ function placeBeehive(hit) {
       signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addBeehive(x, y, z)) return false;
   Sound.place(PLANK);
@@ -12436,7 +12677,7 @@ function placeScarecrow(hit) {
       saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addScarecrow(x, y, z)) return false;
   Sound.place(PLANK);
@@ -12575,7 +12816,7 @@ function placeLightningRod(hit) {
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!Object.entries(LROD_COST).every(([ore, n]) => (player[ore] || 0) >= n)) {
     flashItemName('Потрібно ⛓ 2 × залізо + 🟡 1 × золото з торби');
@@ -12826,7 +13067,7 @@ function placeAnvil(hit) {
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addAnvil(x, y, z)) return false;
   Sound.place(STONE);
@@ -13316,7 +13557,7 @@ function placeChest(hit) {
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
       rails.has(k) || lightningRods.has(k) || cauldrons.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addChest(x, y, z)) return false;
   Sound.place(PLANK);
@@ -13594,7 +13835,7 @@ function placeMill(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addMill(x, y, z)) return false;
   Sound.place(PLANK);
@@ -13809,7 +14050,7 @@ function placeCauldron(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCauldron(x, y, z)) return false;
   Sound.place(STONE);
@@ -14050,7 +14291,7 @@ function mushCellFree(x, y, z) {
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || beds.has(k) ||
       lightningRods.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) ||
       fences.has(k) || gates.has(k) || doorAtCell(x, y, z)) return false;
   if (blockAt(x, y, z) !== AIR) return false;
   return mushSupportable(blockAt(x, y - 1, z));
@@ -15010,7 +15251,7 @@ const flowerSupportable = (id, planted) => id === GRASS || (planted && id === DI
 function flowerCellFree(x, y, z, planted = false) {
   const k = flowerKey(x, y, z);
   if (flowers.has(k) || mushrooms.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) ||
       torches.has(k) || crops.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       campfires.has(k) || beehives.has(k) || scarecrows.has(k) ||
@@ -15543,6 +15784,12 @@ function placeBlock() {
     if (levers.has(lk)) { toggleLever(levers.get(lk)); return; }
   }
 
+  // Датчик світла в прицілі (ПКМ) → перемкнути режим день/ніч
+  if (sensors.size > 0) {
+    const sk = sensorKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    if (sensors.has(sk)) { toggleSensorMode(sensors.get(sk)); return; }
+  }
+
   // Нотний блок у прицілі (ПКМ) → настроїти тон, з будь-яким предметом у руці
   if (notes.size > 0) {
     const nk = noteKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -15656,6 +15903,12 @@ function placeBlock() {
   // Сигнальна лампа — вихід-стан мережі: світиться, доки поруч є напруга
   if (id === LAMP) {
     placeLamp(hit);
+    return;
+  }
+
+  // Датчик світла — автоматичний вхід мережі: живить її за сонцем чи в темряві
+  if (id === SENSOR) {
+    placeSensor(hit);
     return;
   }
 
@@ -17744,6 +17997,32 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(7, 12, 2, 1);
     return;
   }
+  if (id === SENSOR) {
+    // Процедурна іконка датчика світла: кам'яна основа, бурштиновий
+    // кристал-око, сонце й місяць — два режими одного ока
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тінь під основою
+    ctx.fillRect(2, 14, 12, 1);
+    ctx.fillStyle = '#6f7680';                 // кам'яна основа
+    ctx.fillRect(2, 12, 12, 2);
+    ctx.fillStyle = '#4a4f57';                 // темна оправа
+    ctx.fillRect(3, 10, 10, 2);
+    ctx.fillStyle = '#b08a3e';                 // кристал-око
+    ctx.fillRect(4, 7, 8, 3);
+    ctx.fillStyle = '#ffe08a';                 // відблиск кристала
+    ctx.fillRect(5, 7, 3, 1);
+    ctx.fillStyle = '#ffd54a';                 // сонце ліворуч
+    ctx.fillRect(3, 2, 3, 3);
+    ctx.fillRect(2, 3, 1, 1);
+    ctx.fillRect(6, 3, 1, 1);
+    ctx.fillRect(4, 1, 1, 1);
+    ctx.fillStyle = '#a8c4ff';                 // місяць-серпик праворуч
+    ctx.fillRect(11, 2, 2, 3);
+    ctx.fillRect(10, 2, 1, 1);
+    ctx.fillRect(10, 4, 1, 1);
+    return;
+  }
   if (id === NOTE) {
     // Процедурна іконка нотного блока: дощаний ящик із білою нотою
     const ctx = canvas.getContext('2d');
@@ -19053,6 +19332,8 @@ const ACHIEVEMENTS = [
   { id: 'circuit',     icon: '🔌', title: 'Сигнал у линві',     desc: 'Сигнал пробіг линвою три клітинки й спрацював' },
   { id: 'lamp',        icon: '💡', title: 'Хай буде світло',    desc: 'Сигнальна лампа засвітилася від мережі' },
   { id: 'illumination', icon: '🌃', title: 'Нічна ілюмінація',  desc: 'Три лампи світять одночасно' },
+  { id: 'sensor',      icon: '🌗', title: 'Сонячне реле',       desc: 'Датчик світла сам подав сигнал у мережу' },
+  { id: 'nightwatch',  icon: '🌆', title: 'Вечірня варта',      desc: 'Лампа засвітилася від датчика в темряві' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -21206,8 +21487,11 @@ window.MCDebug = {
     return {
       levers: [...levers.values()].map((l) => ({ x: l.x, y: l.y, z: l.z, on: l.on })),
       wires: [...wires.values()].map((w) =>
-        ({ x: w.x, y: w.y, z: w.z, powered: w.powered, dist: w.dist })),
+        ({ x: w.x, y: w.y, z: w.z, powered: w.powered, dist: w.dist,
+           srcSensor: !!w.srcSensor })),
       lamps: [...lamps.values()].map((l) => ({ x: l.x, y: l.y, z: l.z, lit: l.lit })),
+      sensors: [...sensors.values()].map((s) =>
+        ({ x: s.x, y: s.y, z: s.z, mode: s.mode, active: !!s.active })),
       held: [...powerHeld],
     };
   },
@@ -21215,6 +21499,24 @@ window.MCDebug = {
   placeLampAt: (x, y, z) => placeLamp({ prev: [x, y, z] }),
   get lampInfo() {
     return [...lamps.values()].map((l) => ({ x: l.x, y: l.y, z: l.z, lit: l.lit }));
+  },
+  // Датчик світла (для тестів)
+  giveSensor: () => { assignBlockToSlot(SENSOR); return BLOCK_NAMES[SENSOR]; },
+  placeSensorAt: (x, y, z, mode = 0) => {
+    if (!placeSensor({ prev: [x, y, z] })) return false;
+    if (mode === 1) toggleSensorMode(sensors.get(sensorKey(x, y, z)));
+    return true;
+  },
+  toggleSensorAt: (x, y, z) => {
+    const s = sensors.get(sensorKey(x, y, z));
+    if (!s) return null;
+    toggleSensorMode(s);
+    return s.mode;
+  },
+  get sensorInfo() {
+    return [...sensors.values()].map((s) =>
+      ({ x: s.x, y: s.y, z: s.z, mode: s.mode === 1 ? 'ніч' : 'день',
+         active: !!s.active }));
   },
   placeDoorAt: (x, y, z, dx = 1, dz = 0) => addDoor(x, y, z, dx, dz),
   placeGateAt: (x, y, z, dx = 1, dz = 0) => addGate(x, y, z, dx, dz),
@@ -21392,6 +21694,7 @@ function animate() {
     updateGates(dt);
     updatePlates(dt);
     updateNotes(dt);
+    updateSensors(dt);
     updatePower(dt);
     updateLamps(dt);
     updateChests(dt);
