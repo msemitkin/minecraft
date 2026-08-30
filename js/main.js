@@ -312,7 +312,13 @@ const LAMP = 72;
 // автоматика гри: ліхтарі самі спалахують надвечір, дзвінок б'є на
 // смерканні, а двір прокидається без жодного дотику.
 const SENSOR = 73;
-const MASK_SEE_R = 6;           // радіус, з якого нечисть бачить гравця в масці (звично 26)
+// Інвертор — перший логічний елемент мережі: кам'яна основа зі стовпчиком і
+// кристалом, що дивиться вбік виходу. Читає клітинку позаду (вхід) і каже
+// «ні»: сигнал є — кристал гасне й мовчить, сигналу немає — кристал жевріє
+// й сам живить мережу попереду. Без входу — вічне джерело; замкнений линвою
+// в кільце на самого себе — перший годинник гри: мигалка, що блимає сама.
+const INVERTER = 74;
+const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
 const jackCells = new Set();    // "x,y,z" — клітинки ліхтарів Джека (реєстр, як зоряний камінь)
@@ -462,6 +468,7 @@ const BLOCK_NAMES = {
   [WIRE]: 'Сигнальна линва',
   [LAMP]: 'Сигнальна лампа',
   [SENSOR]: 'Датчик світла',
+  [INVERTER]: 'Інвертор',
 };
 
 // Яка руда з торби відповідає воксельному блоку руди
@@ -478,7 +485,7 @@ const ALL_BLOCKS = [
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
-  LEVER, WIRE, LAMP, SENSOR,
+  LEVER, WIRE, LAMP, SENSOR, INVERTER,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
 
@@ -766,6 +773,7 @@ function saveGame() {
       wires: [...wires.values()].map((w) => [w.x, w.y, w.z]),
       lamps: [...lamps.values()].map((l) => [l.x, l.y, l.z]),
       sensors: [...sensors.values()].map((s) => [s.x, s.y, s.z, s.mode]),
+      inverters: [...inverters.values()].map((v) => [v.x, v.y, v.z, v.fx, v.fz]),
       chests: [...chests.values()].map((c) =>
         [c.x, c.y, c.z, Object.entries(c.store).filter(([, n]) => n > 0)]),
       mushrooms: [...mushrooms.values()].map((m) =>
@@ -992,6 +1000,13 @@ const Sound = (() => {
       tone({ freq: on ? 740 : 520, dur: 0.06, type: 'sine', gain: 0.055,
              slideTo: on ? 990 : 350 });
       noise({ dur: 0.03, gain: 0.08, type: 'bandpass', freq: on ? 1800 : 1200, q: 3 });
+    },
+    inverter(on) {
+      // Інвертор: сухий кристалічний «цок» перекидання — жевріння вище
+      // й дзвінкіше, згасання нижче й глухіше (коротший за важіль)
+      noise({ dur: 0.03, gain: 0.11, type: 'bandpass', freq: on ? 2200 : 1500, q: 3 });
+      tone({ freq: on ? 660 : 470, dur: 0.05, type: 'triangle', gain: 0.05,
+             slideTo: on ? 880 : 320 });
     },
     // Нотний блок: дзвінкий щипок «арфи» — основа з октавним і квінтовим
     // обертонами, швидке загасання. pitch 0..24 — пів тони від фа-дієза
@@ -7052,7 +7067,8 @@ function startBreakOrAttack() {
       oysters.size > 0 || cactusFruits.size > 0 || lightningRods.size > 0 ||
       flowers.size > 0 || mills.size > 0 || cauldrons.size > 0 ||
       plates.size > 0 || notes.size > 0 || chests.size > 0 ||
-      levers.size > 0 || wires.size > 0 || lamps.size > 0 || sensors.size > 0) {
+      levers.size > 0 || wires.size > 0 || lamps.size > 0 || sensors.size > 0 ||
+      inverters.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -7167,6 +7183,11 @@ function startBreakOrAttack() {
       }
       if (sensors.has(key)) {
         breakSensor(key);
+        triggerSwing();
+        return;
+      }
+      if (inverters.has(key)) {
+        breakInverter(key);
         triggerSwing();
         return;
       }
@@ -8308,7 +8329,8 @@ function placeTorch(hit) {
       flowers.has(torchKey(x, y, z)) || plates.has(torchKey(x, y, z)) ||
       notes.has(torchKey(x, y, z)) || levers.has(torchKey(x, y, z)) ||
       wires.has(torchKey(x, y, z)) || lamps.has(torchKey(x, y, z)) ||
-      sensors.has(torchKey(x, y, z))) return false;
+      sensors.has(torchKey(x, y, z)) ||
+      inverters.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -8475,7 +8497,8 @@ function placeLadder(hit) {
       flowers.has(ladderKey(x, y, z)) || plates.has(ladderKey(x, y, z)) ||
       notes.has(ladderKey(x, y, z)) || levers.has(ladderKey(x, y, z)) ||
       wires.has(ladderKey(x, y, z)) || lamps.has(ladderKey(x, y, z)) ||
-      sensors.has(ladderKey(x, y, z))) return false;
+      sensors.has(ladderKey(x, y, z)) ||
+      inverters.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -8687,7 +8710,7 @@ function placeDoor(hit) {
         beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
         lightningRods.has(k) ||
         mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -8955,7 +8978,7 @@ function fenceCellFree(x, y, z) {
          !beehives.has(k) && !scarecrows.has(k) && !anvils.has(k) && !chests.has(k) && !mills.has(k) &&
          !lightningRods.has(k) &&
          !mushrooms.has(k) && !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
-         !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k);
+         !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k) && !inverters.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -9131,7 +9154,7 @@ function plantCrop(hit) {
       flowers.has(cropKey(x, y, z)) || plates.has(cropKey(x, y, z)) ||
       notes.has(cropKey(x, y, z)) || levers.has(cropKey(x, y, z)) ||
       wires.has(cropKey(x, y, z)) || lamps.has(cropKey(x, y, z)) ||
-      sensors.has(cropKey(x, y, z))) return false;
+      sensors.has(cropKey(x, y, z)) || inverters.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -9306,7 +9329,7 @@ function plantSapling(hit) {
       flowers.has(saplingKey(x, y, z)) || plates.has(saplingKey(x, y, z)) ||
       notes.has(saplingKey(x, y, z)) || levers.has(saplingKey(x, y, z)) ||
       wires.has(saplingKey(x, y, z)) || lamps.has(saplingKey(x, y, z)) ||
-      sensors.has(saplingKey(x, y, z))) return false;
+      sensors.has(saplingKey(x, y, z)) || inverters.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -9474,7 +9497,7 @@ function placeBed(hit) {
       flowers.has(bedKey(x, y, z)) || plates.has(bedKey(x, y, z)) ||
       notes.has(bedKey(x, y, z)) || levers.has(bedKey(x, y, z)) ||
       wires.has(bedKey(x, y, z)) || lamps.has(bedKey(x, y, z)) ||
-      sensors.has(bedKey(x, y, z))) return false;
+      sensors.has(bedKey(x, y, z)) || inverters.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -9707,7 +9730,7 @@ function signCellFree(x, y, z) {
          !crops.has(k) && !beds.has(k) && !ladders.has(k) && !doorAtCell(x, y, z) &&
          !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k) &&
          !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
-         !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k);
+         !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k) && !inverters.has(k);
 }
 
 // ===== Редактор напису (створюється в JS — без правок HTML) =====
@@ -10279,7 +10302,7 @@ function placeRail(hit) {
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) ||
       flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) ||
       lightningRods.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
@@ -10698,7 +10721,7 @@ function breakPlate(key) {
 function placePlate(hit) {
   const [x, y, z] = hit.prev;
   const k = plateKey(x, y, z);
-  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || torches.has(k) ||
+  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -10937,7 +10960,7 @@ function placeNote(hit) {
   const [x, y, z] = hit.prev;
   const k = noteKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || notes.has(k) || plates.has(k) || levers.has(k) ||
-      wires.has(k) || lamps.has(k) || sensors.has(k) || torches.has(k) ||
+      wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -11030,6 +11053,9 @@ const wires = new Map();               // "x,y,z" -> { x, y, z, group, powered, 
 const sensors = new Map();             // датчики світла (секція нижче); реєстр
                                        // оголошено тут, бо мережа й відновлення
                                        // сейву звертаються до нього раніше
+const inverters = new Map();           // інвертори (секція нижче); реєстр тут
+                                       // із тієї ж причини — мережа бачить їх
+                                       // джерелами, а гарди — перешкодою
 const LEVER_MAX = 32;                  // межа, щоб збереження не розросталося
 const WIRE_MAX = 192;
 const WIRE_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -11071,7 +11097,8 @@ function makeLeverModel() {
 // Чи є в клітинці провідник або джерело сигналу (для з'єднання линв)
 function powerNodeAt(x, y, z) {
   const k = wireKey(x, y, z);
-  return wires.has(k) || levers.has(k) || plates.has(k) || sensors.has(k);
+  return wires.has(k) || levers.has(k) || plates.has(k) || sensors.has(k) ||
+         inverters.has(k);
 }
 
 // Перебудувати модель линви: вузол і рукави до з'єднаних сусідів
@@ -11181,7 +11208,7 @@ function breakWire(key) {
 function powerCellFree(x, y, z) {
   const k = leverKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) ||
       torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
@@ -11258,19 +11285,26 @@ function toggleLever(l) {
 function computePower() {
   const powered = new Map();
   const queue = [];
-  for (const l of levers.values()) if (l.on) queue.push([l.x, l.y, l.z, 0, false]);
-  for (const p of plates.values()) if (p.pressed) queue.push([p.x, p.y, p.z, 0, false]);
-  for (const s of sensors.values()) if (s.active) queue.push([s.x, s.y, s.z, 0, true]);
+  for (const l of levers.values()) if (l.on) queue.push([l.x, l.y, l.z, 0, false, null]);
+  for (const p of plates.values()) if (p.pressed) queue.push([p.x, p.y, p.z, 0, false, null]);
+  for (const s of sensors.values()) if (s.active) queue.push([s.x, s.y, s.z, 0, true, null]);
+  // Інвертор із жевріючим кристалом — теж джерело, але не живить свій вхід
+  // (напрям позаду, з усіма сходинками): інакше линва впритул за спиною
+  // зациклювала б його на самого себе
+  for (const v of inverters.values()) {
+    if (v.out) queue.push([v.x, v.y, v.z, 0, false, (-v.fx) + ',' + (-v.fz)]);
+  }
   for (let qi = 0; qi < queue.length; qi++) {
-    const [x, y, z, d, fromSensor] = queue[qi];
+    const [x, y, z, d, fromSensor, skip] = queue[qi];
     for (const [dx, dz] of WIRE_DIRS) {
+      if (skip && dx + ',' + dz === skip) continue;
       for (let dy = -1; dy <= 1; dy++) {
         const k = wireKey(x + dx, y + dy, z + dz);
         if (powered.has(k)) continue;
         const w = wires.get(k);
         if (!w) continue;
         powered.set(k, { d: d + 1, sensor: fromSensor });
-        queue.push([w.x, w.y, w.z, d + 1, fromSensor]);
+        queue.push([w.x, w.y, w.z, d + 1, fromSensor, null]);
       }
     }
   }
@@ -11302,7 +11336,7 @@ const heldByPower = (tag) => powerHeld.has(tag) || powerNeed.has(tag);
 // дверей — усе після updatePlates, щоб бачити свіжий стан ваги
 function updatePower(dt) {
   if (levers.size === 0 && wires.size === 0 && sensors.size === 0 &&
-      powerHeld.size === 0) return;
+      inverters.size === 0 && powerHeld.size === 0) return;
   // Опора й зайняті клітинки
   for (const [key, l] of levers) {
     if (isSolid(blockAt(l.x, l.y, l.z)) || !isSolid(blockAt(l.x, l.y - 1, l.z))) {
@@ -11323,6 +11357,9 @@ function updatePower(dt) {
       breakWire(key);
     }
   }
+  // Інвертори: опора, читання входу й перекидання кристала (з затримкою) —
+  // до BFS, щоб мережа цього ж кадру бачила свіжі джерела
+  updateInverters(dt);
   // Хто під напругою
   const powered = computePower();
   for (const [key, w] of wires) {
@@ -11369,6 +11406,10 @@ function updatePower(dt) {
   for (const s of sensors.values()) {
     if (!s.active) continue;
     for (const n of powerNeighbours(s.x, s.y, s.z)) need.set(n.tag, n);
+  }
+  for (const v of inverters.values()) {
+    if (!v.out) continue;
+    for (const n of powerNeighbours(v.x, v.y, v.z)) need.set(n.tag, n);
   }
   for (const w of wires.values()) {
     if (!w.powered) continue;
@@ -11544,6 +11585,7 @@ function updateLamps(dt) {
     live.add(lampKey(s.x, s.y, s.z));
     liveSensor.add(lampKey(s.x, s.y, s.z));
   }
+  for (const v of inverters.values()) if (v.out) live.add(lampKey(v.x, v.y, v.z));
   for (const w of wires.values()) {
     if (!w.powered) continue;
     live.add(lampKey(w.x, w.y, w.z));
@@ -11807,6 +11849,210 @@ if (savedGame && Array.isArray(savedGame.sensors)) {
 }
 
 // ============================================================
+// Інвертор: мережа вперше каже «ні»
+// ============================================================
+// Перший логічний елемент мережі: кам'яна основа, стовпчик і кристал, а
+// брасовий носик показує вихід. Інвертор читає клітинку позаду (вхід, із
+// сходинками ±1, як линва) і віддає протилежне: сигнал на вході є —
+// кристал гасне й мовчить; сигналу немає — кристал жевріє і сам живить
+// мережу, як увімкнений важіль (носик підказує, куди не живить: у власний
+// вхід сигнал не повертається, щоб не зациклитись упритул). Перекидання —
+// не миттєве (INVERTER_DELAY), тож ланцюг інверторів — лінія затримки, а
+// замкнене линвою кільце — перший годинник гри: мигалка, що блимає сама.
+// ПКМ по інвертору повертає вихід на чверть оберту. Ставиться ПКМ на
+// тверду опору, ЛКМ — розібрати; без опори чи під зайнятою клітинкою —
+// розсипається.
+const INVERTER_MAX = 32;               // межа, щоб збереження не розросталося
+const INVERTER_DELAY = 0.35;           // секунд до перекидання кристала
+const BLINK_WINDOW = 4;                // вікно (с) для «Мигалки»
+const BLINK_FLIPS = 4;                 // стільки перекидань у вікні — осцилятор
+const inverterKey = leverKey;
+
+const INV_BASE_GEO = new THREE.BoxGeometry(0.34, 0.1, 0.34);
+const INV_BASE_MAT = new THREE.MeshLambertMaterial({ color: 0x6f7680 });
+const INV_POST_GEO = new THREE.BoxGeometry(0.12, 0.3, 0.12);
+INV_POST_GEO.translate(0, 0.25, 0);
+const INV_POST_MAT = new THREE.MeshLambertMaterial({ color: 0x4a4f57 });
+const INV_NOSE_GEO = new THREE.BoxGeometry(0.22, 0.07, 0.09);
+INV_NOSE_GEO.translate(0.24, 0, 0);    // брасовий носик у бік виходу
+const INV_NOSE_MAT = new THREE.MeshLambertMaterial({ color: 0xb08a3e });
+const INV_CRYSTAL_GEO = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+INV_CRYSTAL_GEO.translate(0, 0.48, 0);
+// Кристал: згаслий аметист і жевріюче бузкове світло — свій колір, щоб не
+// плутати ні з бурштином датчика, ні з теплим склом лампи
+const INV_CRYSTAL_OFF_MAT = new THREE.MeshLambertMaterial({ color: 0x5a4a78 });
+const INV_CRYSTAL_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xd8b8ff, emissive: 0x8a4fd8, emissiveIntensity: 0.9 });
+
+function makeInverterModel() {
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(INV_BASE_GEO, INV_BASE_MAT);
+  base.position.y = 0.05;
+  g.add(base);
+  g.add(new THREE.Mesh(INV_POST_GEO, INV_POST_MAT));
+  const nose = new THREE.Mesh(INV_NOSE_GEO, INV_NOSE_MAT);
+  nose.position.y = 0.13;
+  g.add(nose);
+  const crystal = new THREE.Mesh(INV_CRYSTAL_GEO, INV_CRYSTAL_OFF_MAT);
+  g.add(crystal);
+  return { g, crystal };
+}
+
+// Кристал жевріє чи згас — за станом виходу
+function applyInverterLook(v) {
+  v.crystal.material = v.out ? INV_CRYSTAL_ON_MAT : INV_CRYSTAL_OFF_MAT;
+}
+
+// Повернути групу так, щоб носик дивився в бік виходу (fx, fz)
+function applyInverterFacing(v) {
+  v.group.rotation.y = Math.atan2(-v.fz, v.fx);
+}
+
+// out: null — «ще не міряв»: перший тик виставить стан тихо, без цоку й
+// пострілів по нотах/динаміту (важливо після завантаження сейву)
+function addInverter(x, y, z, fx = 1, fz = 0) {
+  const key = inverterKey(x, y, z);
+  if (inverters.has(key) || inverters.size >= INVERTER_MAX) return false;
+  // Зіпсований напрям (старий чи правлений сейв) — дивитися на схід
+  if (!((Math.abs(fx) === 1 && fz === 0) || (fx === 0 && Math.abs(fz) === 1))) {
+    fx = 1; fz = 0;
+  }
+  const { g, crystal } = makeInverterModel();
+  g.position.set(x + 0.5, y, z + 0.5);
+  scene.add(g);
+  const v = { x, y, z, group: g, crystal, fx, fz, out: null, flipT: 0, flips: [] };
+  applyInverterFacing(v);
+  inverters.set(key, v);
+  refreshWiresAround(x, y, z);
+  return true;
+}
+
+function removeInverter(key) {
+  const v = inverters.get(key);
+  if (!v) return;
+  scene.remove(v.group);   // геометрія/матеріали спільні — не dispose
+  inverters.delete(key);
+  refreshWiresAround(v.x, v.y, v.z);
+}
+
+function breakInverter(key) {
+  const v = inverters.get(key);
+  if (!v) return;
+  spawnParticles(v.x + 0.5, v.y + 0.3, v.z + 0.5, new THREE.Color(0x5a4a78), 6,
+    { radius: 0.25, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 10 });
+  Sound.breakBlock(STONE);
+  removeInverter(key);
+}
+
+// Поставити інвертор у клітинку перед прицілом (лише на тверду підлогу);
+// вихід дивиться туди ж, куди гравець — сигнал «штовхається» вперед
+function placeInverter(hit) {
+  const [x, y, z] = hit.prev;
+  if (!powerCellFree(x, y, z)) return false;
+  const fwdX = -Math.sin(player.yaw), fwdZ = -Math.cos(player.yaw);
+  let fx = 0, fz = 0;
+  if (Math.abs(fwdX) >= Math.abs(fwdZ)) fx = fwdX >= 0 ? 1 : -1;
+  else fz = fwdZ >= 0 ? 1 : -1;
+  if (!addInverter(x, y, z, fx, fz)) return false;
+  Sound.place(STONE);
+  spawnParticles(x + 0.5, y + 0.4, z + 0.5, new THREE.Color(0x8a4fd8), 6,
+    { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
+  return true;
+}
+
+// ПКМ по інвертору: повернути вихід на чверть оберту за годинником; стан
+// переміряється наступним тиком тихо (рука вже клацнула — без другого цоку)
+function rotateInverter(v) {
+  const nfx = -v.fz, nfz = v.fx;
+  v.fx = nfx; v.fz = nfz;
+  v.out = null;
+  v.flipT = 0;
+  applyInverterFacing(v);
+  v.crystal.material = INV_CRYSTAL_OFF_MAT;
+  Sound.lever(true);
+  spawnParticles(v.x + 0.5, v.y + 0.45, v.z + 0.5, new THREE.Color(0xb08a3e), 4,
+    { radius: 0.15, speed: 0.9, upBias: 0.8, life: 0.4, size: 0.07, gravity: 2 });
+  flashItemName('🔀 Інвертор: вихід повернуто');
+}
+
+// Чи є сигнал у клітинці позаду інвертора (вхід): линва під напругою чи
+// живе джерело — важіль, плита, датчик, інший інвертор (сходинки ±1)
+function inverterInputPowered(v) {
+  const bx = v.x - v.fx, bz = v.z - v.fz;
+  for (let dy = -1; dy <= 1; dy++) {
+    const k = inverterKey(bx, v.y + dy, bz);
+    const w = wires.get(k);
+    if (w && w.powered) return true;
+    const l = levers.get(k);
+    if (l && l.on) return true;
+    const p = plates.get(k);
+    if (p && p.pressed) return true;
+    const s = sensors.get(k);
+    if (s && s.active) return true;
+    const o = inverters.get(k);
+    if (o && o !== v && o.out) return true;
+  }
+  return false;
+}
+
+// Тик інверторів: опора, читання входу й перекидання кристала із затримкою —
+// викликається з updatePower перед BFS, щоб мережа бачила свіжі джерела
+let inverterClock = 0;                 // ігровий час (сума dt): вікно
+                                       // «Мигалки» не залежить від fps
+function updateInverters(dt) {
+  if (inverters.size === 0) return;
+  inverterClock += dt;
+  const now = inverterClock;
+  for (const [key, v] of inverters) {
+    // Блок зайняв клітинку чи зникла опора — розібрати
+    if (isSolid(blockAt(v.x, v.y, v.z)) || !isSolid(blockAt(v.x, v.y - 1, v.z))) {
+      breakInverter(key);
+      continue;
+    }
+    const target = !inverterInputPowered(v);
+    if (v.out === null) {              // перший замір — тихо
+      v.out = target;
+      v.flipT = 0;
+      applyInverterLook(v);
+      continue;
+    }
+    if (target === v.out) { v.flipT = 0; continue; }
+    v.flipT += dt;
+    if (v.flipT < INVERTER_DELAY) continue;
+    // Перекидання: кристал міняє стан із цоком та іскрами
+    v.out = target;
+    v.flipT = 0;
+    applyInverterLook(v);
+    Sound.inverter(v.out);
+    spawnParticles(v.x + 0.5, v.y + 0.55, v.z + 0.5,
+      new THREE.Color(v.out ? 0xd8b8ff : 0x5a4a78), 4,
+      { radius: 0.2, speed: 0.7, upBias: 1.2, life: 0.5, size: 0.07, gravity: -1 });
+    if (v.out) {
+      // Жевріння поводиться як увімкнення важеля
+      for (const n of powerNotesAround(v.x, v.y, v.z)) strikeNote(n);
+      igniteTntAround(v.x, v.y, v.z);
+    } else {
+      // Сигнал прийшов — інвертор перекрив його: «ні» сказано
+      unlockAch('invert');
+    }
+    // Осцилятор: кілька перекидань поспіль у короткому вікні — мигалка
+    v.flips.push(now);
+    while (v.flips.length > 0 && now - v.flips[0] > BLINK_WINDOW) v.flips.shift();
+    if (v.flips.length >= BLINK_FLIPS) unlockAch('blinker');
+  }
+}
+
+// Відновити збережені інвертори (сумісно зі старими сейвами); стан кристала
+// не зберігається — перший тик переміряє вхід тихо
+if (savedGame && Array.isArray(savedGame.inverters)) {
+  for (const e of savedGame.inverters) {
+    if (Array.isArray(e) && e.length >= 5) {
+      addInverter(e[0], e[1], e[2], e[3] | 0, e[4] | 0);
+    }
+  }
+}
+
+// ============================================================
 // Багаття: вогнище для приготування їжі
 // ============================================================
 // Багаття — сутність у клітинці (як смолоскип, воксельну сітку не змінює):
@@ -12030,7 +12276,7 @@ function placeCampfire(hit) {
       rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
   Sound.torch(0.2);
@@ -12480,7 +12726,7 @@ function placeBeehive(hit) {
       signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addBeehive(x, y, z)) return false;
   Sound.place(PLANK);
@@ -12677,7 +12923,7 @@ function placeScarecrow(hit) {
       saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addScarecrow(x, y, z)) return false;
   Sound.place(PLANK);
@@ -12816,7 +13062,7 @@ function placeLightningRod(hit) {
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!Object.entries(LROD_COST).every(([ore, n]) => (player[ore] || 0) >= n)) {
     flashItemName('Потрібно ⛓ 2 × залізо + 🟡 1 × золото з торби');
@@ -13067,7 +13313,7 @@ function placeAnvil(hit) {
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addAnvil(x, y, z)) return false;
   Sound.place(STONE);
@@ -13557,7 +13803,7 @@ function placeChest(hit) {
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
       rails.has(k) || lightningRods.has(k) || cauldrons.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addChest(x, y, z)) return false;
   Sound.place(PLANK);
@@ -13835,7 +14081,7 @@ function placeMill(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addMill(x, y, z)) return false;
   Sound.place(PLANK);
@@ -14050,7 +14296,7 @@ function placeCauldron(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCauldron(x, y, z)) return false;
   Sound.place(STONE);
@@ -14291,7 +14537,7 @@ function mushCellFree(x, y, z) {
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || beds.has(k) ||
       lightningRods.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) ||
       fences.has(k) || gates.has(k) || doorAtCell(x, y, z)) return false;
   if (blockAt(x, y, z) !== AIR) return false;
   return mushSupportable(blockAt(x, y - 1, z));
@@ -15251,7 +15497,7 @@ const flowerSupportable = (id, planted) => id === GRASS || (planted && id === DI
 function flowerCellFree(x, y, z, planted = false) {
   const k = flowerKey(x, y, z);
   if (flowers.has(k) || mushrooms.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) ||
       torches.has(k) || crops.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       campfires.has(k) || beehives.has(k) || scarecrows.has(k) ||
@@ -15790,6 +16036,12 @@ function placeBlock() {
     if (sensors.has(sk)) { toggleSensorMode(sensors.get(sk)); return; }
   }
 
+  // Інвертор у прицілі (ПКМ) → повернути вихід на чверть оберту
+  if (inverters.size > 0) {
+    const ik = inverterKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    if (inverters.has(ik)) { rotateInverter(inverters.get(ik)); return; }
+  }
+
   // Нотний блок у прицілі (ПКМ) → настроїти тон, з будь-яким предметом у руці
   if (notes.size > 0) {
     const nk = noteKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -15909,6 +16161,12 @@ function placeBlock() {
   // Датчик світла — автоматичний вхід мережі: живить її за сонцем чи в темряві
   if (id === SENSOR) {
     placeSensor(hit);
+    return;
+  }
+
+  // Інвертор — логічний елемент мережі: віддає протилежне до входу позаду
+  if (id === INVERTER) {
+    placeInverter(hit);
     return;
   }
 
@@ -18023,6 +18281,32 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(10, 4, 1, 1);
     return;
   }
+  if (id === INVERTER) {
+    // Процедурна іконка інвертора: кам'яна основа, стовпчик із бузковим
+    // кристалом, брасова стрілка виходу й перекреслена іскра входу
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тінь під основою
+    ctx.fillRect(3, 14, 10, 1);
+    ctx.fillStyle = '#6f7680';                 // кам'яна основа
+    ctx.fillRect(3, 12, 10, 2);
+    ctx.fillStyle = '#4a4f57';                 // стовпчик
+    ctx.fillRect(7, 6, 2, 6);
+    ctx.fillStyle = '#8a5fd8';                 // бузковий кристал
+    ctx.fillRect(5, 2, 6, 4);
+    ctx.fillStyle = '#d8b8ff';                 // відблиск кристала
+    ctx.fillRect(6, 2, 2, 2);
+    ctx.fillStyle = '#b08a3e';                 // брасова стрілка виходу
+    ctx.fillRect(9, 9, 4, 2);
+    ctx.fillRect(12, 8, 1, 1);
+    ctx.fillRect(12, 11, 1, 1);
+    ctx.fillStyle = '#ffd54a';                 // іскра входу...
+    ctx.fillRect(2, 9, 2, 2);
+    ctx.strokeStyle = '#c0392b';               // ...перекреслена: «ні»
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(1, 12); ctx.lineTo(5, 8); ctx.stroke();
+    return;
+  }
   if (id === NOTE) {
     // Процедурна іконка нотного блока: дощаний ящик із білою нотою
     const ctx = canvas.getContext('2d');
@@ -19334,6 +19618,8 @@ const ACHIEVEMENTS = [
   { id: 'illumination', icon: '🌃', title: 'Нічна ілюмінація',  desc: 'Три лампи світять одночасно' },
   { id: 'sensor',      icon: '🌗', title: 'Сонячне реле',       desc: 'Датчик світла сам подав сигнал у мережу' },
   { id: 'nightwatch',  icon: '🌆', title: 'Вечірня варта',      desc: 'Лампа засвітилася від датчика в темряві' },
+  { id: 'invert',      icon: '🔀', title: 'Сигнал навпаки',     desc: 'Інвертор перекрив сигнал: на вході є — на виході нема' },
+  { id: 'blinker',     icon: '🔁', title: 'Мигалка',            desc: 'Зациклений інвертор сам заблимав сигналом' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -21492,6 +21778,8 @@ window.MCDebug = {
       lamps: [...lamps.values()].map((l) => ({ x: l.x, y: l.y, z: l.z, lit: l.lit })),
       sensors: [...sensors.values()].map((s) =>
         ({ x: s.x, y: s.y, z: s.z, mode: s.mode, active: !!s.active })),
+      inverters: [...inverters.values()].map((v) =>
+        ({ x: v.x, y: v.y, z: v.z, fx: v.fx, fz: v.fz, out: !!v.out })),
       held: [...powerHeld],
     };
   },
@@ -21517,6 +21805,23 @@ window.MCDebug = {
     return [...sensors.values()].map((s) =>
       ({ x: s.x, y: s.y, z: s.z, mode: s.mode === 1 ? 'ніч' : 'день',
          active: !!s.active }));
+  },
+  // Інвертор (для тестів)
+  giveInverter: () => { assignBlockToSlot(INVERTER); return BLOCK_NAMES[INVERTER]; },
+  placeInverterAt: (x, y, z, fx = 1, fz = 0) => {
+    if (!powerCellFree(x, y, z)) return false;
+    return addInverter(x, y, z, fx, fz);
+  },
+  rotateInverterAt: (x, y, z) => {
+    const v = inverters.get(inverterKey(x, y, z));
+    if (!v) return null;
+    rotateInverter(v);
+    return [v.fx, v.fz];
+  },
+  get inverterInfo() {
+    return [...inverters.values()].map((v) =>
+      ({ x: v.x, y: v.y, z: v.z, fx: v.fx, fz: v.fz, out: !!v.out,
+         input: inverterInputPowered(v) }));
   },
   placeDoorAt: (x, y, z, dx = 1, dz = 0) => addDoor(x, y, z, dx, dz),
   placeGateAt: (x, y, z, dx = 1, dz = 0) => addGate(x, y, z, dx, dz),
