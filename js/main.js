@@ -337,6 +337,14 @@ const LATCH = 76;
 // вартового смеркання, кнопка — арбалет на відстані, мигалка інвертора —
 // автоматичний обстріл. Мережа вперше діє на світ силою, а не світлом.
 const TURRET = 77;
+// Поршень — перший вихід мережі, що рухає сам світ: кам'яний корпус із
+// дубовою плитою на штоку, плита дивиться в бік поштовху. Фронт сигналу на
+// вході позаду висуває шток і **зіштовхує** блок перед собою на сусідню
+// клітинку (якщо та вільна); сигнал згас — шток тихо вертається, блок
+// лишається. Досі мережа світила, грала, стріляла й вибухала — а тепер
+// уперше пересуває воксельну сітку: потаємні стіни, скинутий у падіння
+// пісок, динаміт, що заїжджає в шахту сам.
+const PISTON = 78;
 const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -491,6 +499,7 @@ const BLOCK_NAMES = {
   [BUTTON]: 'Кнопка',
   [LATCH]: 'Защіпка',
   [TURRET]: 'Стрілець',
+  [PISTON]: 'Поршень',
 };
 
 // Яка руда з торби відповідає воксельному блоку руди
@@ -507,7 +516,7 @@ const ALL_BLOCKS = [
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
-  LEVER, WIRE, LAMP, SENSOR, INVERTER, BUTTON, LATCH, TURRET,
+  LEVER, WIRE, LAMP, SENSOR, INVERTER, BUTTON, LATCH, TURRET, PISTON,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
 
@@ -800,6 +809,8 @@ function saveGame() {
       latches: [...latches.values()].map((t) =>
         [t.x, t.y, t.z, t.fx, t.fz, t.out ? 1 : 0]),
       turrets: [...turrets.values()].map((t) => [t.x, t.y, t.z, t.fx, t.fz]),
+      pistons: [...pistons.values()].map((p) =>
+        [p.x, p.y, p.z, p.fx, p.fz, p.extended ? 1 : 0]),
       chests: [...chests.values()].map((c) =>
         [c.x, c.y, c.z, Object.entries(c.store).filter(([, n]) => n > 0)]),
       mushrooms: [...mushrooms.values()].map((m) =>
@@ -1045,6 +1056,14 @@ const Sound = (() => {
       // Стрілець: сухий «дзеньк» тятиви арбалета з дерев'яним стуком ложа
       noise({ dur: 0.04, gain: 0.14, type: 'bandpass', freq: 2400, q: 2 });
       tone({ freq: 320, dur: 0.09, type: 'triangle', gain: 0.06, slideTo: 180 });
+    },
+    piston(out) {
+      // Поршень: кам'яний «шурх» штока з глухим стуком плити — висування
+      // важче й нижче, повернення легше й сухіше
+      noise({ dur: out ? 0.12 : 0.08, gain: out ? 0.16 : 0.1, type: 'lowpass',
+              freq: out ? 520 : 700, q: 0.8 });
+      tone({ freq: out ? 150 : 210, dur: out ? 0.1 : 0.07, type: 'triangle',
+             gain: 0.06, slideTo: out ? 90 : 300 });
     },
     latch(on) {
       // Защіпка: металевий «клямк» замка, що западає — увімкнення вище
@@ -7114,7 +7133,7 @@ function startBreakOrAttack() {
       plates.size > 0 || notes.size > 0 || chests.size > 0 ||
       levers.size > 0 || wires.size > 0 || lamps.size > 0 || sensors.size > 0 ||
       inverters.size > 0 || buttons.size > 0 || latches.size > 0 ||
-      turrets.size > 0) {
+      turrets.size > 0 || pistons.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
       const key = torchKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -7249,6 +7268,11 @@ function startBreakOrAttack() {
       }
       if (turrets.has(key)) {
         breakTurret(key);
+        triggerSwing();
+        return;
+      }
+      if (pistons.has(key)) {
+        breakPiston(key);
         triggerSwing();
         return;
       }
@@ -8399,7 +8423,8 @@ function placeTorch(hit) {
       sensors.has(torchKey(x, y, z)) ||
       inverters.has(torchKey(x, y, z)) ||
       buttons.has(torchKey(x, y, z)) ||
-      latches.has(torchKey(x, y, z)) || turrets.has(torchKey(x, y, z))) return false;
+      latches.has(torchKey(x, y, z)) || turrets.has(torchKey(x, y, z)) ||
+      pistons.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -8569,7 +8594,8 @@ function placeLadder(hit) {
       sensors.has(ladderKey(x, y, z)) ||
       inverters.has(ladderKey(x, y, z)) ||
       buttons.has(ladderKey(x, y, z)) ||
-      latches.has(ladderKey(x, y, z)) || turrets.has(ladderKey(x, y, z))) return false;
+      latches.has(ladderKey(x, y, z)) || turrets.has(ladderKey(x, y, z)) ||
+      pistons.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -8781,7 +8807,7 @@ function placeDoor(hit) {
         beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
         lightningRods.has(k) ||
         mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || pistons.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -9050,7 +9076,7 @@ function fenceCellFree(x, y, z) {
          !lightningRods.has(k) &&
          !mushrooms.has(k) && !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
          !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k) && !inverters.has(k) && !buttons.has(k) &&
-         !latches.has(k) && !turrets.has(k);
+         !latches.has(k) && !turrets.has(k) && !pistons.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -9228,7 +9254,8 @@ function plantCrop(hit) {
       wires.has(cropKey(x, y, z)) || lamps.has(cropKey(x, y, z)) ||
       sensors.has(cropKey(x, y, z)) || inverters.has(cropKey(x, y, z)) ||
       buttons.has(cropKey(x, y, z)) ||
-      latches.has(cropKey(x, y, z)) || turrets.has(cropKey(x, y, z))) return false;
+      latches.has(cropKey(x, y, z)) || turrets.has(cropKey(x, y, z)) ||
+      pistons.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -9405,7 +9432,8 @@ function plantSapling(hit) {
       wires.has(saplingKey(x, y, z)) || lamps.has(saplingKey(x, y, z)) ||
       sensors.has(saplingKey(x, y, z)) || inverters.has(saplingKey(x, y, z)) ||
       buttons.has(saplingKey(x, y, z)) ||
-      latches.has(saplingKey(x, y, z)) || turrets.has(saplingKey(x, y, z))) return false;
+      latches.has(saplingKey(x, y, z)) || turrets.has(saplingKey(x, y, z)) ||
+      pistons.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -9575,7 +9603,8 @@ function placeBed(hit) {
       wires.has(bedKey(x, y, z)) || lamps.has(bedKey(x, y, z)) ||
       sensors.has(bedKey(x, y, z)) || inverters.has(bedKey(x, y, z)) ||
       buttons.has(bedKey(x, y, z)) ||
-      latches.has(bedKey(x, y, z)) || turrets.has(bedKey(x, y, z))) return false;
+      latches.has(bedKey(x, y, z)) || turrets.has(bedKey(x, y, z)) ||
+      pistons.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -9809,7 +9838,7 @@ function signCellFree(x, y, z) {
          !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k) &&
          !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
          !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k) && !inverters.has(k) && !buttons.has(k) &&
-         !latches.has(k) && !turrets.has(k);
+         !latches.has(k) && !turrets.has(k) && !pistons.has(k);
 }
 
 // ===== Редактор напису (створюється в JS — без правок HTML) =====
@@ -10381,7 +10410,7 @@ function placeRail(hit) {
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) ||
       flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) ||
       lightningRods.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
@@ -10800,7 +10829,7 @@ function breakPlate(key) {
 function placePlate(hit) {
   const [x, y, z] = hit.prev;
   const k = plateKey(x, y, z);
-  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || torches.has(k) ||
+  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -11039,7 +11068,7 @@ function placeNote(hit) {
   const [x, y, z] = hit.prev;
   const k = noteKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || notes.has(k) || plates.has(k) || levers.has(k) ||
-      wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || torches.has(k) ||
+      wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -11142,6 +11171,8 @@ const latches = new Map();             // защіпки (секція нижч�
                                        // — перешкодою, раніше за секцію
 const turrets = new Map();             // стрільці (секція нижче); реєстр тут —
                                        // гарди й линви бачать їх раніше за секцію
+const pistons = new Map();             // поршні (секція нижче); реєстр тут —
+                                       // гарди й линви бачать їх раніше за секцію
 const LEVER_MAX = 32;                  // межа, щоб збереження не розросталося
 const WIRE_MAX = 192;
 const WIRE_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -11184,7 +11215,8 @@ function makeLeverModel() {
 function powerNodeAt(x, y, z) {
   const k = wireKey(x, y, z);
   return wires.has(k) || levers.has(k) || plates.has(k) || sensors.has(k) ||
-         inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k);
+         inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) ||
+         pistons.has(k);
 }
 
 // Перебудувати модель линви: вузол і рукави до з'єднаних сусідів
@@ -11295,7 +11327,7 @@ function breakWire(key) {
 function powerCellFree(x, y, z) {
   const k = leverKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) ||
       torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
@@ -11431,7 +11463,7 @@ const heldByPower = (tag) => powerHeld.has(tag) || powerNeed.has(tag);
 function updatePower(dt) {
   if (levers.size === 0 && wires.size === 0 && sensors.size === 0 &&
       inverters.size === 0 && buttons.size === 0 && latches.size === 0 &&
-      turrets.size === 0 &&
+      turrets.size === 0 && pistons.size === 0 &&
       powerHeld.size === 0) return;
   // Опора й зайняті клітинки
   for (const [key, l] of levers) {
@@ -11462,6 +11494,9 @@ function updatePower(dt) {
   // Стрільці: опора, ловля фронту сигналу й постріл — після защіпок (щоб
   // почути свіжу пам'ять), як і вони, читають стан минулого кадру
   updateTurrets(dt);
+  // Поршні: опора, ловля фронту сигналу й поштовх блока — після защіпок і
+  // стрільців, із тих самих причин: читають стан минулого кадру
+  updatePistons(dt);
   // Інвертори: опора, читання входу й перекидання кристала (з затримкою) —
   // до BFS, щоб мережа цього ж кадру бачила свіжі джерела
   updateInverters(dt);
@@ -12721,6 +12756,288 @@ if (savedGame && Array.isArray(savedGame.turrets)) {
 }
 
 // ============================================================
+// Поршень: мережа рухає світ
+// ============================================================
+// Поршень — перший вихід мережі, що змінює воксельну сітку: кам'яний корпус
+// із дубовою плитою на штоку, плита дивиться в бік поштовху. Фронт сигналу
+// на вході позаду (сходинки ±1, як у стрільця) висуває шток: якщо в клітинці
+// перед плитою стоїть простий блок, а за ним вільно — блок зіштовхується на
+// клітинку далі (пісок і гравій без опори зриваються в падіння, воду й
+// гравітацію будить сам setBlock). Механізми, скрині чи істоти на шляху —
+// чесна перешкода: шток лишається втягнутим до наступного фронту. Сигнал
+// згас — шток тихо вертається, блок лишається (поршень не липкий). ПКМ по
+// поршню повертає шток на чверть оберту (лише втягнутий). Ставиться ПКМ на
+// тверду опору, ЛКМ — розібрати; зберігається зі світом разом із напрямом і
+// станом штока; після завантаження перший тик міряє вхід тихо — фронт не
+// вигадується, блоки самі не рушать.
+const PISTON_MAX = 32;                 // межа, щоб збереження не розросталося
+const PISTON_EXT_TIME = 0.12;          // секунд ходу штока
+const PISTON_TRAVEL = 0.7;             // наскільки плита висувається вперед
+const pistonKey = leverKey;
+
+// Що поршень уміє штовхати: прості воксельні блоки без власної логіки
+// клітинки (кактус колючий і ламкий, скриня скарбів тримає мапу — зась)
+const PISTON_PUSHABLE = new Set([
+  GRASS, DIRT, STONE, SAND, GRAVEL, SNOW, LOG, LEAVES, PLANK, GLASS, WOOL,
+  WOOL_RED, WOOL_YELLOW, WOOL_BLUE, TNT, COAL, IRON, GOLD, DIAMOND,
+  PUMPKIN, JACK, STARBLOCK,
+]);
+
+const PISTON_BASE_GEO = new THREE.BoxGeometry(0.34, 0.1, 0.34);
+const PISTON_BASE_MAT = new THREE.MeshLambertMaterial({ color: 0x6f7680 });
+// Кам'яний корпус із каналом штока
+const PISTON_BODY_GEO = new THREE.BoxGeometry(0.4, 0.44, 0.44);
+PISTON_BODY_GEO.translate(-0.08, 0.32, 0);
+const PISTON_BODY_MAT = new THREE.MeshLambertMaterial({ color: 0x596069 });
+// Шток — дубовий стрижень уздовж осі поштовху (+X до повороту групи)
+const PISTON_ROD_GEO = new THREE.BoxGeometry(0.5, 0.12, 0.12);
+PISTON_ROD_GEO.translate(-0.05, 0.32, 0);
+const PISTON_ROD_MAT = new THREE.MeshLambertMaterial({ color: 0x8a6a3f });
+// Дубова плита, що впирається в блок перед поршнем
+const PISTON_PLATE_GEO = new THREE.BoxGeometry(0.12, 0.6, 0.6);
+PISTON_PLATE_GEO.translate(0.26, 0.32, 0);
+const PISTON_PLATE_MAT = new THREE.MeshLambertMaterial({ color: 0xa8875a });
+
+function makePistonModel() {
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(PISTON_BASE_GEO, PISTON_BASE_MAT);
+  base.position.y = 0.05;
+  g.add(base);
+  g.add(new THREE.Mesh(PISTON_BODY_GEO, PISTON_BODY_MAT));
+  const head = new THREE.Group();
+  head.add(new THREE.Mesh(PISTON_ROD_GEO, PISTON_ROD_MAT));
+  head.add(new THREE.Mesh(PISTON_PLATE_GEO, PISTON_PLATE_MAT));
+  g.add(head);
+  return { g, head };
+}
+
+// Повернути групу так, щоб плита дивилась у бік поштовху (fx, fz)
+function applyPistonFacing(p) {
+  p.group.rotation.y = Math.atan2(-p.fz, p.fx);
+}
+
+// inPrev: null — «ще не міряв»: перший тик запам'ятає стан входу тихо, без
+// поштовху (важливо після завантаження сейву — фронт не вигадується)
+function addPiston(x, y, z, fx = 1, fz = 0, extended = false) {
+  const key = pistonKey(x, y, z);
+  if (pistons.has(key) || pistons.size >= PISTON_MAX) return false;
+  // Зіпсований напрям (старий чи правлений сейв) — дивитися на схід
+  if (!((Math.abs(fx) === 1 && fz === 0) || (fx === 0 && Math.abs(fz) === 1))) {
+    fx = 1; fz = 0;
+  }
+  const { g, head } = makePistonModel();
+  g.position.set(x + 0.5, y, z + 0.5);
+  scene.add(g);
+  const p = { x, y, z, group: g, head, fx, fz, inPrev: null,
+              extended: !!extended, ext: extended ? 1 : 0 };
+  applyPistonFacing(p);
+  head.position.x = p.ext * PISTON_TRAVEL;
+  pistons.set(key, p);
+  refreshWiresAround(x, y, z);
+  return true;
+}
+
+function removePiston(key) {
+  const p = pistons.get(key);
+  if (!p) return;
+  scene.remove(p.group);   // геометрія/матеріали спільні — не dispose
+  pistons.delete(key);
+  refreshWiresAround(p.x, p.y, p.z);
+}
+
+function breakPiston(key) {
+  const p = pistons.get(key);
+  if (!p) return;
+  spawnParticles(p.x + 0.5, p.y + 0.3, p.z + 0.5, new THREE.Color(0x596069), 6,
+    { radius: 0.25, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 10 });
+  Sound.breakBlock(STONE);
+  removePiston(key);
+}
+
+// Поставити поршень у клітинку перед прицілом (лише на тверду підлогу);
+// плита дивиться туди ж, куди гравець — блок посунеться вперед
+function placePiston(hit) {
+  const [x, y, z] = hit.prev;
+  if (!powerCellFree(x, y, z)) return false;
+  const fwdX = -Math.sin(player.yaw), fwdZ = -Math.cos(player.yaw);
+  let fx = 0, fz = 0;
+  if (Math.abs(fwdX) >= Math.abs(fwdZ)) fx = fwdX >= 0 ? 1 : -1;
+  else fz = fwdZ >= 0 ? 1 : -1;
+  if (!addPiston(x, y, z, fx, fz)) return false;
+  Sound.place(STONE);
+  spawnParticles(x + 0.5, y + 0.4, z + 0.5, new THREE.Color(0x8a6a3f), 6,
+    { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
+  return true;
+}
+
+// ПКМ по поршню: повернути шток на чверть оберту за годинником (лише
+// втягнутий — висунутий шток спершу має вернутися); вхід перемірюється тихо
+function rotatePiston(p) {
+  if (p.extended || p.ext > 0.01) {
+    flashItemName('⚙ Поршень: шток висунуто — зніміть сигнал');
+    return;
+  }
+  const nfx = -p.fz, nfz = p.fx;
+  p.fx = nfx; p.fz = nfz;
+  p.inPrev = null;
+  applyPistonFacing(p);
+  Sound.lever(true);
+  spawnParticles(p.x + 0.5, p.y + 0.45, p.z + 0.5, new THREE.Color(0xa8875a), 4,
+    { radius: 0.15, speed: 0.9, upBias: 0.8, life: 0.4, size: 0.07, gravity: 2 });
+  flashItemName('⚙ Поршень: шток повернуто');
+}
+
+// Стан входу поршня (клітинка позаду, сходинки ±1, як у стрільця)
+function pistonInputPowered(p) {
+  const bx = p.x - p.fx, bz = p.z - p.fz;
+  for (let dy = -1; dy <= 1; dy++) {
+    const k = pistonKey(bx, p.y + dy, bz);
+    const w = wires.get(k);
+    if (w && w.powered) return true;
+    const l = levers.get(k);
+    if (l && l.on) return true;
+    const pl = plates.get(k);
+    if (pl && pl.pressed) return true;
+    const s = sensors.get(k);
+    if (s && s.active) return true;
+    const b = buttons.get(k);
+    if (b && b.pressed) return true;
+    const v = inverters.get(k);
+    if (v && v.out) return true;
+    const o = latches.get(k);
+    if (o && o.out) return true;
+  }
+  return false;
+}
+
+// Чи вільна клітинка для зіштовхнутого блока: жодного вокселя (навіть
+// флюїду) і жодної сутності-клітинки — механізми, меблі й рослини поршень
+// не трощить, а чесно впирається
+function pistonDestFree(x, y, z) {
+  if (y < 0 || y >= HEIGHT) return false;
+  if (blockAt(x, y, z) !== AIR) return false;
+  const k = pistonKey(x, y, z);
+  return !(plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) ||
+    lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) ||
+    latches.has(k) || turrets.has(k) || pistons.has(k) || torches.has(k) ||
+    ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
+    saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
+    beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) ||
+    mills.has(k) || cauldrons.has(k) || lightningRods.has(k) || crops.has(k) ||
+    beds.has(k) || mushrooms.has(k) || flowers.has(k) || oysters.has(k) ||
+    cactusFruits.has(k));
+}
+
+// Чи стоїть у клітинці гравець, нечисть або тварина — на живого блок не
+// зіштовхується (він застряг би у «твердій» клітинці)
+function pistonCellBlockedByEntity(x, y, z) {
+  const check = (e) => e.pos.x + e.halfW > x && e.pos.x - e.halfW < x + 1 &&
+    e.pos.y + e.height > y && e.pos.y < y + 1 &&
+    e.pos.z + e.halfW > z && e.pos.z - e.halfW < z + 1;
+  if (check(player)) return true;
+  for (const m of mobs) if (check(m)) return true;
+  for (const a of animals) if (check(a)) return true;
+  return false;
+}
+
+// Висунути шток: блок перед плитою (якщо він є і його можна рушити)
+// зіштовхується на клітинку далі. false — шлях перекрито, шток лишається
+function tryExtendPiston(p) {
+  const fx1 = p.x + p.fx, fz1 = p.z + p.fz;      // клітинка перед плитою
+  const id = blockAt(fx1, p.y, fz1);
+  if (id === AIR) {
+    // Порожньо перед плитою: шток виходить у вільну клітинку (сутність
+    // там — не перешкода, плита не тверда), нічого не рухаючи
+    if (!pistonDestFree(fx1, p.y, fz1)) return false;
+    p.extended = true;
+    Sound.piston(true);
+    return true;
+  }
+  if (!PISTON_PUSHABLE.has(id)) return false;
+  const dx2 = p.x + 2 * p.fx, dz2 = p.z + 2 * p.fz; // куди їде блок
+  if (!pistonDestFree(dx2, p.y, dz2)) return false;
+  if (pistonCellBlockedByEntity(dx2, p.y, dz2)) return false;
+  setBlock(fx1, p.y, fz1, AIR);
+  setBlock(dx2, p.y, dz2, id);
+  // Поштовх міг забрати опору чи клітинку в сутностей довкола — та сама
+  // прибиральна бригада, що після вибуху
+  validateTorches();
+  validateCrops();
+  validateBeds();
+  validateSigns();
+  validateLadders();
+  validateDoors();
+  validateFences();
+  validateSaplings();
+  validateRails();
+  validateCampfires();
+  validateBeehives();
+  validateScarecrows();
+  validateAnvils();
+  validateChests();
+  validateMills();
+  validateCauldrons();
+  validateLightningRods();
+  validateMushrooms();
+  validateFlowers();
+  validateOysters();
+  validateCactusFruits();
+  p.extended = true;
+  Sound.piston(true);
+  unlockAch('piston');
+  // Сипкий блок зіштовхнуто туди, де під ним порожньо — зараз зірветься
+  if (isFalling(id) && !isSolid(blockAt(dx2, p.y - 1, dz2))) {
+    unlockAch('piston_drop');
+  }
+  spawnParticles(dx2 + 0.5, p.y + 0.5, dz2 + 0.5, blockColor(id), 8,
+    { radius: 0.3, speed: 1.4, upBias: 0.5, life: 0.4, size: 0.08, gravity: 8 });
+  return true;
+}
+
+// Тик поршнів: опора, ловля фронту сигналу (поштовх) і рівний спад
+// (повернення штока) — викликається з updatePower після стрільців, до BFS
+function updatePistons(dt) {
+  if (pistons.size === 0) return;
+  for (const [key, p] of pistons) {
+    // Блок зайняв клітинку чи зникла опора — розібрати
+    if (isSolid(blockAt(p.x, p.y, p.z)) || !isSolid(blockAt(p.x, p.y - 1, p.z))) {
+      breakPiston(key);
+      continue;
+    }
+    // Плавний хід штока до цільового положення
+    const target = p.extended ? 1 : 0;
+    if (p.ext !== target) {
+      p.ext += Math.sign(target - p.ext) *
+        Math.min(dt / PISTON_EXT_TIME, Math.abs(target - p.ext));
+      p.head.position.x = p.ext * PISTON_TRAVEL;
+    }
+    const on = pistonInputPowered(p);
+    if (p.inPrev === null) {           // перший замір — тихо, без поштовху
+      p.inPrev = on;
+      continue;
+    }
+    // Фронт сигналу — спроба поштовху; перекрито — чекати наступного фронту
+    if (on && !p.inPrev && !p.extended) tryExtendPiston(p);
+    // Сигнал зник — шток вертається (блок лишається: поршень не липкий)
+    if (!on && p.extended) {
+      p.extended = false;
+      Sound.piston(false);
+    }
+    p.inPrev = on;
+  }
+}
+
+// Відновити збережені поршні (сумісно зі старими сейвами); шток у тому ж
+// положенні, що й при збереженні — перший тик міряє вхід тихо
+if (savedGame && Array.isArray(savedGame.pistons)) {
+  for (const e of savedGame.pistons) {
+    if (Array.isArray(e) && e.length >= 5) {
+      addPiston(e[0], e[1], e[2], e[3] | 0, e[4] | 0, !!e[5]);
+    }
+  }
+}
+
+// ============================================================
 // Багаття: вогнище для приготування їжі
 // ============================================================
 // Багаття — сутність у клітинці (як смолоскип, воксельну сітку не змінює):
@@ -12944,7 +13261,7 @@ function placeCampfire(hit) {
       rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || pistons.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
   Sound.torch(0.2);
@@ -13394,7 +13711,7 @@ function placeBeehive(hit) {
       signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || pistons.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addBeehive(x, y, z)) return false;
   Sound.place(PLANK);
@@ -13591,7 +13908,7 @@ function placeScarecrow(hit) {
       saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || pistons.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addScarecrow(x, y, z)) return false;
   Sound.place(PLANK);
@@ -13730,7 +14047,7 @@ function placeLightningRod(hit) {
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || pistons.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!Object.entries(LROD_COST).every(([ore, n]) => (player[ore] || 0) >= n)) {
     flashItemName('Потрібно ⛓ 2 × залізо + 🟡 1 × золото з торби');
@@ -13981,7 +14298,7 @@ function placeAnvil(hit) {
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || pistons.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addAnvil(x, y, z)) return false;
   Sound.place(STONE);
@@ -14471,7 +14788,7 @@ function placeChest(hit) {
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
       rails.has(k) || lightningRods.has(k) || cauldrons.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || pistons.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addChest(x, y, z)) return false;
   Sound.place(PLANK);
@@ -14749,7 +15066,7 @@ function placeMill(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || pistons.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addMill(x, y, z)) return false;
   Sound.place(PLANK);
@@ -14964,7 +15281,7 @@ function placeCauldron(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || pistons.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCauldron(x, y, z)) return false;
   Sound.place(STONE);
@@ -15205,7 +15522,7 @@ function mushCellFree(x, y, z) {
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || beds.has(k) ||
       lightningRods.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) ||
       fences.has(k) || gates.has(k) || doorAtCell(x, y, z)) return false;
   if (blockAt(x, y, z) !== AIR) return false;
   return mushSupportable(blockAt(x, y - 1, z));
@@ -16165,7 +16482,7 @@ const flowerSupportable = (id, planted) => id === GRASS || (planted && id === DI
 function flowerCellFree(x, y, z, planted = false) {
   const k = flowerKey(x, y, z);
   if (flowers.has(k) || mushrooms.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) ||
       torches.has(k) || crops.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       campfires.has(k) || beehives.has(k) || scarecrows.has(k) ||
@@ -16728,6 +17045,12 @@ function placeBlock() {
     if (turrets.has(tk)) { rotateTurret(turrets.get(tk)); return; }
   }
 
+  // Поршень у прицілі (ПКМ) → повернути шток на чверть оберту
+  if (pistons.size > 0) {
+    const pk = pistonKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    if (pistons.has(pk)) { rotatePiston(pistons.get(pk)); return; }
+  }
+
   // Нотний блок у прицілі (ПКМ) → настроїти тон, з будь-яким предметом у руці
   if (notes.size > 0) {
     const nk = noteKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -16871,6 +17194,12 @@ function placeBlock() {
   // Стрілець — вихід-дія мережі: фронт сигналу спускає тятиву арбалета
   if (id === TURRET) {
     placeTurret(hit);
+    return;
+  }
+
+  // Поршень — вихід мережі, що рухає світ: фронт сигналу зіштовхує блок
+  if (id === PISTON) {
+    placePiston(hit);
     return;
   }
 
@@ -19088,6 +19417,31 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(14, 5, 1, 2);
     return;
   }
+  if (id === PISTON) {
+    // Процедурна іконка поршня: кам'яна основа, сірий корпус, дубовий шток
+    // із плитою й стрілка поштовху
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тінь під основою
+    ctx.fillRect(3, 14, 10, 1);
+    ctx.fillStyle = '#6f7680';                 // кам'яна основа
+    ctx.fillRect(3, 12, 10, 2);
+    ctx.fillStyle = '#596069';                 // кам'яний корпус
+    ctx.fillRect(2, 4, 6, 8);
+    ctx.fillStyle = '#6d747e';                 // відблиск корпуса
+    ctx.fillRect(2, 4, 6, 1);
+    ctx.fillStyle = '#8a6a3f';                 // дубовий шток
+    ctx.fillRect(8, 7, 3, 2);
+    ctx.fillStyle = '#a8875a';                 // дубова плита
+    ctx.fillRect(11, 3, 2, 10);
+    ctx.fillStyle = '#c9a76e';                 // відблиск плити
+    ctx.fillRect(11, 3, 2, 1);
+    ctx.fillStyle = '#ffd54a';                 // стрілка поштовху
+    ctx.fillRect(14, 7, 1, 2);
+    ctx.fillRect(13, 1, 1, 2);
+    ctx.fillRect(13, 13, 1, 2);
+    return;
+  }
   if (id === NOTE) {
     // Процедурна іконка нотного блока: дощаний ящик із білою нотою
     const ctx = canvas.getContext('2d');
@@ -20407,6 +20761,8 @@ const ACHIEVEMENTS = [
   { id: 'latchkeep',   icon: '🏮', title: 'Світло, що лишилось', desc: 'Імпульс кнопки став станом: защіпка запам\'ятала клац' },
   { id: 'turret',      icon: '🏹', title: 'Залп мережі',        desc: 'Фронт сигналу спустив тятиву стрільця' },
   { id: 'sentry',      icon: '🎯', title: 'Вартовий',           desc: 'Стріла стрільця сама влучила в нечисть' },
+  { id: 'piston',      icon: '🦾', title: 'Мережа рухає світ',  desc: 'Поршень зіштовхнув блок на сусідню клітинку' },
+  { id: 'piston_drop', icon: '🏜', title: 'Зсув',               desc: 'Зіштовхнутий поршнем сипкий блок зірвався в падіння' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -22574,6 +22930,9 @@ window.MCDebug = {
       turrets: [...turrets.values()].map((t) =>
         ({ x: t.x, y: t.y, z: t.z, fx: t.fx, fz: t.fz,
            input: turretInputPowered(t) })),
+      pistons: [...pistons.values()].map((p) =>
+        ({ x: p.x, y: p.y, z: p.z, fx: p.fx, fz: p.fz,
+           extended: !!p.extended, input: pistonInputPowered(p) })),
       held: [...powerHeld],
     };
   },
@@ -22674,6 +23033,37 @@ window.MCDebug = {
     return arrows.map((a) => ({ x: +a.pos.x.toFixed(2), y: +a.pos.y.toFixed(2),
       z: +a.pos.z.toFixed(2), stuck: !!a.stuck, fromMob: !!a.fromMob,
       fromTurret: !!a.fromTurret }));
+  },
+  // Поршень (для тестів)
+  givePiston: () => { assignBlockToSlot(PISTON); return BLOCK_NAMES[PISTON]; },
+  placePistonAt: (x, y, z, fx = 1, fz = 0) => {
+    if (!powerCellFree(x, y, z)) return false;
+    return addPiston(x, y, z, fx, fz);
+  },
+  rotatePistonAt: (x, y, z) => {
+    const p = pistons.get(pistonKey(x, y, z));
+    if (!p) return null;
+    rotatePiston(p);
+    return [p.fx, p.fz];
+  },
+  extendPistonAt: (x, y, z) => {
+    const p = pistons.get(pistonKey(x, y, z));
+    if (!p) return null;
+    if (p.extended) return 'шток уже висунуто';
+    return tryExtendPiston(p);
+  },
+  retractPistonAt: (x, y, z) => {
+    const p = pistons.get(pistonKey(x, y, z));
+    if (!p) return null;
+    if (!p.extended) return 'шток уже втягнуто';
+    p.extended = false;
+    Sound.piston(false);
+    return true;
+  },
+  get pistonInfo() {
+    return [...pistons.values()].map((p) =>
+      ({ x: p.x, y: p.y, z: p.z, fx: p.fx, fz: p.fz, extended: !!p.extended,
+         ext: +p.ext.toFixed(2), input: pistonInputPowered(p) }));
   },
   placeDoorAt: (x, y, z, dx = 1, dz = 0) => addDoor(x, y, z, dx, dz),
   placeGateAt: (x, y, z, dx = 1, dz = 0) => addGate(x, y, z, dx, dz),
