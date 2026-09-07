@@ -345,6 +345,13 @@ const TURRET = 77;
 // уперше пересуває воксельну сітку: потаємні стіни, скинутий у падіння
 // пісок, динаміт, що заїжджає в шахту сам.
 const PISTON = 78;
+// Липкий поршень — дзеркало поршня: та сама кам'яна основа, але плита вкрита
+// смолистою живицею. Фронт сигналу штовхає блок, як звичайний поршень, а от
+// коли сигнал згасає — плита не відпускає: блок **тягнеться** назад разом зі
+// штоком. Мережа вміла рухати світ від себе — тепер уміє й до себе: потаємна
+// стіна, що сама зачиняється, міст, що ховається, пісок, що вертається з
+// урвища на крок. Нове дієслово — тягнути.
+const STICKY_PISTON = 79;
 const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -500,6 +507,7 @@ const BLOCK_NAMES = {
   [LATCH]: 'Защіпка',
   [TURRET]: 'Стрілець',
   [PISTON]: 'Поршень',
+  [STICKY_PISTON]: 'Липкий поршень',
 };
 
 // Яка руда з торби відповідає воксельному блоку руди
@@ -517,6 +525,7 @@ const ALL_BLOCKS = [
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
   LEVER, WIRE, LAMP, SENSOR, INVERTER, BUTTON, LATCH, TURRET, PISTON,
+  STICKY_PISTON,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
 
@@ -810,7 +819,7 @@ function saveGame() {
         [t.x, t.y, t.z, t.fx, t.fz, t.out ? 1 : 0]),
       turrets: [...turrets.values()].map((t) => [t.x, t.y, t.z, t.fx, t.fz]),
       pistons: [...pistons.values()].map((p) =>
-        [p.x, p.y, p.z, p.fx, p.fz, p.extended ? 1 : 0]),
+        [p.x, p.y, p.z, p.fx, p.fz, p.extended ? 1 : 0, p.sticky ? 1 : 0]),
       chests: [...chests.values()].map((c) =>
         [c.x, c.y, c.z, Object.entries(c.store).filter(([, n]) => n > 0)]),
       mushrooms: [...mushrooms.values()].map((m) =>
@@ -12765,7 +12774,9 @@ if (savedGame && Array.isArray(savedGame.turrets)) {
 // клітинку далі (пісок і гравій без опори зриваються в падіння, воду й
 // гравітацію будить сам setBlock). Механізми, скрині чи істоти на шляху —
 // чесна перешкода: шток лишається втягнутим до наступного фронту. Сигнал
-// згас — шток тихо вертається, блок лишається (поршень не липкий). ПКМ по
+// згас — шток тихо вертається, блок лишається (поршень не липкий). Липкий
+// різновид (та сама механіка, плита в смолистій живиці) на спаді сигналу
+// тягне блок, у який упирався, назад за собою. ПКМ по
 // поршню повертає шток на чверть оберту (лише втягнутий). Ставиться ПКМ на
 // тверду опору, ЛКМ — розібрати; зберігається зі світом разом із напрямом і
 // станом штока; після завантаження перший тик міряє вхід тихо — фронт не
@@ -12797,8 +12808,10 @@ const PISTON_ROD_MAT = new THREE.MeshLambertMaterial({ color: 0x8a6a3f });
 const PISTON_PLATE_GEO = new THREE.BoxGeometry(0.12, 0.6, 0.6);
 PISTON_PLATE_GEO.translate(0.26, 0.32, 0);
 const PISTON_PLATE_MAT = new THREE.MeshLambertMaterial({ color: 0xa8875a });
+// Липка плита — та сама дубова, але вкрита смолистою живицею
+const PISTON_PLATE_STICKY_MAT = new THREE.MeshLambertMaterial({ color: 0x7fae4e });
 
-function makePistonModel() {
+function makePistonModel(sticky) {
   const g = new THREE.Group();
   const base = new THREE.Mesh(PISTON_BASE_GEO, PISTON_BASE_MAT);
   base.position.y = 0.05;
@@ -12806,10 +12819,14 @@ function makePistonModel() {
   g.add(new THREE.Mesh(PISTON_BODY_GEO, PISTON_BODY_MAT));
   const head = new THREE.Group();
   head.add(new THREE.Mesh(PISTON_ROD_GEO, PISTON_ROD_MAT));
-  head.add(new THREE.Mesh(PISTON_PLATE_GEO, PISTON_PLATE_MAT));
+  head.add(new THREE.Mesh(PISTON_PLATE_GEO,
+    sticky ? PISTON_PLATE_STICKY_MAT : PISTON_PLATE_MAT));
   g.add(head);
   return { g, head };
 }
+
+// Ім'я поршня для повідомлень HUD
+const pistonName = (p) => p.sticky ? 'Липкий поршень' : 'Поршень';
 
 // Повернути групу так, щоб плита дивилась у бік поштовху (fx, fz)
 function applyPistonFacing(p) {
@@ -12818,18 +12835,18 @@ function applyPistonFacing(p) {
 
 // inPrev: null — «ще не міряв»: перший тик запам'ятає стан входу тихо, без
 // поштовху (важливо після завантаження сейву — фронт не вигадується)
-function addPiston(x, y, z, fx = 1, fz = 0, extended = false) {
+function addPiston(x, y, z, fx = 1, fz = 0, extended = false, sticky = false) {
   const key = pistonKey(x, y, z);
   if (pistons.has(key) || pistons.size >= PISTON_MAX) return false;
   // Зіпсований напрям (старий чи правлений сейв) — дивитися на схід
   if (!((Math.abs(fx) === 1 && fz === 0) || (fx === 0 && Math.abs(fz) === 1))) {
     fx = 1; fz = 0;
   }
-  const { g, head } = makePistonModel();
+  const { g, head } = makePistonModel(!!sticky);
   g.position.set(x + 0.5, y, z + 0.5);
   scene.add(g);
-  const p = { x, y, z, group: g, head, fx, fz, inPrev: null,
-              extended: !!extended, ext: extended ? 1 : 0 };
+  const p = { x, y, z, group: g, head, fx, fz, inPrev: null, sticky: !!sticky,
+              extended: !!extended, ext: extended ? 1 : 0, cycleArm: false };
   applyPistonFacing(p);
   head.position.x = p.ext * PISTON_TRAVEL;
   pistons.set(key, p);
@@ -12855,17 +12872,19 @@ function breakPiston(key) {
 }
 
 // Поставити поршень у клітинку перед прицілом (лише на тверду підлогу);
-// плита дивиться туди ж, куди гравець — блок посунеться вперед
-function placePiston(hit) {
+// плита дивиться туди ж, куди гравець — блок посунеться вперед. sticky —
+// липкий різновид: на спаді сигналу плита тягне блок назад
+function placePiston(hit, sticky = false) {
   const [x, y, z] = hit.prev;
   if (!powerCellFree(x, y, z)) return false;
   const fwdX = -Math.sin(player.yaw), fwdZ = -Math.cos(player.yaw);
   let fx = 0, fz = 0;
   if (Math.abs(fwdX) >= Math.abs(fwdZ)) fx = fwdX >= 0 ? 1 : -1;
   else fz = fwdZ >= 0 ? 1 : -1;
-  if (!addPiston(x, y, z, fx, fz)) return false;
+  if (!addPiston(x, y, z, fx, fz, false, sticky)) return false;
   Sound.place(STONE);
-  spawnParticles(x + 0.5, y + 0.4, z + 0.5, new THREE.Color(0x8a6a3f), 6,
+  spawnParticles(x + 0.5, y + 0.4, z + 0.5,
+    new THREE.Color(sticky ? 0x7fae4e : 0x8a6a3f), 6,
     { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
   return true;
 }
@@ -12874,7 +12893,7 @@ function placePiston(hit) {
 // втягнутий — висунутий шток спершу має вернутися); вхід перемірюється тихо
 function rotatePiston(p) {
   if (p.extended || p.ext > 0.01) {
-    flashItemName('⚙ Поршень: шток висунуто — зніміть сигнал');
+    flashItemName(`⚙ ${pistonName(p)}: шток висунуто — зніміть сигнал`);
     return;
   }
   const nfx = -p.fz, nfz = p.fx;
@@ -12882,9 +12901,10 @@ function rotatePiston(p) {
   p.inPrev = null;
   applyPistonFacing(p);
   Sound.lever(true);
-  spawnParticles(p.x + 0.5, p.y + 0.45, p.z + 0.5, new THREE.Color(0xa8875a), 4,
+  spawnParticles(p.x + 0.5, p.y + 0.45, p.z + 0.5,
+    new THREE.Color(p.sticky ? 0x7fae4e : 0xa8875a), 4,
     { radius: 0.15, speed: 0.9, upBias: 0.8, life: 0.4, size: 0.07, gravity: 2 });
-  flashItemName('⚙ Поршень: шток повернуто');
+  flashItemName(`⚙ ${pistonName(p)}: шток повернуто`);
 }
 
 // Стан входу поршня (клітинка позаду, сходинки ±1, як у стрільця)
@@ -12928,6 +12948,32 @@ function pistonDestFree(x, y, z) {
     cactusFruits.has(k));
 }
 
+// Поштовх чи тяга могли забрати опору чи клітинку в сутностей довкола —
+// та сама прибиральна бригада, що після вибуху
+function validateAfterPistonMove() {
+  validateTorches();
+  validateCrops();
+  validateBeds();
+  validateSigns();
+  validateLadders();
+  validateDoors();
+  validateFences();
+  validateSaplings();
+  validateRails();
+  validateCampfires();
+  validateBeehives();
+  validateScarecrows();
+  validateAnvils();
+  validateChests();
+  validateMills();
+  validateCauldrons();
+  validateLightningRods();
+  validateMushrooms();
+  validateFlowers();
+  validateOysters();
+  validateCactusFruits();
+}
+
 // Чи стоїть у клітинці гравець, нечисть або тварина — на живого блок не
 // зіштовхується (він застряг би у «твердій» клітинці)
 function pistonCellBlockedByEntity(x, y, z) {
@@ -12950,6 +12996,7 @@ function tryExtendPiston(p) {
     // там — не перешкода, плита не тверда), нічого не рухаючи
     if (!pistonDestFree(fx1, p.y, fz1)) return false;
     p.extended = true;
+    p.cycleArm = false;                // штовхати не було чого — цикл не почато
     Sound.piston(true);
     return true;
   }
@@ -12959,30 +13006,9 @@ function tryExtendPiston(p) {
   if (pistonCellBlockedByEntity(dx2, p.y, dz2)) return false;
   setBlock(fx1, p.y, fz1, AIR);
   setBlock(dx2, p.y, dz2, id);
-  // Поштовх міг забрати опору чи клітинку в сутностей довкола — та сама
-  // прибиральна бригада, що після вибуху
-  validateTorches();
-  validateCrops();
-  validateBeds();
-  validateSigns();
-  validateLadders();
-  validateDoors();
-  validateFences();
-  validateSaplings();
-  validateRails();
-  validateCampfires();
-  validateBeehives();
-  validateScarecrows();
-  validateAnvils();
-  validateChests();
-  validateMills();
-  validateCauldrons();
-  validateLightningRods();
-  validateMushrooms();
-  validateFlowers();
-  validateOysters();
-  validateCactusFruits();
+  validateAfterPistonMove();
   p.extended = true;
+  p.cycleArm = true;                   // блок зіштовхнуто — тяга замкне цикл
   Sound.piston(true);
   unlockAch('piston');
   // Сипкий блок зіштовхнуто туди, де під ним порожньо — зараз зірветься
@@ -12992,6 +13018,36 @@ function tryExtendPiston(p) {
   spawnParticles(dx2 + 0.5, p.y + 0.5, dz2 + 0.5, blockColor(id), 8,
     { radius: 0.3, speed: 1.4, upBias: 0.5, life: 0.4, size: 0.08, gravity: 8 });
   return true;
+}
+
+// Липка тяга: блок, у який упиралася висунута плита (клітинка через одну),
+// тягнеться назад у клітинку перед поршнем. false — тягти нічого або нікуди:
+// шток однаково вертається, просто порожній (живиця не рве блок із замуровки)
+function tryPullPiston(p) {
+  const fx1 = p.x + p.fx, fz1 = p.z + p.fz;         // куди тягнеться блок
+  const sx = p.x + 2 * p.fx, sz = p.z + 2 * p.fz;   // де він прилип
+  const id = blockAt(sx, p.y, sz);
+  if (!PISTON_PUSHABLE.has(id)) return false;
+  if (!pistonDestFree(fx1, p.y, fz1)) return false;
+  if (pistonCellBlockedByEntity(fx1, p.y, fz1)) return false;
+  setBlock(sx, p.y, sz, AIR);
+  setBlock(fx1, p.y, fz1, id);
+  validateAfterPistonMove();
+  unlockAch('sticky');
+  // Той самий блок з'їздив туди й назад — повний цикл липкого поршня
+  if (p.cycleArm) unlockAch('sticky_cycle');
+  p.cycleArm = false;
+  spawnParticles(fx1 + 0.5, p.y + 0.5, fz1 + 0.5, blockColor(id), 8,
+    { radius: 0.3, speed: 1.4, upBias: 0.5, life: 0.4, size: 0.08, gravity: 8 });
+  return true;
+}
+
+// Повернути шток (спад сигналу): липкий поршень спершу пробує притягти
+// блок, у який упирався; звичайний просто відпускає
+function retractPiston(p) {
+  if (p.sticky) tryPullPiston(p);
+  p.extended = false;
+  Sound.piston(false);
 }
 
 // Тик поршнів: опора, ловля фронту сигналу (поштовх) і рівний спад
@@ -13018,11 +13074,8 @@ function updatePistons(dt) {
     }
     // Фронт сигналу — спроба поштовху; перекрито — чекати наступного фронту
     if (on && !p.inPrev && !p.extended) tryExtendPiston(p);
-    // Сигнал зник — шток вертається (блок лишається: поршень не липкий)
-    if (!on && p.extended) {
-      p.extended = false;
-      Sound.piston(false);
-    }
+    // Сигнал зник — шток вертається; липкий тягне блок за собою
+    if (!on && p.extended) retractPiston(p);
     p.inPrev = on;
   }
 }
@@ -13032,7 +13085,7 @@ function updatePistons(dt) {
 if (savedGame && Array.isArray(savedGame.pistons)) {
   for (const e of savedGame.pistons) {
     if (Array.isArray(e) && e.length >= 5) {
-      addPiston(e[0], e[1], e[2], e[3] | 0, e[4] | 0, !!e[5]);
+      addPiston(e[0], e[1], e[2], e[3] | 0, e[4] | 0, !!e[5], !!e[6]);
     }
   }
 }
@@ -17203,6 +17256,12 @@ function placeBlock() {
     return;
   }
 
+  // Липкий поршень — те саме, але на спаді сигналу плита тягне блок назад
+  if (id === STICKY_PISTON) {
+    placePiston(hit, true);
+    return;
+  }
+
   // Двері — сутність на дві клітинки заввишки, не змінює воксельну сітку
   if (id === DOOR) {
     placeDoor(hit);
@@ -19442,6 +19501,33 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(13, 13, 1, 2);
     return;
   }
+  if (id === STICKY_PISTON) {
+    // Процедурна іконка липкого поршня: як у поршня, але плита в смолистій
+    // живиці й стрілки в обидва боки — штовхає і тягне
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тінь під основою
+    ctx.fillRect(3, 14, 10, 1);
+    ctx.fillStyle = '#6f7680';                 // кам'яна основа
+    ctx.fillRect(3, 12, 10, 2);
+    ctx.fillStyle = '#596069';                 // кам'яний корпус
+    ctx.fillRect(2, 4, 6, 8);
+    ctx.fillStyle = '#6d747e';                 // відблиск корпуса
+    ctx.fillRect(2, 4, 6, 1);
+    ctx.fillStyle = '#8a6a3f';                 // дубовий шток
+    ctx.fillRect(8, 7, 3, 2);
+    ctx.fillStyle = '#7fae4e';                 // плита в живиці
+    ctx.fillRect(11, 3, 2, 10);
+    ctx.fillStyle = '#a3cc72';                 // відблиск живиці
+    ctx.fillRect(11, 3, 2, 1);
+    ctx.fillStyle = '#ffd54a';                 // стрілка поштовху →
+    ctx.fillRect(14, 3, 1, 2);
+    ctx.fillStyle = '#8cd94e';                 // стрілка тяги ←
+    ctx.fillRect(14, 11, 1, 2);
+    ctx.fillRect(15, 10, 1, 1);
+    ctx.fillRect(15, 13, 1, 1);
+    return;
+  }
   if (id === NOTE) {
     // Процедурна іконка нотного блока: дощаний ящик із білою нотою
     const ctx = canvas.getContext('2d');
@@ -20763,6 +20849,8 @@ const ACHIEVEMENTS = [
   { id: 'sentry',      icon: '🎯', title: 'Вартовий',           desc: 'Стріла стрільця сама влучила в нечисть' },
   { id: 'piston',      icon: '🦾', title: 'Мережа рухає світ',  desc: 'Поршень зіштовхнув блок на сусідню клітинку' },
   { id: 'piston_drop', icon: '🏜', title: 'Зсув',               desc: 'Зіштовхнутий поршнем сипкий блок зірвався в падіння' },
+  { id: 'sticky',       icon: '🧲', title: 'Мережа тягне',       desc: 'Липкий поршень притягнув блок назад за штоком' },
+  { id: 'sticky_cycle', icon: '🔁', title: 'Туди й назад',       desc: 'Той самий блок зіштовхнуто й притягнуто одним липким поршнем' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -22931,7 +23019,7 @@ window.MCDebug = {
         ({ x: t.x, y: t.y, z: t.z, fx: t.fx, fz: t.fz,
            input: turretInputPowered(t) })),
       pistons: [...pistons.values()].map((p) =>
-        ({ x: p.x, y: p.y, z: p.z, fx: p.fx, fz: p.fz,
+        ({ x: p.x, y: p.y, z: p.z, fx: p.fx, fz: p.fz, sticky: !!p.sticky,
            extended: !!p.extended, input: pistonInputPowered(p) })),
       held: [...powerHeld],
     };
@@ -23036,9 +23124,16 @@ window.MCDebug = {
   },
   // Поршень (для тестів)
   givePiston: () => { assignBlockToSlot(PISTON); return BLOCK_NAMES[PISTON]; },
+  giveStickyPiston: () => {
+    assignBlockToSlot(STICKY_PISTON); return BLOCK_NAMES[STICKY_PISTON];
+  },
   placePistonAt: (x, y, z, fx = 1, fz = 0) => {
     if (!powerCellFree(x, y, z)) return false;
     return addPiston(x, y, z, fx, fz);
+  },
+  placeStickyPistonAt: (x, y, z, fx = 1, fz = 0) => {
+    if (!powerCellFree(x, y, z)) return false;
+    return addPiston(x, y, z, fx, fz, false, true);
   },
   rotatePistonAt: (x, y, z) => {
     const p = pistons.get(pistonKey(x, y, z));
@@ -23056,14 +23151,14 @@ window.MCDebug = {
     const p = pistons.get(pistonKey(x, y, z));
     if (!p) return null;
     if (!p.extended) return 'шток уже втягнуто';
-    p.extended = false;
-    Sound.piston(false);
+    retractPiston(p);
     return true;
   },
   get pistonInfo() {
     return [...pistons.values()].map((p) =>
       ({ x: p.x, y: p.y, z: p.z, fx: p.fx, fz: p.fz, extended: !!p.extended,
-         ext: +p.ext.toFixed(2), input: pistonInputPowered(p) }));
+         sticky: !!p.sticky, ext: +p.ext.toFixed(2),
+         input: pistonInputPowered(p) }));
   },
   placeDoorAt: (x, y, z, dx = 1, dz = 0) => addDoor(x, y, z, dx, dz),
   placeGateAt: (x, y, z, dx = 1, dz = 0) => addGate(x, y, z, dx, dz),
