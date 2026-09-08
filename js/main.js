@@ -352,6 +352,13 @@ const PISTON = 78;
 // стіна, що сама зачиняється, міст, що ховається, пісок, що вертається з
 // урвища на крок. Нове дієслово — тягнути.
 const STICKY_PISTON = 79;
+// Датчикова рейка — перший міст між колією та мережею: та сама рейка, але
+// між шпалами лежить сигнальна плитка. Стає вагонетка (чи котиться крізь) —
+// плитка спалахує й живить мережу, як натиснута плита: линви, лампи, двері,
+// ноти, динаміт, поршні. Мережа світила, грала, стріляла й рухала — а тепер
+// уперше **чує колію**: станційний дзвінок, шлагбаум, що сам відчиняється
+// перед вагонеткою, пастка на роз'їзді. Нове дієслово — чути рух.
+const DETECTOR_RAIL = 80;
 const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -508,6 +515,7 @@ const BLOCK_NAMES = {
   [TURRET]: 'Стрілець',
   [PISTON]: 'Поршень',
   [STICKY_PISTON]: 'Липкий поршень',
+  [DETECTOR_RAIL]: 'Датчикова рейка',
 };
 
 // Яка руда з торби відповідає воксельному блоку руди
@@ -525,7 +533,7 @@ const ALL_BLOCKS = [
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
   LEVER, WIRE, LAMP, SENSOR, INVERTER, BUTTON, LATCH, TURRET, PISTON,
-  STICKY_PISTON,
+  STICKY_PISTON, DETECTOR_RAIL,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
 
@@ -792,7 +800,8 @@ function saveGame() {
       fences: [...fences.values()].map((f) => [f.x, f.y, f.z]),
       gates: [...gates.values()].map((g) => [g.x, g.y, g.z, g.dx, g.dz, g.open ? 1 : 0]),
       boats: boats.map((b) => [+b.pos.x.toFixed(2), +b.pos.y.toFixed(2), +b.pos.z.toFixed(2), +b.yaw.toFixed(3)]),
-      rails: [...rails.values()].map((r) => [r.x, r.y, r.z, r.a[0], r.a[1], r.b[0], r.b[1]]),
+      rails: [...rails.values()].map((r) =>
+        [r.x, r.y, r.z, r.a[0], r.a[1], r.b[0], r.b[1], r.det ? 1 : 0]),
       carts: carts.map((c) => [+c.pos.x.toFixed(2), +c.pos.y.toFixed(2), +c.pos.z.toFixed(2)]),
       campfires: [...campfires.values()].map((c) =>
         [c.x, c.y, c.z, c.cooking ? 1 : 0, +c.cookT.toFixed(1),
@@ -10313,21 +10322,36 @@ if (savedGame && Array.isArray(savedGame.boats)) {
 // При встановленні сама з'єднується із сусідніми рейками, а «висячі» кінці
 // сусідів розвертаються назустріч. Вагонетка їде графом центрів клітинок:
 // відрізок «центр A → центр B», на повороті напрямок змінюється у центрі.
-const rails = new Map();               // "x,y,z" -> { x, y, z, a:[dx,dz], b:[dx,dz], group }
+const rails = new Map();               // "x,y,z" -> { x, y, z, a:[dx,dz], b:[dx,dz], group,
+                                       //   det, pressed, offT, pad } (датчикові — з плиткою)
 const RAIL_MAX = 1024;                 // межа, щоб збереження не розросталося
 const RAIL_COLOR = new THREE.Color(0x8f9aa5);
+let detRailCount = 0;                  // скільки з рейок — датчикові (для швидких перевірок)
+let powerNetReady = false;             // чи вже створено мапи мережі (линви тощо):
+                                       // рейки відновлюються з сейву раніше за них,
+                                       // тож до готовності линви не перемальовуємо
+const DETRAIL_OFF_DELAY = 0.35;        // затримка відпускання, с (як у плити — без брязкоту)
 
 // Спільні ресурси моделі (геометрії/матеріали не дублюються на кожну рейку)
 const RAIL_BAR_GEO = new THREE.BoxGeometry(0.07, 0.05, 1.0);
 const RAIL_TIE_GEO = new THREE.BoxGeometry(0.72, 0.05, 0.16);
 const RAIL_BAR_MAT = new THREE.MeshLambertMaterial({ color: 0x9aa3ad });
 const RAIL_TIE_MAT = new THREE.MeshLambertMaterial({ color: 0x7a5230 });
+// Датчикова рейка: темніші шпали й сигнальна плитка між рейками, що
+// спалахує золотом під вагонеткою
+const DETRAIL_TIE_MAT = new THREE.MeshLambertMaterial({ color: 0x5d3a24 });
+const DETRAIL_PAD_GEO = new THREE.BoxGeometry(0.34, 0.06, 0.5);
+const DETRAIL_PAD_OFF_MAT = new THREE.MeshLambertMaterial({ color: 0x8a6a3f });
+const DETRAIL_PAD_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xffe08a, emissive: 0xffb84d, emissiveIntensity: 0.9 });
 
 const railKey = (x, y, z) => x + ',' + y + ',' + z;
 
 // Модель: дві сталеві рейки на дерев'яних шпалах. Пряма лежить уздовж своєї
 // осі; поворот — коротша діагональна хорда між серединами двох граней.
-function makeRailModel(a, b) {
+// Датчикова (det) — темніші шпали й сигнальна плитка між рейками
+// (посилання на неї — у g.userData.pad, щоб міняти матеріал під вагою).
+function makeRailModel(a, b, det = false) {
   const g = new THREE.Group();
   const straight = a[0] === -b[0] && a[1] === -b[1];
   const sub = new THREE.Group();
@@ -10339,9 +10363,15 @@ function makeRailModel(a, b) {
     sub.add(bar);
   }
   for (const tz of (straight ? [-0.36, -0.12, 0.12, 0.36] : [-0.22, 0, 0.22])) {
-    const tie = new THREE.Mesh(RAIL_TIE_GEO, RAIL_TIE_MAT);
+    const tie = new THREE.Mesh(RAIL_TIE_GEO, det ? DETRAIL_TIE_MAT : RAIL_TIE_MAT);
     tie.position.set(0, 0.02, tz);
     sub.add(tie);
+  }
+  if (det) {
+    const pad = new THREE.Mesh(DETRAIL_PAD_GEO, DETRAIL_PAD_OFF_MAT);
+    pad.position.set(0, 0.045, 0);
+    sub.add(pad);
+    g.userData.pad = pad;
   }
   let ux, uz, mx = 0, mz = 0;
   if (straight) {
@@ -10358,16 +10388,25 @@ function makeRailModel(a, b) {
   return g;
 }
 
-// Створити рейку в клітинці (x,y,z) з кінцями a та b (одиничні [dx,dz])
-function addRail(x, y, z, a, b) {
+// Створити рейку в клітинці (x,y,z) з кінцями a та b (одиничні [dx,dz]);
+// det — датчикова: сигнальна плитка живить мережу під вагонеткою
+function addRail(x, y, z, a, b, det = false) {
   const key = railKey(x, y, z);
   if (rails.has(key) || rails.size >= RAIL_MAX) return false;
   if (Math.abs(a[0]) + Math.abs(a[1]) !== 1 || Math.abs(b[0]) + Math.abs(b[1]) !== 1) return false;
   if (a[0] === b[0] && a[1] === b[1]) return false;
-  const group = makeRailModel(a, b);
+  const group = makeRailModel(a, b, det);
   group.position.set(x + 0.5, y + 0.01, z + 0.5);
   scene.add(group);
-  rails.set(key, { x, y, z, a: [a[0], a[1]], b: [b[0], b[1]], group });
+  rails.set(key, { x, y, z, a: [a[0], a[1]], b: [b[0], b[1]], group,
+                   det: !!det, pressed: false, offT: 0,
+                   pad: group.userData.pad || null });
+  if (det) {
+    detRailCount++;
+    // Линви поруч тягнуть рукав до датчика (після ініціалізації мережі;
+    // при відновленні сейву линви створюються пізніше й самі його побачать)
+    if (powerNetReady) refreshWiresAround(x, y, z);
+  }
   return true;
 }
 
@@ -10376,6 +10415,10 @@ function removeRail(key) {
   if (!r) return;
   scene.remove(r.group);   // геометрії/матеріали спільні — не dispose
   rails.delete(key);
+  if (r.det) {
+    detRailCount--;
+    if (powerNetReady) refreshWiresAround(r.x, r.y, r.z);
+  }
 }
 
 // Зняти рейки, що втратили опору або клітинку яких зайняв блок
@@ -10404,14 +10447,17 @@ function reconnectRail(x, y, z, dir) {
   if (!end) return;   // обидва кінці вже з'єднані — не ламати чужу колію
   r[end] = [dir[0], dir[1]];
   scene.remove(r.group);
-  r.group = makeRailModel(r.a, r.b);
+  r.group = makeRailModel(r.a, r.b, r.det);
   r.group.position.set(x + 0.5, y + 0.01, z + 0.5);
   scene.add(r.group);
+  r.pad = r.group.userData.pad || null;
+  if (r.pad && r.pressed) r.pad.material = DETRAIL_PAD_ON_MAT;
 }
 
 // Покласти рейку в клітинку перед прицілом: потрібна тверда опора знизу.
 // Орієнтація — за сусідніми рейками (пряма чи поворот), без сусідів — за поглядом.
-function placeRail(hit) {
+// det — датчикова рейка: та сама колія, але з сигнальною плиткою
+function placeRail(hit, det = false) {
   const [x, y, z] = hit.prev;
   const k = railKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || !isSolid(blockAt(x, y - 1, z))) return false;
@@ -10441,12 +10487,58 @@ function placeRail(hit) {
     }
     [a, b] = pair || [nbr[0], nbr[1]];
   }
-  if (!addRail(x, y, z, a, b)) return false;
+  if (!addRail(x, y, z, a, b, det)) return false;
   for (const d of [a, b]) reconnectRail(x + d[0], y, z + d[1], [-d[0], -d[1]]);
   Sound.place(IRON);
   spawnParticles(x + 0.5, y + 0.15, z + 0.5, RAIL_COLOR, 6,
     { radius: 0.3, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
   return true;
+}
+
+// Чи стоїть (чи котиться крізь) вагонетка на цій датчиковій рейці:
+// центр — у клітинці рейки, низ — біля рівня колії (як standsOnPlate)
+function cartOnDetRail(r) {
+  for (const c of carts) {
+    if (Math.floor(c.pos.x) === r.x && Math.floor(c.pos.z) === r.z &&
+        c.pos.y > r.y - 0.35 && c.pos.y < r.y + 0.7) return true;
+  }
+  return false;
+}
+
+// Натискання датчикової рейки: плитка спалахує золотом, б'є по нотних
+// блоках і підпалює динаміт упритул (як натиснута плита); линви, лампи й
+// двері підхопить перерахунок мережі цього ж кадру
+function pressDetRail(r) {
+  r.pressed = true;
+  if (r.pad) r.pad.material = DETRAIL_PAD_ON_MAT;
+  Sound.plate(true);
+  unlockAch('detrail');
+  spawnParticles(r.x + 0.5, r.y + 0.15, r.z + 0.5, new THREE.Color(0xffd54a), 4,
+    { radius: 0.2, speed: 0.7, upBias: 1.2, life: 0.5, size: 0.07, gravity: -1 });
+  strikeNotesAround(r, 'cart');
+  igniteTntAround(r.x, r.y, r.z);
+}
+
+// Тик датчикових рейок: зважити вагонетки й клацнути краями натискання —
+// викликається з updatePower перед BFS, щоб мережа бачила свіжі джерела.
+// Відпускання — із затримкою, як у плити: вагонетка, що котиться колією
+// з датчиків, тримає сигнал без брязкоту
+function updateDetectorRails(dt) {
+  if (detRailCount === 0) return;
+  for (const r of rails.values()) {
+    if (!r.det) continue;
+    if (cartOnDetRail(r)) {
+      r.offT = DETRAIL_OFF_DELAY;
+      if (!r.pressed) pressDetRail(r);
+    } else if (r.pressed) {
+      r.offT -= dt;
+      if (r.offT <= 0) {
+        r.pressed = false;
+        if (r.pad) r.pad.material = DETRAIL_PAD_OFF_MAT;
+        Sound.plate(false);
+      }
+    }
+  }
 }
 
 // ===== Вагонетки =====
@@ -10752,10 +10844,13 @@ function updateCarts(dt) {
   }
 }
 
-// Відновити збережені рейки та вагонетки (сумісно зі старими сейвами)
+// Відновити збережені рейки та вагонетки (сумісно зі старими сейвами:
+// без восьмого поля рейка звичайна, не датчикова)
 if (savedGame && Array.isArray(savedGame.rails)) {
   for (const e of savedGame.rails) {
-    if (Array.isArray(e) && e.length >= 7) addRail(e[0], e[1], e[2], [e[3], e[4]], [e[5], e[6]]);
+    if (Array.isArray(e) && e.length >= 7) {
+      addRail(e[0], e[1], e[2], [e[3], e[4]], [e[5], e[6]], !!e[7]);
+    }
   }
 }
 if (savedGame && Array.isArray(savedGame.carts)) {
@@ -11185,6 +11280,7 @@ const pistons = new Map();             // поршні (секція нижче)
 const LEVER_MAX = 32;                  // межа, щоб збереження не розросталося
 const WIRE_MAX = 192;
 const WIRE_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+powerNetReady = true;   // мапи мережі створено — рейки можуть будити линви
 const powerHeld = new Set();           // двері/хвіртки, відчинені мережею ("door:key")
 let powerNeed = new Set();             // теги, які мережа хоче тримати цього кадру
 
@@ -11223,9 +11319,11 @@ function makeLeverModel() {
 // Чи є в клітинці провідник або джерело сигналу (для з'єднання линв)
 function powerNodeAt(x, y, z) {
   const k = wireKey(x, y, z);
-  return wires.has(k) || levers.has(k) || plates.has(k) || sensors.has(k) ||
-         inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) ||
-         pistons.has(k);
+  if (wires.has(k) || levers.has(k) || plates.has(k) || sensors.has(k) ||
+      inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) ||
+      pistons.has(k)) return true;
+  const r = rails.get(k);
+  return !!(r && r.det);   // датчикова рейка — теж вузол мережі
 }
 
 // Перебудувати модель линви: вузол і рукави до з'єднаних сусідів
@@ -11308,7 +11406,7 @@ function addWire(x, y, z) {
   g.position.set(x + 0.5, y, z + 0.5);
   scene.add(g);
   const w = { x, y, z, group: g, powered: false, dist: 0, srcSensor: false,
-              srcButton: false };
+              srcButton: false, srcRail: false };
   wires.set(key, w);
   rebuildWireMesh(w);
   refreshWiresAround(x, y, z);
@@ -11408,29 +11506,35 @@ function toggleLever(l) {
 }
 
 // BFS від усіх джерел (увімкнені важелі, натиснуті плити, активні датчики,
-// натиснуті кнопки) крізь линви: повертає Map ключ -> { d: відстань у
-// клітинках (перший візит — найкоротша), sensor: чи прийшов сигнал від
-// датчика світла, button: чи від кнопки (для «Дзвінка у двері») }
+// натиснуті кнопки, натиснуті датчикові рейки) крізь линви: повертає Map
+// ключ -> { d: відстань у клітинках (перший візит — найкоротша), sensor: чи
+// прийшов сигнал від датчика світла, button: чи від кнопки (для «Дзвінка у
+// двері»), rail: чи від датчикової рейки (для «Станції») }
 function computePower() {
   const powered = new Map();
   const queue = [];
-  for (const l of levers.values()) if (l.on) queue.push([l.x, l.y, l.z, 0, false, false, null]);
-  for (const p of plates.values()) if (p.pressed) queue.push([p.x, p.y, p.z, 0, false, false, null]);
-  for (const s of sensors.values()) if (s.active) queue.push([s.x, s.y, s.z, 0, true, false, null]);
-  for (const b of buttons.values()) if (b.pressed) queue.push([b.x, b.y, b.z, 0, false, true, null]);
+  for (const l of levers.values()) if (l.on) queue.push([l.x, l.y, l.z, 0, false, false, false, null]);
+  for (const p of plates.values()) if (p.pressed) queue.push([p.x, p.y, p.z, 0, false, false, false, null]);
+  for (const s of sensors.values()) if (s.active) queue.push([s.x, s.y, s.z, 0, true, false, false, null]);
+  for (const b of buttons.values()) if (b.pressed) queue.push([b.x, b.y, b.z, 0, false, true, false, null]);
+  if (detRailCount > 0) {
+    for (const r of rails.values()) {
+      if (r.det && r.pressed) queue.push([r.x, r.y, r.z, 0, false, false, true, null]);
+    }
+  }
   // Інвертор із жевріючим кристалом — теж джерело, але не живить свій вхід
   // (напрям позаду, з усіма сходинками): інакше линва впритул за спиною
   // зациклювала б його на самого себе
   for (const v of inverters.values()) {
-    if (v.out) queue.push([v.x, v.y, v.z, 0, false, false, (-v.fx) + ',' + (-v.fz)]);
+    if (v.out) queue.push([v.x, v.y, v.z, 0, false, false, false, (-v.fx) + ',' + (-v.fz)]);
   }
   // Защіпка з жевріючим кристалом — джерело-пам'ять; свій вхід не живить
   // з тієї ж причини, що й інвертор: линва за спиною не має зациклювати
   for (const t of latches.values()) {
-    if (t.out) queue.push([t.x, t.y, t.z, 0, false, false, (-t.fx) + ',' + (-t.fz)]);
+    if (t.out) queue.push([t.x, t.y, t.z, 0, false, false, false, (-t.fx) + ',' + (-t.fz)]);
   }
   for (let qi = 0; qi < queue.length; qi++) {
-    const [x, y, z, d, fromSensor, fromButton, skip] = queue[qi];
+    const [x, y, z, d, fromSensor, fromButton, fromRail, skip] = queue[qi];
     for (const [dx, dz] of WIRE_DIRS) {
       if (skip && dx + ',' + dz === skip) continue;
       for (let dy = -1; dy <= 1; dy++) {
@@ -11438,8 +11542,8 @@ function computePower() {
         if (powered.has(k)) continue;
         const w = wires.get(k);
         if (!w) continue;
-        powered.set(k, { d: d + 1, sensor: fromSensor, button: fromButton });
-        queue.push([w.x, w.y, w.z, d + 1, fromSensor, fromButton, null]);
+        powered.set(k, { d: d + 1, sensor: fromSensor, button: fromButton, rail: fromRail });
+        queue.push([w.x, w.y, w.z, d + 1, fromSensor, fromButton, fromRail, null]);
       }
     }
   }
@@ -11472,7 +11576,7 @@ const heldByPower = (tag) => powerHeld.has(tag) || powerNeed.has(tag);
 function updatePower(dt) {
   if (levers.size === 0 && wires.size === 0 && sensors.size === 0 &&
       inverters.size === 0 && buttons.size === 0 && latches.size === 0 &&
-      turrets.size === 0 && pistons.size === 0 &&
+      turrets.size === 0 && pistons.size === 0 && detRailCount === 0 &&
       powerHeld.size === 0) return;
   // Опора й зайняті клітинки
   for (const [key, l] of levers) {
@@ -11497,6 +11601,9 @@ function updatePower(dt) {
   // Кнопки: опора, зворотний відлік імпульсу й пружина шапки — перед
   // інверторами, щоб ті читали свіжий стан входу
   updateButtons(dt);
+  // Датчикові рейки: зважити вагонетки й клацнути краями натискання — теж
+  // перед защіпками, інверторами й BFS, щоб мережа бачила свіжі джерела
+  updateDetectorRails(dt);
   // Защіпки: опора й ловля фронту сигналу на вході — після кнопок (щоб
   // почути свіжий імпульс), до інверторів і BFS (щоб ті бачили свіжий стан)
   updateLatches(dt);
@@ -11520,6 +11627,7 @@ function updatePower(dt) {
       w.dist = v.d;
       w.srcSensor = v.sensor;
       w.srcButton = v.button;
+      w.srcRail = v.rail;
       rebuildWireMesh(w);
       spawnParticles(w.x + 0.5, w.y + 0.15, w.z + 0.5, new THREE.Color(0xffd54a), 3,
         { radius: 0.2, speed: 0.6, upBias: 1.2, life: 0.5, size: 0.07, gravity: -1 });
@@ -11539,6 +11647,7 @@ function updatePower(dt) {
       w.dist = 0;
       w.srcSensor = false;
       w.srcButton = false;
+      w.srcRail = false;
       rebuildWireMesh(w);
     } else if (now) {
       // Джерело могло змінитися (важіль згас, датчик лишився) — освіжити
@@ -11546,6 +11655,7 @@ function updatePower(dt) {
       w.dist = v.d;
       w.srcSensor = v.sensor;
       w.srcButton = v.button;
+      w.srcRail = v.rail;
     }
   }
   // Які двері/хвіртки мережа хоче тримати: сусіди запалених линв і
@@ -11553,9 +11663,19 @@ function updatePower(dt) {
   // окремо — теги, до яких доклалась кнопка (для «Дзвінка у двері»)
   const need = new Map();
   const btnNeed = new Set();
+  const railNeed = new Set();
   for (const l of levers.values()) {
     if (!l.on) continue;
     for (const n of powerNeighbours(l.x, l.y, l.z)) need.set(n.tag, n);
+  }
+  if (detRailCount > 0) {
+    for (const r of rails.values()) {
+      if (!r.det || !r.pressed) continue;
+      for (const n of powerNeighbours(r.x, r.y, r.z)) {
+        need.set(n.tag, n);
+        railNeed.add(n.tag);
+      }
+    }
   }
   for (const s of sensors.values()) {
     if (!s.active) continue;
@@ -11581,6 +11701,7 @@ function updatePower(dt) {
     for (const n of powerNeighbours(w.x, w.y, w.z)) {
       need.set(n.tag, n);
       if (w.srcButton) btnNeed.add(n.tag);
+      if (w.srcRail) railNeed.add(n.tag);
     }
   }
   powerNeed = new Set(need.keys());
@@ -11591,6 +11712,8 @@ function updatePower(dt) {
       powerHeld.add(tag);
       // Імпульс кнопки сам відчинив стулку — дзвінок подзвонив
       if (btnNeed.has(tag)) unlockAch('doorbell');
+      // Сигнал датчикової рейки сам відчинив стулку — станція приймає
+      if (railNeed.has(tag)) unlockAch('station');
     }
   }
   // Дочинити борги: сигнал зійшов — зачинити, щойно прохід вільний і
@@ -11758,6 +11881,11 @@ function updateLamps(dt) {
   for (const v of inverters.values()) if (v.out) live.add(lampKey(v.x, v.y, v.z));
   for (const b of buttons.values()) if (b.pressed) live.add(lampKey(b.x, b.y, b.z));
   for (const t of latches.values()) if (t.out) live.add(lampKey(t.x, t.y, t.z));
+  if (detRailCount > 0) {
+    for (const r of rails.values()) {
+      if (r.det && r.pressed) live.add(lampKey(r.x, r.y, r.z));
+    }
+  }
   for (const w of wires.values()) {
     if (!w.powered) continue;
     live.add(lampKey(w.x, w.y, w.z));
@@ -12167,6 +12295,8 @@ function inverterInputPowered(v) {
     if (o && o !== v && o.out) return true;
     const t = latches.get(k);
     if (t && t.out) return true;
+    const r = rails.get(k);
+    if (r && r.det && r.pressed) return true;
   }
   return false;
 }
@@ -12508,6 +12638,8 @@ function latchInputInfo(t) {
     if (v && v.out) on = true;
     const o = latches.get(k);
     if (o && o !== t && o.out) on = true;
+    const r = rails.get(k);
+    if (r && r.det && r.pressed) on = true;
   }
   return { on, btn };
 }
@@ -12699,6 +12831,8 @@ function turretInputPowered(t) {
     if (v && v.out) return true;
     const o = latches.get(k);
     if (o && o.out) return true;
+    const r = rails.get(k);
+    if (r && r.det && r.pressed) return true;
   }
   return false;
 }
@@ -12926,6 +13060,8 @@ function pistonInputPowered(p) {
     if (v && v.out) return true;
     const o = latches.get(k);
     if (o && o.out) return true;
+    const r = rails.get(k);
+    if (r && r.det && r.pressed) return true;
   }
   return false;
 }
@@ -17184,6 +17320,13 @@ function placeBlock() {
     return;
   }
 
+  // Датчикова рейка — та сама колія, але з сигнальною плиткою: вагонетка
+  // зверху живить мережу, як натиснута плита
+  if (id === DETECTOR_RAIL) {
+    placeRail(hit, true);
+    return;
+  }
+
   // Натискна плита — механізм на твердій підлозі: реагує на вагу зверху
   if (id === PLATE) {
     placePlate(hit);
@@ -19927,6 +20070,24 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(10, 0, 2, 16);
     return;
   }
+  if (id === DETECTOR_RAIL) {
+    // Процедурна іконка датчикової рейки: колія з темнішими шпалами й
+    // золотою сигнальною плиткою посередині
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#5d3a24';
+    ctx.fillRect(1, 2, 14, 2);          // темні шпали
+    ctx.fillRect(1, 7, 14, 2);
+    ctx.fillRect(1, 12, 14, 2);
+    ctx.fillStyle = '#9aa3ad';
+    ctx.fillRect(4, 0, 2, 16);          // рейки
+    ctx.fillRect(10, 0, 2, 16);
+    ctx.fillStyle = '#ffd54a';          // сигнальна плитка
+    ctx.fillRect(7, 5, 2, 6);
+    ctx.fillStyle = '#ffe08a';          // відблиск плитки
+    ctx.fillRect(7, 5, 2, 1);
+    return;
+  }
   if (id === MINECART) {
     // Процедурна іконка вагонетки: залізний короб на колесах
     const ctx = canvas.getContext('2d');
@@ -20851,6 +21012,8 @@ const ACHIEVEMENTS = [
   { id: 'piston_drop', icon: '🏜', title: 'Зсув',               desc: 'Зіштовхнутий поршнем сипкий блок зірвався в падіння' },
   { id: 'sticky',       icon: '🧲', title: 'Мережа тягне',       desc: 'Липкий поршень притягнув блок назад за штоком' },
   { id: 'sticky_cycle', icon: '🔁', title: 'Туди й назад',       desc: 'Той самий блок зіштовхнуто й притягнуто одним липким поршнем' },
+  { id: 'detrail',     icon: '🛎', title: 'Колія доповіла',     desc: 'Вагонетка натисла датчикову рейку — мережа почула рух' },
+  { id: 'station',     icon: '🚉', title: 'Станція',            desc: 'Сигнал датчикової рейки сам відчинив двері чи хвіртку' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -22041,6 +22204,29 @@ window.MCDebug = {
   // Рейки та вагонетки (для тестів)
   giveRail: () => { assignBlockToSlot(RAIL); return BLOCK_NAMES[RAIL]; },
   giveMinecart: () => { assignBlockToSlot(MINECART); return BLOCK_NAMES[MINECART]; },
+  giveDetectorRail: () => {
+    assignBlockToSlot(DETECTOR_RAIL); return BLOCK_NAMES[DETECTOR_RAIL];
+  },
+  // Зберегти світ негайно (для тестів сумісності сейвів)
+  saveNow: () => { saveGame(); return true; },
+  // Датчикова рейка в клітинці (x,y,z): вісь — 'x' чи 'z'; звичайна рейка
+  // в цій клітинці перекладається датчиковою з тими ж кінцями (для тестів)
+  placeDetectorRailAt: (x, y, z, axis = 'x') => {
+    const key = railKey(x, y, z);
+    const prev = rails.get(key);
+    if (prev) {
+      if (prev.det) return true;
+      const a = [prev.a[0], prev.a[1]], b = [prev.b[0], prev.b[1]];
+      removeRail(key);
+      return addRail(x, y, z, a, b, true);
+    }
+    const [a, b] = axis === 'z' ? [[0, 1], [0, -1]] : [[1, 0], [-1, 0]];
+    return addRail(x, y, z, a, b, true);
+  },
+  get detRailInfo() {
+    return [...rails.values()].filter((r) => r.det).map((r) =>
+      ({ x: r.x, y: r.y, z: r.z, pressed: !!r.pressed }));
+  },
   // Увійти в гру без pointer lock (сенсорний режим) — для автоматичних тестів
   play: () => { enterMobileMode(); return true; },
   // Пряма колія довжиною len на схід від гравця (кам'яна основа + рейки)
@@ -23005,7 +23191,10 @@ window.MCDebug = {
       levers: [...levers.values()].map((l) => ({ x: l.x, y: l.y, z: l.z, on: l.on })),
       wires: [...wires.values()].map((w) =>
         ({ x: w.x, y: w.y, z: w.z, powered: w.powered, dist: w.dist,
-           srcSensor: !!w.srcSensor, srcButton: !!w.srcButton })),
+           srcSensor: !!w.srcSensor, srcButton: !!w.srcButton,
+           srcRail: !!w.srcRail })),
+      detRails: [...rails.values()].filter((r) => r.det).map((r) =>
+        ({ x: r.x, y: r.y, z: r.z, pressed: !!r.pressed })),
       lamps: [...lamps.values()].map((l) => ({ x: l.x, y: l.y, z: l.z, lit: l.lit })),
       sensors: [...sensors.values()].map((s) =>
         ({ x: s.x, y: s.y, z: s.z, mode: s.mode, active: !!s.active })),
