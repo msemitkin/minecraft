@@ -359,6 +359,14 @@ const STICKY_PISTON = 79;
 // уперше **чує колію**: станційний дзвінок, шлагбаум, що сам відчиняється
 // перед вагонеткою, пастка на роз'їзді. Нове дієслово — чути рух.
 const DETECTOR_RAIL = 80;
+// Рушійна рейка — зворотний бік мосту між мережею та колією: датчикова
+// рейка навчила мережу чути колію, а рушійна вчить мережу гнати її. Та сама
+// рейка, але з мідною смугою між шпалами: сигнал поруч — смуга жевріє й
+// рейка розганяє вагонетку вздовж руху (сусідні рушійні рейки передають
+// жар одна одній); без сигналу — гальмує до зупинки, а ввімкнена під
+// вагонеткою, що стоїть біля глухого кінця, сама зрушує її в колію.
+// Нове дієслово — гнати.
+const POWER_RAIL = 81;
 const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -516,6 +524,7 @@ const BLOCK_NAMES = {
   [PISTON]: 'Поршень',
   [STICKY_PISTON]: 'Липкий поршень',
   [DETECTOR_RAIL]: 'Датчикова рейка',
+  [POWER_RAIL]: 'Рушійна рейка',
 };
 
 // Яка руда з торби відповідає воксельному блоку руди
@@ -533,7 +542,7 @@ const ALL_BLOCKS = [
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
   LEVER, WIRE, LAMP, SENSOR, INVERTER, BUTTON, LATCH, TURRET, PISTON,
-  STICKY_PISTON, DETECTOR_RAIL,
+  STICKY_PISTON, DETECTOR_RAIL, POWER_RAIL,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
 
@@ -801,7 +810,7 @@ function saveGame() {
       gates: [...gates.values()].map((g) => [g.x, g.y, g.z, g.dx, g.dz, g.open ? 1 : 0]),
       boats: boats.map((b) => [+b.pos.x.toFixed(2), +b.pos.y.toFixed(2), +b.pos.z.toFixed(2), +b.yaw.toFixed(3)]),
       rails: [...rails.values()].map((r) =>
-        [r.x, r.y, r.z, r.a[0], r.a[1], r.b[0], r.b[1], r.det ? 1 : 0]),
+        [r.x, r.y, r.z, r.a[0], r.a[1], r.b[0], r.b[1], r.det ? 1 : 0, r.pw ? 1 : 0]),
       carts: carts.map((c) => [+c.pos.x.toFixed(2), +c.pos.y.toFixed(2), +c.pos.z.toFixed(2)]),
       campfires: [...campfires.values()].map((c) =>
         [c.x, c.y, c.z, c.cooking ? 1 : 0, +c.cookT.toFixed(1),
@@ -10323,10 +10332,12 @@ if (savedGame && Array.isArray(savedGame.boats)) {
 // сусідів розвертаються назустріч. Вагонетка їде графом центрів клітинок:
 // відрізок «центр A → центр B», на повороті напрямок змінюється у центрі.
 const rails = new Map();               // "x,y,z" -> { x, y, z, a:[dx,dz], b:[dx,dz], group,
-                                       //   det, pressed, offT, pad } (датчикові — з плиткою)
+                                       //   det, pressed, offT, pad,       (датчикові — з плиткою)
+                                       //   pw, on, stripe }               (рушійні — зі смугою)
 const RAIL_MAX = 1024;                 // межа, щоб збереження не розросталося
 const RAIL_COLOR = new THREE.Color(0x8f9aa5);
 let detRailCount = 0;                  // скільки з рейок — датчикові (для швидких перевірок)
+let pwRailCount = 0;                   // скільки з рейок — рушійні (для швидких перевірок)
 let powerNetReady = false;             // чи вже створено мапи мережі (линви тощо):
                                        // рейки відновлюються з сейву раніше за них,
                                        // тож до готовності линви не перемальовуємо
@@ -10344,6 +10355,17 @@ const DETRAIL_PAD_GEO = new THREE.BoxGeometry(0.34, 0.06, 0.5);
 const DETRAIL_PAD_OFF_MAT = new THREE.MeshLambertMaterial({ color: 0x8a6a3f });
 const DETRAIL_PAD_ON_MAT = new THREE.MeshLambertMaterial({
   color: 0xffe08a, emissive: 0xffb84d, emissiveIntensity: 0.9 });
+// Рушійна рейка: золотаві рейки на темних шпалах і мідна смуга між ними,
+// що жевріє жаром, коли мережа живить рейку
+const PWRAIL_BAR_MAT = new THREE.MeshLambertMaterial({ color: 0xd8b04a });
+const PWRAIL_STRIPE_GEO = new THREE.BoxGeometry(0.14, 0.055, 0.86);
+const PWRAIL_STRIPE_OFF_MAT = new THREE.MeshLambertMaterial({ color: 0x8a4a2e });
+const PWRAIL_STRIPE_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xffb060, emissive: 0xff7a30, emissiveIntensity: 0.95 });
+const PWRAIL_CHAIN = 8;        // на скільки рейок передається жар від живленої
+const PWRAIL_ACCEL = 7;        // розгін від увімкненої рушійної рейки, бл/с²
+const PWRAIL_BRAKE = 14;       // гальмування вимкненої рушійної рейки, бл/с²
+const PWRAIL_LAUNCH = 3;       // швидкість, з якою станція зрушує вагонетку, бл/с
 
 const railKey = (x, y, z) => x + ',' + y + ',' + z;
 
@@ -10351,19 +10373,21 @@ const railKey = (x, y, z) => x + ',' + y + ',' + z;
 // осі; поворот — коротша діагональна хорда між серединами двох граней.
 // Датчикова (det) — темніші шпали й сигнальна плитка між рейками
 // (посилання на неї — у g.userData.pad, щоб міняти матеріал під вагою).
-function makeRailModel(a, b, det = false) {
+// Рушійна (pw) — золотаві рейки й мідна смуга (g.userData.stripe), що
+// жевріє, коли мережа живить рейку
+function makeRailModel(a, b, det = false, pw = false) {
   const g = new THREE.Group();
   const straight = a[0] === -b[0] && a[1] === -b[1];
   const sub = new THREE.Group();
   const barLen = straight ? 1.0 : 0.86;
   for (const sx of [-0.26, 0.26]) {
-    const bar = new THREE.Mesh(RAIL_BAR_GEO, RAIL_BAR_MAT);
+    const bar = new THREE.Mesh(RAIL_BAR_GEO, pw ? PWRAIL_BAR_MAT : RAIL_BAR_MAT);
     bar.scale.z = barLen;
     bar.position.set(sx, 0.055, 0);
     sub.add(bar);
   }
   for (const tz of (straight ? [-0.36, -0.12, 0.12, 0.36] : [-0.22, 0, 0.22])) {
-    const tie = new THREE.Mesh(RAIL_TIE_GEO, det ? DETRAIL_TIE_MAT : RAIL_TIE_MAT);
+    const tie = new THREE.Mesh(RAIL_TIE_GEO, (det || pw) ? DETRAIL_TIE_MAT : RAIL_TIE_MAT);
     tie.position.set(0, 0.02, tz);
     sub.add(tie);
   }
@@ -10372,6 +10396,13 @@ function makeRailModel(a, b, det = false) {
     pad.position.set(0, 0.045, 0);
     sub.add(pad);
     g.userData.pad = pad;
+  }
+  if (pw) {
+    const stripe = new THREE.Mesh(PWRAIL_STRIPE_GEO, PWRAIL_STRIPE_OFF_MAT);
+    stripe.scale.z = straight ? 1.0 : 0.86;
+    stripe.position.set(0, 0.04, 0);
+    sub.add(stripe);
+    g.userData.stripe = stripe;
   }
   let ux, uz, mx = 0, mz = 0;
   if (straight) {
@@ -10389,24 +10420,29 @@ function makeRailModel(a, b, det = false) {
 }
 
 // Створити рейку в клітинці (x,y,z) з кінцями a та b (одиничні [dx,dz]);
-// det — датчикова: сигнальна плитка живить мережу під вагонеткою
-function addRail(x, y, z, a, b, det = false) {
+// det — датчикова: сигнальна плитка живить мережу під вагонеткою;
+// pw — рушійна: жевріє від сигналу мережі й жене вагонетки
+function addRail(x, y, z, a, b, det = false, pw = false) {
   const key = railKey(x, y, z);
   if (rails.has(key) || rails.size >= RAIL_MAX) return false;
   if (Math.abs(a[0]) + Math.abs(a[1]) !== 1 || Math.abs(b[0]) + Math.abs(b[1]) !== 1) return false;
   if (a[0] === b[0] && a[1] === b[1]) return false;
-  const group = makeRailModel(a, b, det);
+  if (det && pw) return false;   // рейка або чує, або жене — не обидва разом
+  const group = makeRailModel(a, b, det, pw);
   group.position.set(x + 0.5, y + 0.01, z + 0.5);
   scene.add(group);
   rails.set(key, { x, y, z, a: [a[0], a[1]], b: [b[0], b[1]], group,
                    det: !!det, pressed: false, offT: 0,
-                   pad: group.userData.pad || null });
+                   pad: group.userData.pad || null,
+                   pw: !!pw, on: false,
+                   stripe: group.userData.stripe || null });
   if (det) {
     detRailCount++;
     // Линви поруч тягнуть рукав до датчика (після ініціалізації мережі;
     // при відновленні сейву линви створюються пізніше й самі його побачать)
     if (powerNetReady) refreshWiresAround(x, y, z);
   }
+  if (pw) pwRailCount++;
   return true;
 }
 
@@ -10419,6 +10455,7 @@ function removeRail(key) {
     detRailCount--;
     if (powerNetReady) refreshWiresAround(r.x, r.y, r.z);
   }
+  if (r.pw) pwRailCount--;
 }
 
 // Зняти рейки, що втратили опору або клітинку яких зайняв блок
@@ -10447,17 +10484,20 @@ function reconnectRail(x, y, z, dir) {
   if (!end) return;   // обидва кінці вже з'єднані — не ламати чужу колію
   r[end] = [dir[0], dir[1]];
   scene.remove(r.group);
-  r.group = makeRailModel(r.a, r.b, r.det);
+  r.group = makeRailModel(r.a, r.b, r.det, r.pw);
   r.group.position.set(x + 0.5, y + 0.01, z + 0.5);
   scene.add(r.group);
   r.pad = r.group.userData.pad || null;
   if (r.pad && r.pressed) r.pad.material = DETRAIL_PAD_ON_MAT;
+  r.stripe = r.group.userData.stripe || null;
+  if (r.stripe && r.on) r.stripe.material = PWRAIL_STRIPE_ON_MAT;
 }
 
 // Покласти рейку в клітинку перед прицілом: потрібна тверда опора знизу.
 // Орієнтація — за сусідніми рейками (пряма чи поворот), без сусідів — за поглядом.
-// det — датчикова рейка: та сама колія, але з сигнальною плиткою
-function placeRail(hit, det = false) {
+// det — датчикова рейка: та сама колія, але з сигнальною плиткою;
+// pw — рушійна рейка: жевріє від сигналу мережі й жене вагонетки
+function placeRail(hit, det = false, pw = false) {
   const [x, y, z] = hit.prev;
   const k = railKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || !isSolid(blockAt(x, y - 1, z))) return false;
@@ -10487,7 +10527,7 @@ function placeRail(hit, det = false) {
     }
     [a, b] = pair || [nbr[0], nbr[1]];
   }
-  if (!addRail(x, y, z, a, b, det)) return false;
+  if (!addRail(x, y, z, a, b, det, pw)) return false;
   for (const d of [a, b]) reconnectRail(x + d[0], y, z + d[1], [-d[0], -d[1]]);
   Sound.place(IRON);
   spawnParticles(x + 0.5, y + 0.15, z + 0.5, RAIL_COLOR, 6,
@@ -10537,6 +10577,74 @@ function updateDetectorRails(dt) {
         if (r.pad) r.pad.material = DETRAIL_PAD_OFF_MAT;
         Sound.plate(false);
       }
+    }
+  }
+}
+
+// Чи живить мережа цю рушійну рейку впритул: джерела й запалені линви в
+// чотирьох сусідніх клітинках (зі сходинками ±1, як у входу поршня)
+function powerRailFed(r) {
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const k = railKey(r.x + dx, r.y + dy, r.z + dz);
+      const w = wires.get(k);
+      if (w && w.powered) return true;
+      const l = levers.get(k);
+      if (l && l.on) return true;
+      const pl = plates.get(k);
+      if (pl && pl.pressed) return true;
+      const s = sensors.get(k);
+      if (s && s.active) return true;
+      const b = buttons.get(k);
+      if (b && b.pressed) return true;
+      const v = inverters.get(k);
+      if (v && v.out) return true;
+      const o = latches.get(k);
+      if (o && o.out) return true;
+      const dr = rails.get(k);
+      if (dr && dr.det && dr.pressed) return true;
+    }
+  }
+  return false;
+}
+
+// Тик рушійних рейок: живлені мережею жевріють, а жар передається сусідніми
+// рушійними рейками (тим же ярусом, до PWRAIL_CHAIN клітинок) — одна линва
+// запалює цілий розгінний відтинок. Викликається з updatePower після
+// перерахунку линв, щоб бачити свіжу мережу
+function updatePowerRails() {
+  if (pwRailCount === 0) return;
+  const lit = new Map();   // ключ -> відстань від живленої рейки
+  const queue = [];
+  for (const r of rails.values()) {
+    if (r.pw && powerRailFed(r)) {
+      lit.set(railKey(r.x, r.y, r.z), 0);
+      queue.push(r);
+    }
+  }
+  for (let qi = 0; qi < queue.length; qi++) {
+    const r = queue[qi];
+    const d = lit.get(railKey(r.x, r.y, r.z));
+    if (d >= PWRAIL_CHAIN) continue;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const k = railKey(r.x + dx, r.y, r.z + dz);
+      if (lit.has(k)) continue;
+      const n = rails.get(k);
+      if (!n || !n.pw) continue;
+      lit.set(k, d + 1);
+      queue.push(n);
+    }
+  }
+  for (const r of rails.values()) {
+    if (!r.pw) continue;
+    const now = lit.has(railKey(r.x, r.y, r.z));
+    if (now === r.on) continue;
+    r.on = now;
+    if (r.stripe) r.stripe.material = now ? PWRAIL_STRIPE_ON_MAT : PWRAIL_STRIPE_OFF_MAT;
+    Sound.lever(now);
+    if (now) {
+      spawnParticles(r.x + 0.5, r.y + 0.15, r.z + 0.5, new THREE.Color(0xff9d4d), 4,
+        { radius: 0.2, speed: 0.7, upBias: 1.2, life: 0.5, size: 0.07, gravity: -1 });
     }
   }
 }
@@ -10662,12 +10770,45 @@ function updateCartMotion(cart, dt, thrust) {
     }
   }
 
+  // Стоїмо на ввімкненій рушійній рейці — мережа сама зрушує вагонетку в бік
+  // єдиного відкритого кінця колії (станція відправляє потяг); коли рейки з
+  // обох боків, напрямок неясний — вагонетка чекає на тягу
+  if (!cart.b) {
+    const r0 = rails.get(railKey(cart.a[0], cart.a[1], cart.a[2]));
+    if (r0 && r0.pw && r0.on) {
+      const open = (e) => rails.has(railKey(cart.a[0] + e[0], cart.a[1], cart.a[2] + e[1]));
+      const aOpen = open(r0.a), bOpen = open(r0.b);
+      if (aOpen !== bOpen) {
+        const dir = aOpen ? r0.a : r0.b;
+        cart.b = [cart.a[0] + dir[0], cart.a[1], cart.a[2] + dir[1]];
+        cart.t = 0;
+        cart.speed = Math.max(cart.speed, PWRAIL_LAUNCH);
+        unlockAch('depart');
+      }
+    }
+  }
+
   if (cart.b) {
     // Тяга і тертя кочення (з тягою тертя менше — котиться охочіше)
     cart.speed += thrust * CART_ACCEL * dt;
     const fr = (thrust === 0 ? CART_FRICTION : CART_FRICTION * 0.25) * dt;
     if (cart.speed > 0) cart.speed = Math.max(0, cart.speed - fr);
     else cart.speed = Math.min(0, cart.speed + fr);
+    // Рушійна рейка під вагонеткою: увімкнена жене вздовж руху, вимкнена —
+    // гальмує до зупинки (глянути на клітинку, до центру якої ближче)
+    const cellNow = cart.t >= 0.5 ? cart.b : cart.a;
+    const pr = rails.get(railKey(cellNow[0], cellNow[1], cellNow[2]));
+    if (pr && pr.pw) {
+      if (pr.on) {
+        if (cart.speed >= 0) {
+          cart.speed += PWRAIL_ACCEL * dt;
+          if (cart.speed > 3) unlockAch('boostrail');
+        }
+      } else {
+        cart.speed -= Math.sign(cart.speed) *
+          Math.min(Math.abs(cart.speed), PWRAIL_BRAKE * dt);
+      }
+    }
     cart.speed = THREE.MathUtils.clamp(cart.speed, -CART_MAXV, CART_MAXV);
     if (cart.speed < 0) {
       // задній хід — їхати тим самим відрізком у зворотний бік
@@ -10845,11 +10986,11 @@ function updateCarts(dt) {
 }
 
 // Відновити збережені рейки та вагонетки (сумісно зі старими сейвами:
-// без восьмого поля рейка звичайна, не датчикова)
+// без восьмого поля рейка звичайна, не датчикова; без дев'ятого — не рушійна)
 if (savedGame && Array.isArray(savedGame.rails)) {
   for (const e of savedGame.rails) {
     if (Array.isArray(e) && e.length >= 7) {
-      addRail(e[0], e[1], e[2], [e[3], e[4]], [e[5], e[6]], !!e[7]);
+      addRail(e[0], e[1], e[2], [e[3], e[4]], [e[5], e[6]], !!e[7], !!e[8]);
     }
   }
 }
@@ -11577,7 +11718,7 @@ function updatePower(dt) {
   if (levers.size === 0 && wires.size === 0 && sensors.size === 0 &&
       inverters.size === 0 && buttons.size === 0 && latches.size === 0 &&
       turrets.size === 0 && pistons.size === 0 && detRailCount === 0 &&
-      powerHeld.size === 0) return;
+      pwRailCount === 0 && powerHeld.size === 0) return;
   // Опора й зайняті клітинки
   for (const [key, l] of levers) {
     if (isSolid(blockAt(l.x, l.y, l.z)) || !isSolid(blockAt(l.x, l.y - 1, l.z))) {
@@ -11658,6 +11799,9 @@ function updatePower(dt) {
       w.srcRail = v.rail;
     }
   }
+  // Рушійні рейки: живлені жевріють і передають жар сусідніми рушійними —
+  // після перерахунку линв, щоб бачити свіжу мережу
+  updatePowerRails();
   // Які двері/хвіртки мережа хоче тримати: сусіди запалених линв і
   // увімкнених важелів (натиснута плита тримає своїх сусідів сама);
   // окремо — теги, до яких доклалась кнопка (для «Дзвінка у двері»)
@@ -17327,6 +17471,13 @@ function placeBlock() {
     return;
   }
 
+  // Рушійна рейка — та сама колія, але з мідною смугою: сигнал мережі поруч
+  // запалює жар, і рейка жене вагонетки; без сигналу — гальмує їх
+  if (id === POWER_RAIL) {
+    placeRail(hit, false, true);
+    return;
+  }
+
   // Натискна плита — механізм на твердій підлозі: реагує на вагу зверху
   if (id === PLATE) {
     placePlate(hit);
@@ -20088,6 +20239,24 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(7, 5, 2, 1);
     return;
   }
+  if (id === POWER_RAIL) {
+    // Процедурна іконка рушійної рейки: золотаві рейки на темних шпалах
+    // і мідна смуга жару посередині
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#5d3a24';
+    ctx.fillRect(1, 2, 14, 2);          // темні шпали
+    ctx.fillRect(1, 7, 14, 2);
+    ctx.fillRect(1, 12, 14, 2);
+    ctx.fillStyle = '#d8b04a';
+    ctx.fillRect(4, 0, 2, 16);          // золотаві рейки
+    ctx.fillRect(10, 0, 2, 16);
+    ctx.fillStyle = '#ff7a30';          // мідна смуга жару
+    ctx.fillRect(7, 1, 2, 14);
+    ctx.fillStyle = '#ffb060';          // відблиск жару
+    ctx.fillRect(7, 1, 2, 2);
+    return;
+  }
   if (id === MINECART) {
     // Процедурна іконка вагонетки: залізний короб на колесах
     const ctx = canvas.getContext('2d');
@@ -21014,6 +21183,8 @@ const ACHIEVEMENTS = [
   { id: 'sticky_cycle', icon: '🔁', title: 'Туди й назад',       desc: 'Той самий блок зіштовхнуто й притягнуто одним липким поршнем' },
   { id: 'detrail',     icon: '🛎', title: 'Колія доповіла',     desc: 'Вагонетка натисла датчикову рейку — мережа почула рух' },
   { id: 'station',     icon: '🚉', title: 'Станція',            desc: 'Сигнал датчикової рейки сам відчинив двері чи хвіртку' },
+  { id: 'boostrail',   icon: '⚡', title: 'Вітер у спину',      desc: 'Рушійна рейка розігнала вагонетку — мережа жене колію' },
+  { id: 'depart',      icon: '🚂', title: 'Відправлення',       desc: 'Увімкнена рушійна рейка сама зрушила вагонетку зі станції' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -22207,6 +22378,9 @@ window.MCDebug = {
   giveDetectorRail: () => {
     assignBlockToSlot(DETECTOR_RAIL); return BLOCK_NAMES[DETECTOR_RAIL];
   },
+  givePowerRail: () => {
+    assignBlockToSlot(POWER_RAIL); return BLOCK_NAMES[POWER_RAIL];
+  },
   // Зберегти світ негайно (для тестів сумісності сейвів)
   saveNow: () => { saveGame(); return true; },
   // Датчикова рейка в клітинці (x,y,z): вісь — 'x' чи 'z'; звичайна рейка
@@ -22226,6 +22400,24 @@ window.MCDebug = {
   get detRailInfo() {
     return [...rails.values()].filter((r) => r.det).map((r) =>
       ({ x: r.x, y: r.y, z: r.z, pressed: !!r.pressed }));
+  },
+  // Рушійна рейка в клітинці (x,y,z): вісь — 'x' чи 'z'; звичайна рейка
+  // в цій клітинці перекладається рушійною з тими ж кінцями (для тестів)
+  placePowerRailAt: (x, y, z, axis = 'x') => {
+    const key = railKey(x, y, z);
+    const prev = rails.get(key);
+    if (prev) {
+      if (prev.pw) return true;
+      const a = [prev.a[0], prev.a[1]], b = [prev.b[0], prev.b[1]];
+      removeRail(key);
+      return addRail(x, y, z, a, b, false, true);
+    }
+    const [a, b] = axis === 'z' ? [[0, 1], [0, -1]] : [[1, 0], [-1, 0]];
+    return addRail(x, y, z, a, b, false, true);
+  },
+  get pwRailInfo() {
+    return [...rails.values()].filter((r) => r.pw).map((r) =>
+      ({ x: r.x, y: r.y, z: r.z, on: !!r.on, fed: powerRailFed(r) }));
   },
   // Увійти в гру без pointer lock (сенсорний режим) — для автоматичних тестів
   play: () => { enterMobileMode(); return true; },
@@ -23195,6 +23387,8 @@ window.MCDebug = {
            srcRail: !!w.srcRail })),
       detRails: [...rails.values()].filter((r) => r.det).map((r) =>
         ({ x: r.x, y: r.y, z: r.z, pressed: !!r.pressed })),
+      pwRails: [...rails.values()].filter((r) => r.pw).map((r) =>
+        ({ x: r.x, y: r.y, z: r.z, on: !!r.on })),
       lamps: [...lamps.values()].map((l) => ({ x: l.x, y: l.y, z: l.z, lit: l.lit })),
       sensors: [...sensors.values()].map((s) =>
         ({ x: s.x, y: s.y, z: s.z, mode: s.mode, active: !!s.active })),
