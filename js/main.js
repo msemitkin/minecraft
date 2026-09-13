@@ -387,6 +387,14 @@ const OBSERVER = 83;
 // механізми з відстані, а стріла стрільця, що влучає в мішень, уперше
 // замикає коло «мережа стріляє → мережа чує». Нове дієслово — влучати.
 const TARGET = 84;
+
+// Розтяжка — мережа вчиться відчувати прохід: тонка струна між двома
+// кілочками поперек клітинки. Плита чує вагу на підлозі, датчикова рейка —
+// вагонетку, спостерігач бачить воксель, мішень чує стрілу — а істота, що
+// йде крізь відкритий простір, для мережі невидима. Зачепив струну гравець,
+// нечисть, звір чи вагонетка — струна спалахує бурштином і пускає короткий
+// імпульс у мережу, як кнопка, натиснута ногою. Нове дієслово — відчувати.
+const TRIPWIRE = 85;
 const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -545,6 +553,7 @@ const BLOCK_NAMES = {
   [STICKY_PISTON]: 'Липкий поршень',
   [OBSERVER]: 'Спостерігач',
   [TARGET]: 'Мішень',
+  [TRIPWIRE]: 'Розтяжка',
   [DETECTOR_RAIL]: 'Датчикова рейка',
   [POWER_RAIL]: 'Рушійна рейка',
   [SWITCH_RAIL]: 'Стрілка',
@@ -565,7 +574,8 @@ const ALL_BLOCKS = [
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
   LEVER, WIRE, LAMP, SENSOR, INVERTER, BUTTON, LATCH, TURRET, PISTON,
-  STICKY_PISTON, OBSERVER, TARGET, DETECTOR_RAIL, POWER_RAIL, SWITCH_RAIL,
+  STICKY_PISTON, OBSERVER, TARGET, TRIPWIRE, DETECTOR_RAIL, POWER_RAIL,
+  SWITCH_RAIL,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
 
@@ -872,6 +882,8 @@ function saveGame() {
         [ob.x, ob.y, ob.z, ob.fx, ob.fz]),
       targets: [...targets.values()].map((t) =>
         [t.x, t.y, t.z, t.fx, t.fz]),
+      tripwires: [...tripwires.values()].map((t) =>
+        [t.x, t.y, t.z, t.ax, t.az]),
       chests: [...chests.values()].map((c) =>
         [c.x, c.y, c.z, Object.entries(c.store).filter(([, n]) => n > 0)]),
       mushrooms: [...mushrooms.values()].map((m) =>
@@ -7348,6 +7360,11 @@ function startBreakOrAttack() {
         triggerSwing();
         return;
       }
+      if (tripwires.has(key)) {
+        breakTripwire(key);
+        triggerSwing();
+        return;
+      }
       const crop = crops.get(key);
       if (crop) {
         harvestCrop(crop);
@@ -8509,7 +8526,7 @@ function placeTorch(hit) {
       buttons.has(torchKey(x, y, z)) ||
       latches.has(torchKey(x, y, z)) || turrets.has(torchKey(x, y, z)) ||
       pistons.has(torchKey(x, y, z)) ||
-      observers.has(torchKey(x, y, z)) || targets.has(torchKey(x, y, z))) return false;
+      observers.has(torchKey(x, y, z)) || targets.has(torchKey(x, y, z)) || tripwires.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -8681,7 +8698,7 @@ function placeLadder(hit) {
       buttons.has(ladderKey(x, y, z)) ||
       latches.has(ladderKey(x, y, z)) || turrets.has(ladderKey(x, y, z)) ||
       pistons.has(ladderKey(x, y, z)) ||
-      observers.has(ladderKey(x, y, z)) || targets.has(ladderKey(x, y, z))) return false;
+      observers.has(ladderKey(x, y, z)) || targets.has(ladderKey(x, y, z)) || tripwires.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
   let ok = false;
@@ -8893,7 +8910,7 @@ function placeDoor(hit) {
         beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
         lightningRods.has(k) ||
         mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -9162,7 +9179,7 @@ function fenceCellFree(x, y, z) {
          !lightningRods.has(k) &&
          !mushrooms.has(k) && !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
          !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k) && !inverters.has(k) && !buttons.has(k) &&
-         !latches.has(k) && !turrets.has(k) && !pistons.has(k) && !observers.has(k) && !targets.has(k);
+         !latches.has(k) && !turrets.has(k) && !pistons.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -9342,7 +9359,7 @@ function plantCrop(hit) {
       buttons.has(cropKey(x, y, z)) ||
       latches.has(cropKey(x, y, z)) || turrets.has(cropKey(x, y, z)) ||
       pistons.has(cropKey(x, y, z)) ||
-      observers.has(cropKey(x, y, z)) || targets.has(cropKey(x, y, z))) return false;
+      observers.has(cropKey(x, y, z)) || targets.has(cropKey(x, y, z)) || tripwires.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -9521,7 +9538,7 @@ function plantSapling(hit) {
       buttons.has(saplingKey(x, y, z)) ||
       latches.has(saplingKey(x, y, z)) || turrets.has(saplingKey(x, y, z)) ||
       pistons.has(saplingKey(x, y, z)) ||
-      observers.has(saplingKey(x, y, z)) || targets.has(saplingKey(x, y, z))) return false;
+      observers.has(saplingKey(x, y, z)) || targets.has(saplingKey(x, y, z)) || tripwires.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
   Sound.dig(GRASS);                                          // м'який звук грунту
@@ -9693,7 +9710,7 @@ function placeBed(hit) {
       buttons.has(bedKey(x, y, z)) ||
       latches.has(bedKey(x, y, z)) || turrets.has(bedKey(x, y, z)) ||
       pistons.has(bedKey(x, y, z)) ||
-      observers.has(bedKey(x, y, z)) || targets.has(bedKey(x, y, z))) return false;
+      observers.has(bedKey(x, y, z)) || targets.has(bedKey(x, y, z)) || tripwires.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
   const p = player.pos;
@@ -9927,7 +9944,7 @@ function signCellFree(x, y, z) {
          !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k) &&
          !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
          !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k) && !inverters.has(k) && !buttons.has(k) &&
-         !latches.has(k) && !turrets.has(k) && !pistons.has(k) && !observers.has(k) && !targets.has(k);
+         !latches.has(k) && !turrets.has(k) && !pistons.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
 }
 
 // ===== Редактор напису (створюється в JS — без правок HTML) =====
@@ -10626,7 +10643,7 @@ function placeRail(hit, det = false, pw = false, sw = false) {
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) ||
       flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       lightningRods.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
@@ -10758,6 +10775,8 @@ function powerRailFed(r) {
       if (ob && ob.pulsing) return true;
       const tg = targets.get(k);
       if (tg && tg.pulsing) return true;
+      const tw = tripwires.get(k);
+      if (tw && tw.pulsing) return true;
       const dr = rails.get(k);
       if (dr && dr.det && dr.pressed) return true;
     }
@@ -11261,7 +11280,7 @@ function breakPlate(key) {
 function placePlate(hit) {
   const [x, y, z] = hit.prev;
   const k = plateKey(x, y, z);
-  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || torches.has(k) ||
+  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -11500,7 +11519,7 @@ function placeNote(hit) {
   const [x, y, z] = hit.prev;
   const k = noteKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || notes.has(k) || plates.has(k) || levers.has(k) ||
-      wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || torches.has(k) ||
+      wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -11611,6 +11630,9 @@ const pistons = new Map();             // поршні (секція нижче)
 const targets = new Map();             // мішені (секція нижче); реєстр тут —
                                        // мережа бачить їх джерелами, а гарди
                                        // й стріли — перешкодою, раніше за секцію
+const tripwires = new Map();           // розтяжки (секція нижче); реєстр тут —
+                                       // мережа бачить їх джерелами, а гарди
+                                       // — перешкодою, раніше за секцію
 const LEVER_MAX = 32;                  // межа, щоб збереження не розросталося
 const WIRE_MAX = 192;
 const WIRE_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -11655,7 +11677,8 @@ function powerNodeAt(x, y, z) {
   const k = wireKey(x, y, z);
   if (wires.has(k) || levers.has(k) || plates.has(k) || sensors.has(k) ||
       inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) ||
-      pistons.has(k) || observers.has(k) || targets.has(k)) return true;
+      pistons.has(k) || observers.has(k) || targets.has(k) ||
+      tripwires.has(k)) return true;
   const r = rails.get(k);
   return !!(r && r.det);   // датчикова рейка — теж вузол мережі
 }
@@ -11768,7 +11791,7 @@ function breakWire(key) {
 function powerCellFree(x, y, z) {
   const k = leverKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
@@ -11857,6 +11880,9 @@ function computePower() {
   for (const tg of targets.values()) {
     if (tg.pulsing) queue.push([tg.x, tg.y, tg.z, 0, false, false, false, null]);
   }
+  for (const tw of tripwires.values()) {
+    if (tw.pulsing) queue.push([tw.x, tw.y, tw.z, 0, false, false, false, null]);
+  }
   if (detRailCount > 0) {
     for (const r of rails.values()) {
       if (r.det && r.pressed) queue.push([r.x, r.y, r.z, 0, false, false, true, null]);
@@ -11917,7 +11943,7 @@ function updatePower(dt) {
   if (levers.size === 0 && wires.size === 0 && sensors.size === 0 &&
       inverters.size === 0 && buttons.size === 0 && latches.size === 0 &&
       turrets.size === 0 && pistons.size === 0 && observers.size === 0 &&
-      targets.size === 0 &&
+      targets.size === 0 && tripwires.size === 0 &&
       detRailCount === 0 &&
       pwRailCount === 0 && swRailCount === 0 && powerHeld.size === 0) return;
   // Опора й зайняті клітинки
@@ -11951,6 +11977,9 @@ function updatePower(dt) {
   updateObservers(dt);
   // Мішені: опора й згасання імпульсу після влучання — теж перед BFS
   updateTargets(dt);
+  // Розтяжки: опора, дотик істот і згасання імпульсу — теж перед BFS,
+  // щоб мережа цього ж кадру відчула прохід
+  updateTripwires(dt);
   // Защіпки: опора й ловля фронту сигналу на вході — після кнопок (щоб
   // почути свіжий імпульс), до інверторів і BFS (щоб ті бачили свіжий стан)
   updateLatches(dt);
@@ -12056,6 +12085,10 @@ function updatePower(dt) {
   for (const tg of targets.values()) {
     if (!tg.pulsing) continue;
     for (const n of powerNeighbours(tg.x, tg.y, tg.z)) need.set(n.tag, n);
+  }
+  for (const tw of tripwires.values()) {
+    if (!tw.pulsing) continue;
+    for (const n of powerNeighbours(tw.x, tw.y, tw.z)) need.set(n.tag, n);
   }
   for (const w of wires.values()) {
     if (!w.powered) continue;
@@ -12247,6 +12280,9 @@ function updateLamps(dt) {
   }
   for (const tg of targets.values()) {
     if (tg.pulsing) live.add(lampKey(tg.x, tg.y, tg.z));
+  }
+  for (const tw of tripwires.values()) {
+    if (tw.pulsing) live.add(lampKey(tw.x, tw.y, tw.z));
   }
   if (detRailCount > 0) {
     for (const r of rails.values()) {
@@ -13458,7 +13494,7 @@ function pistonDestFree(x, y, z) {
   const k = pistonKey(x, y, z);
   return !(plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) ||
     lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) ||
-    latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || torches.has(k) ||
+    latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
     ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
     saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
     beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) ||
@@ -13967,6 +14003,196 @@ if (savedGame && Array.isArray(savedGame.targets)) {
 }
 
 // ============================================================
+// Розтяжка: мережа відчуває прохід
+// ============================================================
+// Розтяжка — «дотик» мережі: тонка струна між двома кілочками поперек
+// клітинки, ледь помітна — саме тому чесна пастка. Плита чує вагу на своїй
+// клітинці підлоги, а розтяжка ловить сам прохід: зачепив струну гравець,
+// нечисть, звір чи вагонетка — струна спалахує бурштином і пускає в мережу
+// короткий імпульс (~1,2 с), як кнопка, натиснута ногою. Фронт — по краю
+// входу в клітинку: хто став усередині — сіпнув один раз, вийшов і
+// повернувся — сіпнув знову. ПКМ по розтяжці повертає струну на чверть
+// оберту (косметика — клітинку дотик ловить з будь-якого боку). Ставиться
+// ПКМ на тверду опору, ЛКМ — розібрати; зберігається зі світом (позиція й
+// вісь струни).
+const TRIP_MAX = 48;                   // межа, щоб збереження не розросталося
+const TRIP_PULSE = 1.2;                // секунд життя імпульсу після дотику
+const tripKey = leverKey;
+
+const TRIP_PEG_GEO = new THREE.BoxGeometry(0.07, 0.42, 0.07);
+TRIP_PEG_GEO.translate(0, 0.21, 0);
+const TRIP_PEG_MAT = new THREE.MeshLambertMaterial({ color: 0x6b5233 });
+const TRIP_CAP_GEO = new THREE.BoxGeometry(0.1, 0.06, 0.1);
+TRIP_CAP_GEO.translate(0, 0.42, 0);
+const TRIP_CAP_MAT = new THREE.MeshLambertMaterial({ color: 0x8a8f98 });
+// Струна — тонка нитка між кілочками (вздовж X до повороту), майже непомітна
+const TRIP_STRING_GEO = new THREE.BoxGeometry(0.9, 0.022, 0.022);
+TRIP_STRING_GEO.translate(0, 0.34, 0);
+const TRIP_STRING_MAT = new THREE.MeshLambertMaterial({ color: 0x3c4048 });
+const TRIP_STRING_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xffe08a, emissive: 0xffb84d, emissiveIntensity: 1 });
+
+function makeTripwireModel() {
+  const g = new THREE.Group();
+  const pegA = new THREE.Mesh(TRIP_PEG_GEO, TRIP_PEG_MAT);
+  pegA.position.x = -0.45;
+  const pegB = new THREE.Mesh(TRIP_PEG_GEO, TRIP_PEG_MAT);
+  pegB.position.x = 0.45;
+  const capA = new THREE.Mesh(TRIP_CAP_GEO, TRIP_CAP_MAT);
+  capA.position.x = -0.45;
+  const capB = new THREE.Mesh(TRIP_CAP_GEO, TRIP_CAP_MAT);
+  capB.position.x = 0.45;
+  const string = new THREE.Mesh(TRIP_STRING_GEO, TRIP_STRING_MAT);
+  g.add(pegA, pegB, capA, capB, string);
+  return { g, string };
+}
+
+// Повернути групу так, щоб струна лягла вздовж осі (ax, az)
+function applyTripwireAxis(t) {
+  t.group.rotation.y = Math.atan2(-t.az, t.ax);
+}
+
+function addTripwire(x, y, z, ax = 1, az = 0) {
+  const key = tripKey(x, y, z);
+  if (tripwires.has(key) || tripwires.size >= TRIP_MAX) return false;
+  // Зіпсована вісь (правлений сейв) — струна вздовж сходу
+  if (!((Math.abs(ax) === 1 && az === 0) || (ax === 0 && Math.abs(az) === 1))) {
+    ax = 1; az = 0;
+  }
+  const { g, string } = makeTripwireModel();
+  g.position.set(x + 0.5, y, z + 0.5);
+  scene.add(g);
+  const t = { x, y, z, group: g, string, ax, az,
+              pulsing: false, t: 0, occupied: false, quiet: true };
+  applyTripwireAxis(t);
+  tripwires.set(key, t);
+  refreshWiresAround(x, y, z);
+  return true;
+}
+
+function removeTripwire(key) {
+  const t = tripwires.get(key);
+  if (!t) return;
+  scene.remove(t.group);    // геометрія/матеріали спільні — не dispose
+  tripwires.delete(key);
+  refreshWiresAround(t.x, t.y, t.z);
+}
+
+function breakTripwire(key) {
+  const t = tripwires.get(key);
+  if (!t) return;
+  spawnParticles(t.x + 0.5, t.y + 0.35, t.z + 0.5, new THREE.Color(0x6b5233), 6,
+    { radius: 0.25, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.07, gravity: 10 });
+  Sound.breakBlock(LEAVES);
+  removeTripwire(key);
+}
+
+// Поставити розтяжку в клітинку перед прицілом (лише на тверду підлогу);
+// струна лягає поперек погляду гравця — щоб перегородити прохід перед собою
+function placeTripwire(hit) {
+  const [x, y, z] = hit.prev;
+  if (!powerCellFree(x, y, z)) return false;
+  const fwdX = -Math.sin(player.yaw), fwdZ = -Math.cos(player.yaw);
+  let ax = 0, az = 0;
+  if (Math.abs(fwdX) >= Math.abs(fwdZ)) az = 1;
+  else ax = 1;
+  if (!addTripwire(x, y, z, ax, az)) return false;
+  Sound.place(LEAVES);
+  spawnParticles(x + 0.5, y + 0.3, z + 0.5, new THREE.Color(0x6b5233), 5,
+    { radius: 0.25, speed: 1.2, upBias: 0.4, life: 0.35, size: 0.07, gravity: 10 });
+  return true;
+}
+
+// ПКМ по розтяжці: повернути струну на чверть оберту (косметика —
+// клітинку дотик ловить з будь-якого боку)
+function rotateTripwire(t) {
+  const nax = -t.az, naz = t.ax;
+  t.ax = nax; t.az = naz;
+  applyTripwireAxis(t);
+  Sound.lever(true);
+  spawnParticles(t.x + 0.5, t.y + 0.35, t.z + 0.5, new THREE.Color(0x9aa3ad), 4,
+    { radius: 0.15, speed: 0.9, upBias: 0.8, life: 0.4, size: 0.07, gravity: 2 });
+  flashItemName('🪤 Розтяжка: струну повернуто');
+}
+
+// Хто в клітинці розтяжки? (вертикальне вікно — як у плити: ноги на рівні
+// струни). Нечисть і звірі — окремо: вони вмикають пастку
+function touchesTripwire(t, pos) {
+  return Math.floor(pos.x) === t.x && Math.floor(pos.z) === t.z &&
+         pos.y > t.y - 0.35 && pos.y < t.y + 0.7;
+}
+
+function feelTripwire(t) {
+  if (touchesTripwire(t, player.pos)) return 'player';
+  for (const m of mobs) {
+    if (m.health > 0 && touchesTripwire(t, m.pos)) return 'mob';
+  }
+  for (const a of animals) {
+    if (touchesTripwire(t, a.pos)) return 'animal';
+  }
+  for (const c of carts) {
+    if (touchesTripwire(t, c.pos)) return 'cart';
+  }
+  return null;
+}
+
+// Дотик: струна спалахує, мережа отримує джерело на TRIP_PULSE секунд;
+// фронт — як натиск кнопки (ноти, динаміт упритул). Нечисть чи звір —
+// «Пастка на стежці», сам гравець — «Сам у сильце»
+function startTripwirePulse(t, by) {
+  t.t = TRIP_PULSE;
+  if (by === 'mob' || by === 'animal') unlockAch('tripwire');
+  if (by === 'player') unlockAch('tripself');
+  if (t.pulsing) return;               // новий дотик лише подовжує імпульс
+  t.pulsing = true;
+  t.string.material = TRIP_STRING_ON_MAT;
+  Sound.button(true);
+  spawnParticles(t.x + 0.5, t.y + 0.35, t.z + 0.5, new THREE.Color(0xffd54a), 5,
+    { radius: 0.2, speed: 1.0, upBias: 1.0, life: 0.45, size: 0.06, gravity: -1 });
+  for (const n of powerNotesAround(t.x, t.y, t.z)) strikeNote(n);
+  igniteTntAround(t.x, t.y, t.z);
+}
+
+// Тик розтяжок: опора, ловля краю входу в клітинку й згасання імпульсу —
+// викликається з updatePower перед BFS, щоб мережа цього ж кадру відчула
+function updateTripwires(dt) {
+  if (tripwires.size === 0) return;
+  for (const [key, t] of tripwires) {
+    // Блок зайняв клітинку чи зникла опора — розібрати
+    if (isSolid(blockAt(t.x, t.y, t.z)) || !isSolid(blockAt(t.x, t.y - 1, t.z))) {
+      breakTripwire(key);
+      continue;
+    }
+    // Фронт — по краю входу: хто стоїть усередині, смикає лише раз.
+    // Перший тик після встановлення чи завантаження міряє тихо — хто вже
+    // стояв у клітинці, фронту не вигадує (як перший тик спостерігача)
+    const by = feelTripwire(t);
+    if (by && !t.occupied && !t.quiet) startTripwirePulse(t, by);
+    t.occupied = !!by;
+    t.quiet = false;
+    // Імпульс згасає сам, як у кнопки
+    if (t.pulsing) {
+      t.t -= dt;
+      if (t.t <= 0) {
+        t.pulsing = false;
+        t.t = 0;
+        t.string.material = TRIP_STRING_MAT;
+      }
+    }
+  }
+}
+
+// Відновити збережені розтяжки (сумісно зі старими сейвами); струна після
+// завантаження темна — імпульси не переживають перезапуск, як у кнопки
+if (savedGame && Array.isArray(savedGame.tripwires)) {
+  for (const e of savedGame.tripwires) {
+    if (Array.isArray(e) && e.length >= 5) {
+      addTripwire(e[0], e[1], e[2], e[3] | 0, e[4] | 0);
+    }
+  }
+}
+
+// ============================================================
 // Багаття: вогнище для приготування їжі
 // ============================================================
 // Багаття — сутність у клітинці (як смолоскип, воксельну сітку не змінює):
@@ -14190,7 +14416,7 @@ function placeCampfire(hit) {
       rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
   Sound.torch(0.2);
@@ -14640,7 +14866,7 @@ function placeBeehive(hit) {
       signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addBeehive(x, y, z)) return false;
   Sound.place(PLANK);
@@ -14837,7 +15063,7 @@ function placeScarecrow(hit) {
       saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addScarecrow(x, y, z)) return false;
   Sound.place(PLANK);
@@ -14976,7 +15202,7 @@ function placeLightningRod(hit) {
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!Object.entries(LROD_COST).every(([ore, n]) => (player[ore] || 0) >= n)) {
     flashItemName('Потрібно ⛓ 2 × залізо + 🟡 1 × золото з торби');
@@ -15227,7 +15453,7 @@ function placeAnvil(hit) {
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addAnvil(x, y, z)) return false;
   Sound.place(STONE);
@@ -15717,7 +15943,7 @@ function placeChest(hit) {
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
       rails.has(k) || lightningRods.has(k) || cauldrons.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addChest(x, y, z)) return false;
   Sound.place(PLANK);
@@ -15995,7 +16221,7 @@ function placeMill(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addMill(x, y, z)) return false;
   Sound.place(PLANK);
@@ -16210,7 +16436,7 @@ function placeCauldron(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCauldron(x, y, z)) return false;
   Sound.place(STONE);
@@ -16451,7 +16677,7 @@ function mushCellFree(x, y, z) {
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || beds.has(k) ||
       lightningRods.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       fences.has(k) || gates.has(k) || doorAtCell(x, y, z)) return false;
   if (blockAt(x, y, z) !== AIR) return false;
   return mushSupportable(blockAt(x, y - 1, z));
@@ -17411,7 +17637,7 @@ const flowerSupportable = (id, planted) => id === GRASS || (planted && id === DI
 function flowerCellFree(x, y, z, planted = false) {
   const k = flowerKey(x, y, z);
   if (flowers.has(k) || mushrooms.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || pistons.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       torches.has(k) || crops.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       campfires.has(k) || beehives.has(k) || scarecrows.has(k) ||
@@ -17992,6 +18218,12 @@ function placeBlock() {
     if (targets.has(tk)) { rotateTarget(targets.get(tk)); return; }
   }
 
+  // Розтяжка в прицілі (ПКМ) → повернути струну на чверть оберту
+  if (tripwires.size > 0) {
+    const tk = tripKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    if (tripwires.has(tk)) { rotateTripwire(tripwires.get(tk)); return; }
+  }
+
   // Нотний блок у прицілі (ПКМ) → настроїти тон, з будь-яким предметом у руці
   if (notes.size > 0) {
     const nk = noteKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -18180,6 +18412,12 @@ function placeBlock() {
   // Мішень — вухо мережі для стріл: влучання пускає імпульс
   if (id === TARGET) {
     placeTarget(hit);
+    return;
+  }
+
+  // Розтяжка — дотик мережі: зачеплена струна пускає імпульс
+  if (id === TRIPWIRE) {
+    placeTripwire(hit);
     return;
   }
 
@@ -20492,6 +20730,25 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(2, 12, 12, 1);
     return;
   }
+  if (id === TRIPWIRE) {
+    // Процедурна іконка розтяжки: два кілочки й натягнута струна між ними
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тіні під кілочками
+    ctx.fillRect(1, 14, 3, 1);
+    ctx.fillRect(12, 14, 3, 1);
+    ctx.fillStyle = '#6b5233';                 // кілочки
+    ctx.fillRect(2, 6, 2, 8);
+    ctx.fillRect(12, 6, 2, 8);
+    ctx.fillStyle = '#8a8f98';                 // залізні шапки
+    ctx.fillRect(1, 5, 4, 2);
+    ctx.fillRect(11, 5, 4, 2);
+    ctx.fillStyle = '#c9cedb';                 // струна (світла, щоб видно в меню)
+    ctx.fillRect(4, 9, 8, 1);
+    ctx.fillStyle = '#ffd54a';                 // бурштиновий зблиск дотику
+    ctx.fillRect(7, 8, 2, 1);
+    return;
+  }
   if (id === NOTE) {
     // Процедурна іконка нотного блока: дощаний ящик із білою нотою
     const ctx = canvas.getContext('2d');
@@ -21884,6 +22141,8 @@ const ACHIEVEMENTS = [
   { id: 'feedback',    icon: '🔄', title: 'Зворотний зв\'язок', desc: 'Спостерігач побачив блок, посунутий поршнем — мережа помітила власну дію' },
   { id: 'bullseye',    icon: '🎯', title: 'В яблучко',          desc: 'Ваша стріла влучила в мішень — постріл став сигналом мережі' },
   { id: 'echo',        icon: '📣', title: 'Відлуння пострілу',  desc: 'Стріла стрільця влучила в мішень — мережа почула власний постріл' },
+  { id: 'tripwire',    icon: '🪤', title: 'Пастка на стежці',   desc: 'Нечисть чи звір зачепили розтяжку — мережа відчула прохід' },
+  { id: 'tripself',    icon: '🤦', title: 'Сам у сильце',       desc: 'Зачепити власну розтяжку — пастка чесна до всіх' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -24140,6 +24399,9 @@ window.MCDebug = {
       targets: [...targets.values()].map((t) =>
         ({ x: t.x, y: t.y, z: t.z, fx: t.fx, fz: t.fz,
            pulsing: !!t.pulsing, t: +t.t.toFixed(2) })),
+      tripwires: [...tripwires.values()].map((t) =>
+        ({ x: t.x, y: t.y, z: t.z, ax: t.ax, az: t.az, occupied: !!t.occupied,
+           pulsing: !!t.pulsing, t: +t.t.toFixed(2) })),
       held: [...powerHeld],
     };
   },
@@ -24319,6 +24581,30 @@ window.MCDebug = {
   get targetInfo() {
     return [...targets.values()].map((t) =>
       ({ x: t.x, y: t.y, z: t.z, fx: t.fx, fz: t.fz,
+         pulsing: !!t.pulsing, t: +t.t.toFixed(2) }));
+  },
+  // Розтяжка (для тестів)
+  giveTripwire: () => { assignBlockToSlot(TRIPWIRE); return BLOCK_NAMES[TRIPWIRE]; },
+  placeTripwireAt: (x, y, z, ax = 1, az = 0) => {
+    if (!powerCellFree(x, y, z)) return false;
+    return addTripwire(x, y, z, ax, az);
+  },
+  rotateTripwireAt: (x, y, z) => {
+    const t = tripwires.get(tripKey(x, y, z));
+    if (!t) return null;
+    rotateTripwire(t);
+    return [t.ax, t.az];
+  },
+  // Симулювати дотик до розтяжки (без істоти — для тестів мережі)
+  tripTripwireAt: (x, y, z, by = 'mob') => {
+    const t = tripwires.get(tripKey(x, y, z));
+    if (!t) return null;
+    startTripwirePulse(t, by);
+    return { pulsing: !!t.pulsing, t: +t.t.toFixed(2) };
+  },
+  get tripwireInfo() {
+    return [...tripwires.values()].map((t) =>
+      ({ x: t.x, y: t.y, z: t.z, ax: t.ax, az: t.az, occupied: !!t.occupied,
          pulsing: !!t.pulsing, t: +t.t.toFixed(2) }));
   },
   placeDoorAt: (x, y, z, dx = 1, dz = 0) => addDoor(x, y, z, dx, dz),
