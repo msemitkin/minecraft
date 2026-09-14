@@ -395,6 +395,13 @@ const TARGET = 84;
 // нечисть, звір чи вагонетка — струна спалахує бурштином і пускає короткий
 // імпульс у мережу, як кнопка, натиснута ногою. Нове дієслово — відчувати.
 const TRIPWIRE = 85;
+// Дощомір — другий автоматичний «вхід» мережі: кам'яна основа з
+// кристалом-чашею, що чує опади. Датчик світла міряє сонце, а дощомір —
+// небо над собою: дощ чи сніг падає на відкриту чашу — кристал спалахує
+// блакиттю й живить мережу, як увімкнений важіль; під дахом чаша суха.
+// ПКМ перемикає режим «ясно» — сигнал за сухого неба. Погода давно править
+// світом (посіви, риба, казан, бджоли) — а тепер уперше вмикає механізми.
+const RAIN_SENSOR = 86;
 const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -545,6 +552,7 @@ const BLOCK_NAMES = {
   [WIRE]: 'Сигнальна линва',
   [LAMP]: 'Сигнальна лампа',
   [SENSOR]: 'Датчик світла',
+  [RAIN_SENSOR]: 'Дощомір',
   [INVERTER]: 'Інвертор',
   [BUTTON]: 'Кнопка',
   [LATCH]: 'Защіпка',
@@ -573,7 +581,7 @@ const ALL_BLOCKS = [
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
-  LEVER, WIRE, LAMP, SENSOR, INVERTER, BUTTON, LATCH, TURRET, PISTON,
+  LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, INVERTER, BUTTON, LATCH, TURRET, PISTON,
   STICKY_PISTON, OBSERVER, TARGET, TRIPWIRE, DETECTOR_RAIL, POWER_RAIL,
   SWITCH_RAIL,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
@@ -870,7 +878,7 @@ function saveGame() {
       levers: [...levers.values()].map((l) => [l.x, l.y, l.z, l.on ? 1 : 0]),
       wires: [...wires.values()].map((w) => [w.x, w.y, w.z]),
       lamps: [...lamps.values()].map((l) => [l.x, l.y, l.z]),
-      sensors: [...sensors.values()].map((s) => [s.x, s.y, s.z, s.mode]),
+      sensors: [...sensors.values()].map((s) => [s.x, s.y, s.z, s.mode, s.kind]),
       inverters: [...inverters.values()].map((v) => [v.x, v.y, v.z, v.fx, v.fz]),
       buttons: [...buttons.values()].map((b) => [b.x, b.y, b.z]),
       latches: [...latches.values()].map((t) =>
@@ -12393,7 +12401,9 @@ if (savedGame && Array.isArray(savedGame.lamps)) {
 // важеля: б'є по нотних блоках упритул і підпалює динаміт — дзвінок сам
 // дзвонить на смерканні. Ставиться ПКМ на тверду опору, ЛКМ — розібрати;
 // без опори чи під зайнятою клітинкою — розсипається.
-const SENSOR_MAX = 32;                 // межа, щоб збереження не розросталося
+// Дощомір (kind 1) живе в тому самому реєстрі: та сама основа й ті самі
+// правила, але кристал-чаша чує опади над собою (режим «дощ»/«ясно»).
+const SENSOR_MAX = 32;                 // межа (спільна з дощоміром), щоб збереження не розросталося
 const SENSOR_DAY_T = 0.15;             // поріг сонця: вище — «день» (як павуки)
 const sensorKey = leverKey;
 
@@ -12412,6 +12422,15 @@ const SENSOR_DAY_ON_MAT = new THREE.MeshLambertMaterial({
 const SENSOR_NIGHT_MAT = new THREE.MeshLambertMaterial({ color: 0x54648a });
 const SENSOR_NIGHT_ON_MAT = new THREE.MeshLambertMaterial({
   color: 0xa8c4ff, emissive: 0x4a6acc, emissiveIntensity: 0.9 });
+// Дощомір (kind 1) — той самий прилад, але кристал-чаша чує опади:
+// режим «дощ» — блакить, режим «ясно» — м'ята; активний стан — засвічений
+// варіант того самого кольору
+const RAIN_WET_MAT = new THREE.MeshLambertMaterial({ color: 0x3e6d8a });
+const RAIN_WET_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0x9fdcff, emissive: 0x2a8acc, emissiveIntensity: 0.9 });
+const RAIN_DRY_MAT = new THREE.MeshLambertMaterial({ color: 0x5e8a6a });
+const RAIN_DRY_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xb8f0c8, emissive: 0x3ecc7a, emissiveIntensity: 0.9 });
 
 function makeSensorModel() {
   const g = new THREE.Group();
@@ -12424,12 +12443,25 @@ function makeSensorModel() {
   return { g, eye };
 }
 
-// Чи «бачить» датчик свій час доби (mode 0 — день, 1 — ніч)
-const sensorActive = (s) =>
-  s.mode === 1 ? dayNightSun <= SENSOR_DAY_T : dayNightSun > SENSOR_DAY_T;
+// Чи падають опади на чашу дощоміра: негода в світі й відкрите небо над
+// приладом — під дахом чаша суха, навіс чесно «вимикає» прилад
+const rainOverhead = (s) =>
+  weatherState !== 'clear' && skyOpenAt(s.x, s.y + 1, s.z);
 
-// Кристал міняє колір за режимом і станом
+// Чи «бачить» датчик своє: світло (kind 0) — час доби (mode 0 — день,
+// 1 — ніч); дощомір (kind 1) — опади на чаші (mode 0 — дощ, 1 — ясно)
+const sensorActive = (s) => s.kind === 1
+  ? (s.mode === 1 ? !rainOverhead(s) : rainOverhead(s))
+  : (s.mode === 1 ? dayNightSun <= SENSOR_DAY_T : dayNightSun > SENSOR_DAY_T);
+
+// Кристал міняє колір за видом, режимом і станом
 function applySensorLook(s) {
+  if (s.kind === 1) {
+    s.eye.material = s.mode === 1
+      ? (s.active ? RAIN_DRY_ON_MAT : RAIN_DRY_MAT)
+      : (s.active ? RAIN_WET_ON_MAT : RAIN_WET_MAT);
+    return;
+  }
   s.eye.material = s.mode === 1
     ? (s.active ? SENSOR_NIGHT_ON_MAT : SENSOR_NIGHT_MAT)
     : (s.active ? SENSOR_DAY_ON_MAT : SENSOR_DAY_MAT);
@@ -12437,14 +12469,15 @@ function applySensorLook(s) {
 
 // active: null — «ще не міряв»: перший тик виставить стан тихо, без
 // дзвону й пострілів по нотах/динаміту (важливо після завантаження сейву)
-function addSensor(x, y, z, mode = 0) {
+function addSensor(x, y, z, mode = 0, kind = 0) {
   const key = sensorKey(x, y, z);
   if (sensors.has(key) || sensors.size >= SENSOR_MAX) return false;
   const { g, eye } = makeSensorModel();
   g.position.set(x + 0.5, y, z + 0.5);
   scene.add(g);
-  const s = { x, y, z, group: g, eye, mode: mode === 1 ? 1 : 0, active: null };
-  s.eye.material = s.mode === 1 ? SENSOR_NIGHT_MAT : SENSOR_DAY_MAT;
+  const s = { x, y, z, group: g, eye, mode: mode === 1 ? 1 : 0,
+              kind: kind === 1 ? 1 : 0, active: null };
+  applySensorLook(s);
   sensors.set(key, s);
   refreshWiresAround(x, y, z);
   return true;
@@ -12467,13 +12500,15 @@ function breakSensor(key) {
   removeSensor(key);
 }
 
-// Поставити датчик у клітинку перед прицілом (лише на тверду підлогу)
-function placeSensor(hit) {
+// Поставити датчик у клітинку перед прицілом (лише на тверду підлогу);
+// kind 1 — дощомір: та сама основа, але кристал-чаша чує опади
+function placeSensor(hit, kind = 0) {
   const [x, y, z] = hit.prev;
   if (!powerCellFree(x, y, z)) return false;
-  if (!addSensor(x, y, z)) return false;
+  if (!addSensor(x, y, z, 0, kind)) return false;
   Sound.place(GLASS);
-  spawnParticles(x + 0.5, y + 0.25, z + 0.5, new THREE.Color(0xb08a3e), 6,
+  spawnParticles(x + 0.5, y + 0.25, z + 0.5,
+    new THREE.Color(kind === 1 ? 0x3e6d8a : 0xb08a3e), 6,
     { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
   return true;
 }
@@ -12483,14 +12518,20 @@ function placeSensor(hit) {
 function toggleSensorMode(s) {
   s.mode = s.mode === 1 ? 0 : 1;
   s.active = null;
-  s.eye.material = s.mode === 1 ? SENSOR_NIGHT_MAT : SENSOR_DAY_MAT;
+  applySensorLook(s);
   Sound.lever(s.mode === 1);
-  spawnParticles(s.x + 0.5, s.y + 0.3, s.z + 0.5,
-    new THREE.Color(s.mode === 1 ? 0xa8c4ff : 0xffe08a), 4,
+  const sparkColor = s.kind === 1
+    ? (s.mode === 1 ? 0xb8f0c8 : 0x9fdcff)
+    : (s.mode === 1 ? 0xa8c4ff : 0xffe08a);
+  spawnParticles(s.x + 0.5, s.y + 0.3, s.z + 0.5, new THREE.Color(sparkColor), 4,
     { radius: 0.15, speed: 0.9, upBias: 0.8, life: 0.4, size: 0.07, gravity: 2 });
-  flashItemName(s.mode === 1
-    ? '🌙 Датчик: нічний режим — сигнал у темряві'
-    : '☀️ Датчик: денний режим — сигнал за сонця');
+  flashItemName(s.kind === 1
+    ? (s.mode === 1
+      ? '🌂 Дощомір: режим «ясно» — сигнал за сухого неба'
+      : '☔ Дощомір: режим «дощ» — сигнал під опадами')
+    : (s.mode === 1
+      ? '🌙 Датчик: нічний режим — сигнал у темряві'
+      : '☀️ Датчик: денний режим — сигнал за сонця'));
 }
 
 // Чи є датчику кого будити: линва впритул, лампа/двері/хвіртка/нота поруч
@@ -12532,13 +12573,19 @@ function updateSensors(dt) {
     applySensorLook(s);
     Sound.sensor(now);
     if (now) {
+      const sparkColor = s.kind === 1
+        ? (s.mode === 1 ? 0xb8f0c8 : 0x9fdcff)
+        : (s.mode === 1 ? 0xa8c4ff : 0xffd54a);
       spawnParticles(s.x + 0.5, s.y + 0.3, s.z + 0.5,
-        new THREE.Color(s.mode === 1 ? 0xa8c4ff : 0xffd54a), 4,
+        new THREE.Color(sparkColor), 4,
         { radius: 0.2, speed: 0.7, upBias: 1.2, life: 0.5, size: 0.07, gravity: -1 });
       // Спрацювання поводиться як увімкнення важеля
-      for (const n of powerNotesAround(s.x, s.y, s.z)) strikeNote(n);
+      const struck = powerNotesAround(s.x, s.y, s.z);
+      for (const n of struck) strikeNote(n);
       igniteTntAround(s.x, s.y, s.z);
-      if (sensorFeedsNetwork(s)) unlockAch('sensor');
+      if (sensorFeedsNetwork(s)) unlockAch(s.kind === 1 ? 'raingauge' : 'sensor');
+      // Дощомір ударив по нотному блоку — штормове попередження пробило
+      if (s.kind === 1 && struck.length > 0) unlockAch('stormbell');
     }
   }
 }
@@ -12547,7 +12594,11 @@ function updateSensors(dt) {
 // не зберігається — перший тик переміряє небо тихо
 if (savedGame && Array.isArray(savedGame.sensors)) {
   for (const e of savedGame.sensors) {
-    if (Array.isArray(e) && e.length >= 3) addSensor(e[0], e[1], e[2], e[3] | 0);
+    // П'яте поле — вид (0 світло / 1 дощомір); старі сейви без нього —
+    // датчики світла, як і були
+    if (Array.isArray(e) && e.length >= 3) {
+      addSensor(e[0], e[1], e[2], e[3] | 0, e[4] | 0);
+    }
   }
 }
 
@@ -18367,6 +18418,12 @@ function placeBlock() {
     return;
   }
 
+  // Дощомір — другий автоматичний вхід: живить мережу за опадами на чаші
+  if (id === RAIN_SENSOR) {
+    placeSensor(hit, 1);
+    return;
+  }
+
   // Інвертор — логічний елемент мережі: віддає протилежне до входу позаду
   if (id === INVERTER) {
     placeInverter(hit);
@@ -20532,6 +20589,30 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(10, 4, 1, 1);
     return;
   }
+  if (id === RAIN_SENSOR) {
+    // Процедурна іконка дощоміра: кам'яна основа, блакитний кристал-чаша,
+    // хмарка з краплями — небо, яке прилад чує
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тінь під основою
+    ctx.fillRect(2, 14, 12, 1);
+    ctx.fillStyle = '#6f7680';                 // кам'яна основа
+    ctx.fillRect(2, 12, 12, 2);
+    ctx.fillStyle = '#4a4f57';                 // темна оправа
+    ctx.fillRect(3, 10, 10, 2);
+    ctx.fillStyle = '#3e6d8a';                 // кристал-чаша
+    ctx.fillRect(4, 7, 8, 3);
+    ctx.fillStyle = '#9fdcff';                 // відблиск кристала
+    ctx.fillRect(5, 7, 3, 1);
+    ctx.fillStyle = '#c9d4da';                 // хмарка
+    ctx.fillRect(4, 1, 8, 2);
+    ctx.fillRect(3, 2, 10, 1);
+    ctx.fillStyle = '#6fb7e8';                 // краплі
+    ctx.fillRect(5, 4, 1, 2);
+    ctx.fillRect(8, 4, 1, 1);
+    ctx.fillRect(10, 4, 1, 2);
+    return;
+  }
   if (id === INVERTER) {
     // Процедурна іконка інвертора: кам'яна основа, стовпчик із бузковим
     // кристалом, брасова стрілка виходу й перекреслена іскра входу
@@ -22119,6 +22200,8 @@ const ACHIEVEMENTS = [
   { id: 'illumination', icon: '🌃', title: 'Нічна ілюмінація',  desc: 'Три лампи світять одночасно' },
   { id: 'sensor',      icon: '🌗', title: 'Сонячне реле',       desc: 'Датчик світла сам подав сигнал у мережу' },
   { id: 'nightwatch',  icon: '🌆', title: 'Вечірня варта',      desc: 'Лампа засвітилася від датчика в темряві' },
+  { id: 'raingauge',   icon: '☔', title: 'Синоптик',           desc: 'Дощомір сам подав сигнал у мережу' },
+  { id: 'stormbell',   icon: '⛈', title: 'Штормове попередження', desc: 'Нотний блок задзвонив від дощоміра' },
   { id: 'invert',      icon: '🔀', title: 'Сигнал навпаки',     desc: 'Інвертор перекрив сигнал: на вході є — на виході нема' },
   { id: 'blinker',     icon: '🔁', title: 'Мигалка',            desc: 'Зациклений інвертор сам заблимав сигналом' },
   { id: 'button',      icon: '⏺', title: 'Імпульс',            desc: 'Натиснути кнопку — сигнал, що згасає сам' },
@@ -24380,7 +24463,8 @@ window.MCDebug = {
         ({ x: r.x, y: r.y, z: r.z, on: !!r.swOn, b: [...r.b], alt: [...r.alt] })),
       lamps: [...lamps.values()].map((l) => ({ x: l.x, y: l.y, z: l.z, lit: l.lit })),
       sensors: [...sensors.values()].map((s) =>
-        ({ x: s.x, y: s.y, z: s.z, mode: s.mode, active: !!s.active })),
+        ({ x: s.x, y: s.y, z: s.z, mode: s.mode, kind: s.kind,
+           active: !!s.active })),
       inverters: [...inverters.values()].map((v) =>
         ({ x: v.x, y: v.y, z: v.z, fx: v.fx, fz: v.fz, out: !!v.out })),
       buttons: [...buttons.values()].map((b) =>
@@ -24425,8 +24509,24 @@ window.MCDebug = {
   },
   get sensorInfo() {
     return [...sensors.values()].map((s) =>
-      ({ x: s.x, y: s.y, z: s.z, mode: s.mode === 1 ? 'ніч' : 'день',
+      ({ x: s.x, y: s.y, z: s.z,
+         kind: s.kind === 1 ? 'дощомір' : 'світло',
+         mode: s.kind === 1 ? (s.mode === 1 ? 'ясно' : 'дощ')
+                            : (s.mode === 1 ? 'ніч' : 'день'),
          active: !!s.active }));
+  },
+  // Дощомір і погода (для тестів)
+  giveRainSensor: () => { assignBlockToSlot(RAIN_SENSOR); return BLOCK_NAMES[RAIN_SENSOR]; },
+  placeRainSensorAt: (x, y, z, mode = 0) => {
+    if (!placeSensor({ prev: [x, y, z] }, 1)) return false;
+    if (mode === 1) toggleSensorMode(sensors.get(sensorKey(x, y, z)));
+    return true;
+  },
+  setWeather: (state = 'rain', dur = 60) => {
+    if (state !== 'rain' && state !== 'snow' && state !== 'clear') return false;
+    weatherState = state;
+    weatherTimer = dur;
+    return `${state} на ${dur} с`;
   },
   // Інвертор (для тестів)
   giveInverter: () => { assignBlockToSlot(INVERTER); return BLOCK_NAMES[INVERTER]; },
