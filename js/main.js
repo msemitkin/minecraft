@@ -408,6 +408,13 @@ const RAIN_SENSOR = 86;
 // заразом він діод: у власний вхід сигнал не повертається. Ланцюг повторювачів —
 // чесна лінія затримки, а закоротка витримка ковтає занадто короткі імпульси.
 const REPEATER = 87;
+// Лічильник — орган числа мережі: та сама кам'яна основа, що в інвертора,
+// але смарагдовий кристал рахує фронти сигналу на вході позаду і, дорахувавши
+// до мети (ПКМ множить її 2/4/8/16 — намистини на стовпчику), сам дає короткий
+// імпульс уперед і починає рахунок заново. Кристал росте з рахунком — прогрес
+// видно здалеку. Ланцюг лічильників — дільник частоти, кнопка з лічильником —
+// кодовий замок: мережа вперше вміє рахувати.
+const COUNTER = 88;
 const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -561,6 +568,7 @@ const BLOCK_NAMES = {
   [RAIN_SENSOR]: 'Дощомір',
   [INVERTER]: 'Інвертор',
   [REPEATER]: 'Повторювач',
+  [COUNTER]: 'Лічильник',
   [BUTTON]: 'Кнопка',
   [LATCH]: 'Защіпка',
   [TURRET]: 'Стрілець',
@@ -588,7 +596,7 @@ const ALL_BLOCKS = [
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
-  LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, INVERTER, REPEATER, BUTTON, LATCH, TURRET, PISTON,
+  LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, INVERTER, REPEATER, COUNTER, BUTTON, LATCH, TURRET, PISTON,
   STICKY_PISTON, OBSERVER, TARGET, TRIPWIRE, DETECTOR_RAIL, POWER_RAIL,
   SWITCH_RAIL,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
@@ -12635,6 +12643,10 @@ const INVERTER_DELAY = 0.35;           // секунд до перекиданн
 // Повторювач живе в реєстрі інверторів (v.rep = 1): та сама основа, вхід і
 // вихід, але кристал віддає вхід без «ні» — із витримкою, яку ПКМ множить
 const REP_DELAYS = [0.35, 0.7, 1.4, 2.8];  // витримка за кроком ×1/×2/×4/×8
+// Лічильник теж живе тут (v.rep = 2): смарагдовий кристал рахує фронти
+// сигналу на вході і, дорахувавши до мети, дає короткий імпульс уперед
+const COUNTER_GOALS = [2, 4, 8, 16];   // мета рахунку за кроком (ПКМ множить)
+const COUNTER_PULSE = 0.5;             // секунд життя імпульсу після мети
 const BLINK_WINDOW = 4;                // вікно (с) для «Мигалки»
 const BLINK_FLIPS = 4;                 // стільки перекидань у вікні — осцилятор
 const inverterKey = leverKey;
@@ -12664,6 +12676,15 @@ const REP_CRYSTAL_ON_MAT = new THREE.MeshLambertMaterial({
 const REP_TAIL_GEO = new THREE.BoxGeometry(0.14, 0.06, 0.14);
 REP_TAIL_GEO.translate(-0.2, 0, 0);
 const REP_TAIL_MAT = new THREE.MeshLambertMaterial({ color: 0x3a3f47 });
+// Кристал лічильника: згаслий смарагд і жевріюча зелень — свій колір, щоб не
+// плутати ні з бузком інвертора, ні з міддю повторювача, ні з м'ятою дощоміра
+const CNT_CRYSTAL_OFF_MAT = new THREE.MeshLambertMaterial({ color: 0x2f5d44 });
+const CNT_CRYSTAL_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xa8ffd0, emissive: 0x2fd87e, emissiveIntensity: 0.9 });
+// Намистини мети на стовпчику лічильника: одна за кроком мети (2/4/8/16) —
+// щоб рахунок, до якого він рахує, було видно здалеку без ПКМ
+const CNT_BEAD_GEO = new THREE.BoxGeometry(0.07, 0.07, 0.07);
+const CNT_BEAD_MAT = new THREE.MeshLambertMaterial({ color: 0x77e0a8 });
 
 function makeInverterModel(rep) {
   const g = new THREE.Group();
@@ -12674,20 +12695,23 @@ function makeInverterModel(rep) {
   const nose = new THREE.Mesh(INV_NOSE_GEO, INV_NOSE_MAT);
   nose.position.y = 0.13;
   g.add(nose);
-  if (rep) {
+  if (rep) {                           // повторювач і лічильник слухають позаду
     const tail = new THREE.Mesh(REP_TAIL_GEO, REP_TAIL_MAT);
     tail.position.y = 0.13;
     g.add(tail);
   }
   const crystal = new THREE.Mesh(INV_CRYSTAL_GEO,
-    rep ? REP_CRYSTAL_OFF_MAT : INV_CRYSTAL_OFF_MAT);
+    rep === 2 ? CNT_CRYSTAL_OFF_MAT : rep ? REP_CRYSTAL_OFF_MAT : INV_CRYSTAL_OFF_MAT);
   g.add(crystal);
   return { g, crystal };
 }
 
-// Кристал жевріє чи згас — за станом виходу (у повторювача — мідь)
+// Кристал жевріє чи згас — за станом виходу (у повторювача — мідь,
+// у лічильника — смарагд)
 function applyInverterLook(v) {
-  v.crystal.material = v.rep
+  v.crystal.material = v.rep === 2
+    ? (v.out ? CNT_CRYSTAL_ON_MAT : CNT_CRYSTAL_OFF_MAT)
+    : v.rep
     ? (v.out ? REP_CRYSTAL_ON_MAT : REP_CRYSTAL_OFF_MAT)
     : (v.out ? INV_CRYSTAL_ON_MAT : INV_CRYSTAL_OFF_MAT);
 }
@@ -12695,6 +12719,25 @@ function applyInverterLook(v) {
 // Кристал повторювача росте з витримкою: крок ×1 — звичайний, далі вищий
 function applyRepeaterScale(v) {
   v.crystal.scale.set(1, 1 + v.dstep * 0.4, 1);
+}
+
+// Кристал лічильника росте з рахунком: порожній — звичайний, перед метою —
+// майже вдвічі вищий; після імпульсу осідає назад
+function applyCounterScale(v) {
+  v.crystal.scale.set(1, 1 + (v.count / COUNTER_GOALS[v.dstep]) * 0.9, 1);
+}
+
+// Намистини мети на стовпчику: одна за кроком (2 → одна, 16 — чотири);
+// перебудовуються на ПКМ — геометрія й матеріал спільні, лише меші свої
+function applyCounterBeads(v) {
+  for (const b of v.beads) v.group.remove(b);
+  v.beads.length = 0;
+  for (let i = 0; i <= v.dstep; i++) {
+    const b = new THREE.Mesh(CNT_BEAD_GEO, CNT_BEAD_MAT);
+    b.position.set(0, 0.16 + i * 0.09, 0.13);
+    v.group.add(b);
+    v.beads.push(b);
+  }
 }
 
 // Повернути групу так, щоб носик дивився в бік виходу (fx, fz)
@@ -12711,15 +12754,17 @@ function addInverter(x, y, z, fx = 1, fz = 0, rep = 0, dstep = 0) {
   if (!((Math.abs(fx) === 1 && fz === 0) || (fx === 0 && Math.abs(fz) === 1))) {
     fx = 1; fz = 0;
   }
-  rep = rep ? 1 : 0;
+  rep = Math.min(Math.max(rep | 0, 0), 2);
   dstep = Math.min(Math.max(dstep | 0, 0), REP_DELAYS.length - 1);
   const { g, crystal } = makeInverterModel(rep);
   g.position.set(x + 0.5, y, z + 0.5);
   scene.add(g);
   const v = { x, y, z, group: g, crystal, fx, fz, rep, dstep,
-    out: null, flipT: 0, flips: [] };
+    out: null, flipT: 0, flips: [],
+    count: 0, prevIn: false, pulseT: 0, beads: [] };
   applyInverterFacing(v);
-  if (rep) applyRepeaterScale(v);
+  if (rep === 2) { applyCounterBeads(v); applyCounterScale(v); }
+  else if (rep) applyRepeaterScale(v);
   inverters.set(key, v);
   refreshWiresAround(x, y, z);
   return true;
@@ -12737,7 +12782,7 @@ function breakInverter(key) {
   const v = inverters.get(key);
   if (!v) return;
   spawnParticles(v.x + 0.5, v.y + 0.3, v.z + 0.5,
-    new THREE.Color(v.rep ? 0x6e4a38 : 0x5a4a78), 6,
+    new THREE.Color(v.rep === 2 ? 0x2f5d44 : v.rep ? 0x6e4a38 : 0x5a4a78), 6,
     { radius: 0.25, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 10 });
   Sound.breakBlock(STONE);
   removeInverter(key);
@@ -12756,7 +12801,7 @@ function placeInverter(hit, rep = 0) {
   if (!addInverter(x, y, z, fx, fz, rep)) return false;
   Sound.place(STONE);
   spawnParticles(x + 0.5, y + 0.4, z + 0.5,
-    new THREE.Color(rep ? 0xd8622f : 0x8a4fd8), 6,
+    new THREE.Color(rep === 2 ? 0x2fd87e : rep ? 0xd8622f : 0x8a4fd8), 6,
     { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
   return true;
 }
@@ -12765,6 +12810,18 @@ function placeInverter(hit, rep = 0) {
 // переміряється наступним тиком тихо (рука вже клацнула — без другого цоку).
 // ПКМ по повторювачу натомість множить витримку: ×1 → ×2 → ×4 → ×8 → ×1
 function rotateInverter(v) {
+  if (v.rep === 2) {
+    // ПКМ по лічильнику множить мету: 2 → 4 → 8 → 16 → 2; рахунок — заново
+    v.dstep = (v.dstep + 1) % COUNTER_GOALS.length;
+    v.count = 0;
+    applyCounterBeads(v);
+    applyCounterScale(v);
+    Sound.lever(true);
+    spawnParticles(v.x + 0.5, v.y + 0.45, v.z + 0.5, new THREE.Color(0x2fd87e), 4,
+      { radius: 0.15, speed: 0.9, upBias: 0.8, life: 0.4, size: 0.07, gravity: 2 });
+    flashItemName(`🧮 Лічильник: рахує до ${COUNTER_GOALS[v.dstep]}`);
+    return;
+  }
   if (v.rep) {
     v.dstep = (v.dstep + 1) % REP_DELAYS.length;
     v.flipT = 0;
@@ -12831,6 +12888,51 @@ function updateInverters(dt) {
       breakInverter(key);
       continue;
     }
+    // Лічильник рахує фронти входу: дорахував до мети — короткий імпульс
+    // уперед і рахунок заново; рахунок не переживає сесію (як тиск кнопки)
+    if (v.rep === 2) {
+      const cin = inverterInputPowered(v);
+      if (v.out === null) {            // перший замір — тихо, без рахунку
+        v.out = false;
+        v.prevIn = cin;
+        applyInverterLook(v);
+        continue;
+      }
+      if (cin && !v.prevIn) {
+        v.count++;
+        if (v.count >= COUNTER_GOALS[v.dstep]) {
+          // Мета: кристал спалахує і живить мережу, як натиснута кнопка
+          v.count = 0;
+          v.out = true;
+          v.pulseT = COUNTER_PULSE;
+          applyInverterLook(v);
+          Sound.inverter(true);
+          spawnParticles(v.x + 0.5, v.y + 0.55, v.z + 0.5,
+            new THREE.Color(0xa8ffd0), 6,
+            { radius: 0.2, speed: 0.8, upBias: 1.2, life: 0.5, size: 0.07, gravity: -1 });
+          for (const n of powerNotesAround(v.x, v.y, v.z)) strikeNote(n);
+          igniteTntAround(v.x, v.y, v.z);
+          unlockAch('countfire');
+          if (v.dstep === COUNTER_GOALS.length - 1) unlockAch('countmax');
+        } else {
+          // Крок рахунку: тихий цок і кристал підростає
+          Sound.inverter(false);
+          spawnParticles(v.x + 0.5, v.y + 0.5, v.z + 0.5,
+            new THREE.Color(0x77e0a8), 3,
+            { radius: 0.12, speed: 0.6, upBias: 1, life: 0.35, size: 0.06, gravity: -1 });
+        }
+        applyCounterScale(v);
+      }
+      v.prevIn = cin;
+      if (v.out) {
+        v.pulseT -= dt;
+        if (v.pulseT <= 0) {           // імпульс згас сам — тихо, як у кнопки
+          v.out = false;
+          applyInverterLook(v);
+        }
+      }
+      continue;
+    }
     // Повторювач віддає вхід як є; інвертор — протилежне. Витримка:
     // у повторювача — за кроком ×1/×2/×4/×8, у інвертора — стала
     const input = inverterInputPowered(v);
@@ -12876,9 +12978,10 @@ function updateInverters(dt) {
   }
 }
 
-// Відновити збережені інвертори й повторювачі (сумісно зі старими сейвами);
-// шосте поле — вид (0 інвертор / 1 повторювач), сьоме — крок витримки;
-// стан кристала не зберігається — перший тик переміряє вхід тихо
+// Відновити збережені інвертори, повторювачі й лічильники (сумісно зі
+// старими сейвами); шосте поле — вид (0 інвертор / 1 повторювач /
+// 2 лічильник), сьоме — крок витримки чи мети; стан кристала й рахунок не
+// зберігаються — перший тик переміряє вхід тихо, лічильник починає з нуля
 if (savedGame && Array.isArray(savedGame.inverters)) {
   for (const e of savedGame.inverters) {
     if (Array.isArray(e) && e.length >= 5) {
@@ -18507,6 +18610,12 @@ function placeBlock() {
     return;
   }
 
+  // Лічильник — орган числа мережі: рахує фронти входу й дає імпульс на меті
+  if (id === COUNTER) {
+    placeInverter(hit, 2);
+    return;
+  }
+
   // Кнопка — імпульсний вхід мережі: сигнал живе мить і згасає сам
   if (id === BUTTON) {
     placeButton(hit);
@@ -20742,6 +20851,34 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(2, 9, 2, 2);
     return;
   }
+  if (id === COUNTER) {
+    // Процедурна іконка лічильника: кам'яна основа, стовпчик зі смарагдовим
+    // кристалом, брасова стрілка виходу, іскра входу й намистини рахунку —
+    // сигнал проходить далі лише дорахувавшись до мети
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тінь під основою
+    ctx.fillRect(3, 14, 10, 1);
+    ctx.fillStyle = '#6f7680';                 // кам'яна основа
+    ctx.fillRect(3, 12, 10, 2);
+    ctx.fillStyle = '#4a4f57';                 // стовпчик
+    ctx.fillRect(7, 6, 2, 6);
+    ctx.fillStyle = '#2f8a5c';                 // смарагдовий кристал
+    ctx.fillRect(5, 1, 6, 5);
+    ctx.fillStyle = '#a8ffd0';                 // відблиск кристала
+    ctx.fillRect(6, 1, 2, 2);
+    ctx.fillStyle = '#77e0a8';                 // намистини рахунку
+    ctx.fillRect(5, 7, 1, 1);
+    ctx.fillRect(5, 9, 1, 1);
+    ctx.fillRect(5, 11, 1, 1);
+    ctx.fillStyle = '#b08a3e';                 // брасова стрілка виходу
+    ctx.fillRect(9, 9, 4, 2);
+    ctx.fillRect(12, 8, 1, 1);
+    ctx.fillRect(12, 11, 1, 1);
+    ctx.fillStyle = '#ffd54a';                 // іскра входу — ціла: рахується
+    ctx.fillRect(2, 9, 2, 2);
+    return;
+  }
   if (id === BUTTON) {
     // Процедурна іконка кнопки: кам'яна основа, темна оправа, червона
     // шапка й золоті дуги імпульсу, що розходяться від натиску
@@ -22309,6 +22446,8 @@ const ACHIEVEMENTS = [
   { id: 'blinker',     icon: '🔁', title: 'Мигалка',            desc: 'Зациклений інвертор сам заблимав сигналом' },
   { id: 'relay',       icon: '⏳', title: 'Ретранслятор',       desc: 'Повторювач прийняв сигнал і доніс його далі крізь витримку' },
   { id: 'slowpulse',   icon: '⏱', title: 'Довга витримка',     desc: 'Повторювач на витримці ×8 доніс сигнал до кінця' },
+  { id: 'countfire',   icon: '🧮', title: 'Рахівник',           desc: 'Лічильник дорахував до мети й дав імпульс у мережу' },
+  { id: 'countmax',    icon: '💯', title: 'Шістнадцять',        desc: 'Лічильник із метою 16 дорахував до кінця' },
   { id: 'button',      icon: '⏺', title: 'Імпульс',            desc: 'Натиснути кнопку — сигнал, що згасає сам' },
   { id: 'doorbell',    icon: '🛎', title: 'Дзвінок у двері',    desc: 'Імпульс кнопки сам відчинив двері чи хвіртку' },
   { id: 'latch',       icon: '🧷', title: 'Пам\'ять мережі',    desc: 'Фронт сигналу перекинув защіпку — стан лишився' },
@@ -24572,7 +24711,11 @@ window.MCDebug = {
            active: !!s.active })),
       inverters: [...inverters.values()].map((v) =>
         ({ x: v.x, y: v.y, z: v.z, fx: v.fx, fz: v.fz, out: !!v.out,
-           rep: !!v.rep, dstep: v.dstep })),
+           rep: v.rep, dstep: v.dstep,
+           count: v.rep === 2 ? v.count : undefined,
+           goal: v.rep === 2 ? COUNTER_GOALS[v.dstep] : undefined,
+           pulseT: v.rep === 2 ? +v.pulseT.toFixed(2) : undefined,
+           prevIn: v.rep === 2 ? v.prevIn : undefined })),
       buttons: [...buttons.values()].map((b) =>
         ({ x: b.x, y: b.y, z: b.z, pressed: b.pressed, t: +b.t.toFixed(2) })),
       latches: [...latches.values()].map((t) =>
@@ -24651,7 +24794,10 @@ window.MCDebug = {
     return [...inverters.values()].map((v) =>
       ({ x: v.x, y: v.y, z: v.z, fx: v.fx, fz: v.fz,
          out: v.out === null ? null : !!v.out,
-         kind: v.rep ? 'повторювач' : 'інвертор', dstep: v.dstep,
+         kind: v.rep === 2 ? 'лічильник' : v.rep ? 'повторювач' : 'інвертор',
+         dstep: v.dstep,
+         count: v.rep === 2 ? v.count : undefined,
+         goal: v.rep === 2 ? COUNTER_GOALS[v.dstep] : undefined,
          input: inverterInputPowered(v) }));
   },
   // Повторювач (для тестів)
@@ -24662,9 +24808,21 @@ window.MCDebug = {
   },
   cycleRepeaterAt: (x, y, z) => {
     const v = inverters.get(inverterKey(x, y, z));
-    if (!v || !v.rep) return null;
+    if (!v || v.rep !== 1) return null;
     rotateInverter(v);
     return v.dstep;
+  },
+  // Лічильник (для тестів)
+  giveCounter: () => { assignBlockToSlot(COUNTER); return BLOCK_NAMES[COUNTER]; },
+  placeCounterAt: (x, y, z, fx = 1, fz = 0, gstep = 0) => {
+    if (!powerCellFree(x, y, z)) return false;
+    return addInverter(x, y, z, fx, fz, 2, gstep);
+  },
+  cycleCounterAt: (x, y, z) => {
+    const v = inverters.get(inverterKey(x, y, z));
+    if (!v || v.rep !== 2) return null;
+    rotateInverter(v);
+    return COUNTER_GOALS[v.dstep];
   },
   // Кнопка (для тестів)
   giveButton: () => { assignBlockToSlot(BUTTON); return BLOCK_NAMES[BUTTON]; },
