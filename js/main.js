@@ -415,6 +415,13 @@ const REPEATER = 87;
 // видно здалеку. Ланцюг лічильників — дільник частоти, кнопка з лічильником —
 // кодовий замок: мережа вперше вміє рахувати.
 const COUNTER = 88;
+// Збіг — вентиль «І», орган згоди мережі: та сама кам'яна основа, що в
+// інвертора, але сапфіровий кристал слухає ДВІ бокові клітинки (темні
+// хвостики-маркери обабіч) і жевріє вперед лише коли живі ОБИДВА входи.
+// Інвертор дав мережі «ні», линви складають «або» — збіг довершує логіку
+// повним «і»: двері на два ключі, сигнал «темно І дощ», запобіжник, що
+// вимагає двох умов одразу. У власні входи сигнал не повертається.
+const ANDGATE = 89;
 const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -569,6 +576,7 @@ const BLOCK_NAMES = {
   [INVERTER]: 'Інвертор',
   [REPEATER]: 'Повторювач',
   [COUNTER]: 'Лічильник',
+  [ANDGATE]: 'Збіг',
   [BUTTON]: 'Кнопка',
   [LATCH]: 'Защіпка',
   [TURRET]: 'Стрілець',
@@ -596,7 +604,7 @@ const ALL_BLOCKS = [
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
-  LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, INVERTER, REPEATER, COUNTER, BUTTON, LATCH, TURRET, PISTON,
+  LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, INVERTER, REPEATER, COUNTER, ANDGATE, BUTTON, LATCH, TURRET, PISTON,
   STICKY_PISTON, OBSERVER, TARGET, TRIPWIRE, DETECTOR_RAIL, POWER_RAIL,
   SWITCH_RAIL,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
@@ -11914,19 +11922,24 @@ function computePower() {
   }
   // Інвертор із жевріючим кристалом — теж джерело, але не живить свій вхід
   // (напрям позаду, з усіма сходинками): інакше линва впритул за спиною
-  // зациклювала б його на самого себе
+  // зациклювала б його на самого себе. Збіг (rep 3) так само не живить
+  // ДВІ свої бокові клітинки-входи — skip тут список напрямів
   for (const v of inverters.values()) {
-    if (v.out) queue.push([v.x, v.y, v.z, 0, false, false, false, (-v.fx) + ',' + (-v.fz)]);
+    if (!v.out) continue;
+    const skip = v.rep === 3
+      ? [v.fz + ',' + (-v.fx), (-v.fz) + ',' + v.fx]
+      : [(-v.fx) + ',' + (-v.fz)];
+    queue.push([v.x, v.y, v.z, 0, false, false, false, skip]);
   }
   // Защіпка з жевріючим кристалом — джерело-пам'ять; свій вхід не живить
   // з тієї ж причини, що й інвертор: линва за спиною не має зациклювати
   for (const t of latches.values()) {
-    if (t.out) queue.push([t.x, t.y, t.z, 0, false, false, false, (-t.fx) + ',' + (-t.fz)]);
+    if (t.out) queue.push([t.x, t.y, t.z, 0, false, false, false, [(-t.fx) + ',' + (-t.fz)]]);
   }
   for (let qi = 0; qi < queue.length; qi++) {
     const [x, y, z, d, fromSensor, fromButton, fromRail, skip] = queue[qi];
     for (const [dx, dz] of WIRE_DIRS) {
-      if (skip && dx + ',' + dz === skip) continue;
+      if (skip && skip.indexOf(dx + ',' + dz) !== -1) continue;
       for (let dy = -1; dy <= 1; dy++) {
         const k = wireKey(x + dx, y + dy, z + dz);
         if (powered.has(k)) continue;
@@ -12647,6 +12660,8 @@ const REP_DELAYS = [0.35, 0.7, 1.4, 2.8];  // витримка за кроком
 // сигналу на вході і, дорахувавши до мети, дає короткий імпульс уперед
 const COUNTER_GOALS = [2, 4, 8, 16];   // мета рахунку за кроком (ПКМ множить)
 const COUNTER_PULSE = 0.5;             // секунд життя імпульсу після мети
+// Збіг теж живе тут (v.rep = 3): сапфіровий кристал слухає дві бокові
+// клітинки і жевріє вперед лише коли живі обидва входи — вентиль «І»
 const BLINK_WINDOW = 4;                // вікно (с) для «Мигалки»
 const BLINK_FLIPS = 4;                 // стільки перекидань у вікні — осцилятор
 const inverterKey = leverKey;
@@ -12685,6 +12700,17 @@ const CNT_CRYSTAL_ON_MAT = new THREE.MeshLambertMaterial({
 // щоб рахунок, до якого він рахує, було видно здалеку без ПКМ
 const CNT_BEAD_GEO = new THREE.BoxGeometry(0.07, 0.07, 0.07);
 const CNT_BEAD_MAT = new THREE.MeshLambertMaterial({ color: 0x77e0a8 });
+// Кристал збігу: згаслий сапфір і жевріюча блакить — свій колір, щоб не
+// плутати ні з бузком інвертора, ні зі смарагдом лічильника й защіпки
+const GATE_CRYSTAL_OFF_MAT = new THREE.MeshLambertMaterial({ color: 0x2f3f6e });
+const GATE_CRYSTAL_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0x9ec8ff, emissive: 0x2f6fd8, emissiveIntensity: 0.9 });
+// Хвостики входів збігу: темні маркери ОБАБІЧ (не позаду, як у повторювача) —
+// щоб з першого погляду було видно, що він слухає дві бокові клітинки
+const GATE_TAIL_GEO = new THREE.BoxGeometry(0.14, 0.06, 0.14);
+GATE_TAIL_GEO.translate(0, 0, -0.2);
+const GATE_TAIL2_GEO = new THREE.BoxGeometry(0.14, 0.06, 0.14);
+GATE_TAIL2_GEO.translate(0, 0, 0.2);
 
 function makeInverterModel(rep) {
   const g = new THREE.Group();
@@ -12695,21 +12721,31 @@ function makeInverterModel(rep) {
   const nose = new THREE.Mesh(INV_NOSE_GEO, INV_NOSE_MAT);
   nose.position.y = 0.13;
   g.add(nose);
-  if (rep) {                           // повторювач і лічильник слухають позаду
+  if (rep === 3) {                     // збіг слухає дві бокові клітинки
+    const tailA = new THREE.Mesh(GATE_TAIL_GEO, REP_TAIL_MAT);
+    tailA.position.y = 0.13;
+    g.add(tailA);
+    const tailB = new THREE.Mesh(GATE_TAIL2_GEO, REP_TAIL_MAT);
+    tailB.position.y = 0.13;
+    g.add(tailB);
+  } else if (rep) {                    // повторювач і лічильник слухають позаду
     const tail = new THREE.Mesh(REP_TAIL_GEO, REP_TAIL_MAT);
     tail.position.y = 0.13;
     g.add(tail);
   }
   const crystal = new THREE.Mesh(INV_CRYSTAL_GEO,
-    rep === 2 ? CNT_CRYSTAL_OFF_MAT : rep ? REP_CRYSTAL_OFF_MAT : INV_CRYSTAL_OFF_MAT);
+    rep === 3 ? GATE_CRYSTAL_OFF_MAT
+    : rep === 2 ? CNT_CRYSTAL_OFF_MAT : rep ? REP_CRYSTAL_OFF_MAT : INV_CRYSTAL_OFF_MAT);
   g.add(crystal);
   return { g, crystal };
 }
 
 // Кристал жевріє чи згас — за станом виходу (у повторювача — мідь,
-// у лічильника — смарагд)
+// у лічильника — смарагд, у збігу — сапфір)
 function applyInverterLook(v) {
-  v.crystal.material = v.rep === 2
+  v.crystal.material = v.rep === 3
+    ? (v.out ? GATE_CRYSTAL_ON_MAT : GATE_CRYSTAL_OFF_MAT)
+    : v.rep === 2
     ? (v.out ? CNT_CRYSTAL_ON_MAT : CNT_CRYSTAL_OFF_MAT)
     : v.rep
     ? (v.out ? REP_CRYSTAL_ON_MAT : REP_CRYSTAL_OFF_MAT)
@@ -12754,7 +12790,7 @@ function addInverter(x, y, z, fx = 1, fz = 0, rep = 0, dstep = 0) {
   if (!((Math.abs(fx) === 1 && fz === 0) || (fx === 0 && Math.abs(fz) === 1))) {
     fx = 1; fz = 0;
   }
-  rep = Math.min(Math.max(rep | 0, 0), 2);
+  rep = Math.min(Math.max(rep | 0, 0), 3);
   dstep = Math.min(Math.max(dstep | 0, 0), REP_DELAYS.length - 1);
   const { g, crystal } = makeInverterModel(rep);
   g.position.set(x + 0.5, y, z + 0.5);
@@ -12782,7 +12818,7 @@ function breakInverter(key) {
   const v = inverters.get(key);
   if (!v) return;
   spawnParticles(v.x + 0.5, v.y + 0.3, v.z + 0.5,
-    new THREE.Color(v.rep === 2 ? 0x2f5d44 : v.rep ? 0x6e4a38 : 0x5a4a78), 6,
+    new THREE.Color(v.rep === 3 ? 0x2f3f6e : v.rep === 2 ? 0x2f5d44 : v.rep ? 0x6e4a38 : 0x5a4a78), 6,
     { radius: 0.25, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 10 });
   Sound.breakBlock(STONE);
   removeInverter(key);
@@ -12801,7 +12837,7 @@ function placeInverter(hit, rep = 0) {
   if (!addInverter(x, y, z, fx, fz, rep)) return false;
   Sound.place(STONE);
   spawnParticles(x + 0.5, y + 0.4, z + 0.5,
-    new THREE.Color(rep === 2 ? 0x2fd87e : rep ? 0xd8622f : 0x8a4fd8), 6,
+    new THREE.Color(rep === 3 ? 0x4f8fe8 : rep === 2 ? 0x2fd87e : rep ? 0xd8622f : 0x8a4fd8), 6,
     { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
   return true;
 }
@@ -12810,6 +12846,21 @@ function placeInverter(hit, rep = 0) {
 // переміряється наступним тиком тихо (рука вже клацнула — без другого цоку).
 // ПКМ по повторювачу натомість множить витримку: ×1 → ×2 → ×4 → ×8 → ×1
 function rotateInverter(v) {
+  if (v.rep === 3) {
+    // ПКМ по збігу повертає вихід на чверть оберту (входи їдуть слідом);
+    // стан переміряється наступним тиком тихо
+    const gfx = -v.fz, gfz = v.fx;
+    v.fx = gfx; v.fz = gfz;
+    v.out = null;
+    v.flipT = 0;
+    applyInverterFacing(v);
+    v.crystal.material = GATE_CRYSTAL_OFF_MAT;
+    Sound.lever(true);
+    spawnParticles(v.x + 0.5, v.y + 0.45, v.z + 0.5, new THREE.Color(0x4f8fe8), 4,
+      { radius: 0.15, speed: 0.9, upBias: 0.8, life: 0.4, size: 0.07, gravity: 2 });
+    flashItemName('🤝 Збіг: вихід повернуто');
+    return;
+  }
   if (v.rep === 2) {
     // ПКМ по лічильнику множить мету: 2 → 4 → 8 → 16 → 2; рахунок — заново
     v.dstep = (v.dstep + 1) % COUNTER_GOALS.length;
@@ -12847,7 +12898,17 @@ function rotateInverter(v) {
 // Чи є сигнал у клітинці позаду інвертора (вхід): линва під напругою чи
 // живе джерело — важіль, плита, датчик, інший інвертор (сходинки ±1)
 function inverterInputPowered(v) {
-  const bx = v.x - v.fx, bz = v.z - v.fz;
+  return powerFeedAt(v, v.x - v.fx, v.z - v.fz);
+}
+
+// Чи є сигнал у боковій клітинці збігу: side +1 — одна рука, -1 — друга;
+// ті самі джерела й сходинки ±1, що й у входу інвертора
+function gateSidePowered(v, side) {
+  return powerFeedAt(v, v.x + v.fz * side, v.z - v.fx * side);
+}
+
+// Спільне читання клітинки (bx, bz) для входів інвертора та збігу
+function powerFeedAt(v, bx, bz) {
   for (let dy = -1; dy <= 1; dy++) {
     const k = inverterKey(bx, v.y + dy, bz);
     const w = wires.get(k);
@@ -12933,10 +12994,19 @@ function updateInverters(dt) {
       }
       continue;
     }
-    // Повторювач віддає вхід як є; інвертор — протилежне. Витримка:
-    // у повторювача — за кроком ×1/×2/×4/×8, у інвертора — стала
-    const input = inverterInputPowered(v);
-    const target = v.rep ? input : !input;
+    // Повторювач віддає вхід як є; інвертор — протилежне; збіг вимагає
+    // обох бокових входів одразу. Витримка: у повторювача — за кроком
+    // ×1/×2/×4/×8, у інвертора та збігу — стала
+    let target;
+    if (v.rep === 3) {
+      const a = gateSidePowered(v, 1), b = gateSidePowered(v, -1);
+      target = a && b;
+      // Живий лише один вхід — збіг мовчить: «один — не збіг»
+      if (v.out !== null && a !== b) unlockAch('halfand');
+    } else {
+      const input = inverterInputPowered(v);
+      target = v.rep ? input : !input;
+    }
     if (v.out === null) {              // перший замір — тихо
       v.out = target;
       v.flipT = 0;
@@ -12945,24 +13015,27 @@ function updateInverters(dt) {
     }
     if (target === v.out) { v.flipT = 0; continue; }
     v.flipT += dt;
-    if (v.flipT < (v.rep ? REP_DELAYS[v.dstep] : INVERTER_DELAY)) continue;
+    if (v.flipT < (v.rep === 1 ? REP_DELAYS[v.dstep] : INVERTER_DELAY)) continue;
     // Перекидання: кристал міняє стан із цоком та іскрами
     v.out = target;
     v.flipT = 0;
     applyInverterLook(v);
     Sound.inverter(v.out);
     spawnParticles(v.x + 0.5, v.y + 0.55, v.z + 0.5,
-      new THREE.Color(v.out ? (v.rep ? 0xffc08a : 0xd8b8ff)
-                            : (v.rep ? 0x6e4a38 : 0x5a4a78)), 4,
+      new THREE.Color(v.out ? (v.rep === 3 ? 0x9ec8ff : v.rep ? 0xffc08a : 0xd8b8ff)
+                            : (v.rep === 3 ? 0x2f3f6e : v.rep ? 0x6e4a38 : 0x5a4a78)), 4,
       { radius: 0.2, speed: 0.7, upBias: 1.2, life: 0.5, size: 0.07, gravity: -1 });
     if (v.out) {
       // Жевріння поводиться як увімкнення важеля
       for (const n of powerNotesAround(v.x, v.y, v.z)) strikeNote(n);
       igniteTntAround(v.x, v.y, v.z);
-      if (v.rep) {
+      if (v.rep === 1) {
         // Сигнал пройшов крізь витримку — повторювач доніс його далі
         unlockAch('relay');
         if (v.dstep === REP_DELAYS.length - 1) unlockAch('slowpulse');
+      } else if (v.rep === 3) {
+        // Обидва входи зійшлися — збіг пропустив сигнал: «і» сказано
+        unlockAch('andgate');
       }
     } else if (!v.rep) {
       // Сигнал прийшов — інвертор перекрив його: «ні» сказано
@@ -12978,10 +13051,10 @@ function updateInverters(dt) {
   }
 }
 
-// Відновити збережені інвертори, повторювачі й лічильники (сумісно зі
-// старими сейвами); шосте поле — вид (0 інвертор / 1 повторювач /
-// 2 лічильник), сьоме — крок витримки чи мети; стан кристала й рахунок не
-// зберігаються — перший тик переміряє вхід тихо, лічильник починає з нуля
+// Відновити збережені інвертори, повторювачі, лічильники й збіги (сумісно
+// зі старими сейвами); шосте поле — вид (0 інвертор / 1 повторювач /
+// 2 лічильник / 3 збіг), сьоме — крок витримки чи мети; стан кристала й
+// рахунок не зберігаються — перший тик переміряє входи тихо
 if (savedGame && Array.isArray(savedGame.inverters)) {
   for (const e of savedGame.inverters) {
     if (Array.isArray(e) && e.length >= 5) {
@@ -18616,6 +18689,12 @@ function placeBlock() {
     return;
   }
 
+  // Збіг — вентиль «І»: жевріє вперед лише коли живі обидва бокові входи
+  if (id === ANDGATE) {
+    placeInverter(hit, 3);
+    return;
+  }
+
   // Кнопка — імпульсний вхід мережі: сигнал живе мить і згасає сам
   if (id === BUTTON) {
     placeButton(hit);
@@ -20879,6 +20958,34 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(2, 9, 2, 2);
     return;
   }
+  if (id === ANDGATE) {
+    // Процедурна іконка збігу: кам'яна основа, стовпчик із сапфіровим
+    // кристалом, брасова стрілка виходу й ДВІ іскри входів обабіч —
+    // сигнал проходить далі лише коли зійшлися обидва
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тінь під основою
+    ctx.fillRect(3, 14, 10, 1);
+    ctx.fillStyle = '#6f7680';                 // кам'яна основа
+    ctx.fillRect(3, 12, 10, 2);
+    ctx.fillStyle = '#4a4f57';                 // стовпчик
+    ctx.fillRect(7, 6, 2, 6);
+    ctx.fillStyle = '#3a5fb0';                 // сапфіровий кристал
+    ctx.fillRect(5, 1, 6, 5);
+    ctx.fillStyle = '#9ec8ff';                 // відблиск кристала
+    ctx.fillRect(6, 1, 2, 2);
+    ctx.fillStyle = '#ffd54a';                 // дві іскри входів обабіч
+    ctx.fillRect(1, 7, 2, 2);
+    ctx.fillRect(1, 11, 2, 2);
+    ctx.fillStyle = '#3a3f47';                 // хвостики-маркери входів
+    ctx.fillRect(3, 8, 2, 1);
+    ctx.fillRect(3, 11, 2, 1);
+    ctx.fillStyle = '#b08a3e';                 // брасова стрілка виходу
+    ctx.fillRect(9, 9, 4, 2);
+    ctx.fillRect(12, 8, 1, 1);
+    ctx.fillRect(12, 11, 1, 1);
+    return;
+  }
   if (id === BUTTON) {
     // Процедурна іконка кнопки: кам'яна основа, темна оправа, червона
     // шапка й золоті дуги імпульсу, що розходяться від натиску
@@ -22448,6 +22555,8 @@ const ACHIEVEMENTS = [
   { id: 'slowpulse',   icon: '⏱', title: 'Довга витримка',     desc: 'Повторювач на витримці ×8 доніс сигнал до кінця' },
   { id: 'countfire',   icon: '🧮', title: 'Рахівник',           desc: 'Лічильник дорахував до мети й дав імпульс у мережу' },
   { id: 'countmax',    icon: '💯', title: 'Шістнадцять',        desc: 'Лічильник із метою 16 дорахував до кінця' },
+  { id: 'andgate',     icon: '🤝', title: 'Збіг обставин',      desc: 'Обидва входи зійшлися — збіг пропустив сигнал у мережу' },
+  { id: 'halfand',     icon: '🚪', title: 'Один — не збіг',     desc: 'Живий лише один вхід — збіг чесно промовчав' },
   { id: 'button',      icon: '⏺', title: 'Імпульс',            desc: 'Натиснути кнопку — сигнал, що згасає сам' },
   { id: 'doorbell',    icon: '🛎', title: 'Дзвінок у двері',    desc: 'Імпульс кнопки сам відчинив двері чи хвіртку' },
   { id: 'latch',       icon: '🧷', title: 'Пам\'ять мережі',    desc: 'Фронт сигналу перекинув защіпку — стан лишився' },
@@ -24794,11 +24903,16 @@ window.MCDebug = {
     return [...inverters.values()].map((v) =>
       ({ x: v.x, y: v.y, z: v.z, fx: v.fx, fz: v.fz,
          out: v.out === null ? null : !!v.out,
-         kind: v.rep === 2 ? 'лічильник' : v.rep ? 'повторювач' : 'інвертор',
+         kind: v.rep === 3 ? 'збіг' : v.rep === 2 ? 'лічильник'
+             : v.rep ? 'повторювач' : 'інвертор',
          dstep: v.dstep,
          count: v.rep === 2 ? v.count : undefined,
          goal: v.rep === 2 ? COUNTER_GOALS[v.dstep] : undefined,
-         input: inverterInputPowered(v) }));
+         inA: v.rep === 3 ? gateSidePowered(v, 1) : undefined,
+         inB: v.rep === 3 ? gateSidePowered(v, -1) : undefined,
+         input: v.rep === 3
+           ? gateSidePowered(v, 1) && gateSidePowered(v, -1)
+           : inverterInputPowered(v) }));
   },
   // Повторювач (для тестів)
   giveRepeater: () => { assignBlockToSlot(REPEATER); return BLOCK_NAMES[REPEATER]; },
@@ -24823,6 +24937,18 @@ window.MCDebug = {
     if (!v || v.rep !== 2) return null;
     rotateInverter(v);
     return COUNTER_GOALS[v.dstep];
+  },
+  // Збіг (для тестів)
+  giveAndGate: () => { assignBlockToSlot(ANDGATE); return BLOCK_NAMES[ANDGATE]; },
+  placeAndGateAt: (x, y, z, fx = 1, fz = 0) => {
+    if (!powerCellFree(x, y, z)) return false;
+    return addInverter(x, y, z, fx, fz, 3);
+  },
+  rotateAndGateAt: (x, y, z) => {
+    const v = inverters.get(inverterKey(x, y, z));
+    if (!v || v.rep !== 3) return null;
+    rotateInverter(v);
+    return [v.fx, v.fz];
   },
   // Кнопка (для тестів)
   giveButton: () => { assignBlockToSlot(BUTTON); return BLOCK_NAMES[BUTTON]; },
