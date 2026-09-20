@@ -442,6 +442,16 @@ const XORGATE = 90;
 // здобич під обстріл; дзвін над ямою з лічильником — пастка, що збирає
 // нечисть сама. Нове дієслово — кликати.
 const BELL = 91;
+// Жереб — орган випадку мережі: та сама кам'яна основа, що в інвертора,
+// але опаловий кристал із двома вічками-крапками не обчислює, а ВОРОЖИТЬ:
+// кожен фронт сигналу на вході позаду кидає чесну монету, і кристал або
+// спалахує перламутром (жевріє вперед, як увімкнений важіль), або гасне —
+// аж до наступного кидка. Уся мережа досі була передбачувана: інвертор
+// відповідає «ні», збіг — «і», лічильник — «стільки ж»; жереб перший
+// відповідає «як випаде». Кнопка + жереб — монетка на двох; розтяжка +
+// жереб — пастка, що спрацьовує через раз; жереб + защіпка — випадковий
+// вибір, що тримається. Нове дієслово — кидати жереб.
+const DICE = 92;
 const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -598,6 +608,7 @@ const BLOCK_NAMES = {
   [COUNTER]: 'Лічильник',
   [ANDGATE]: 'Збіг',
   [XORGATE]: 'Розбіжність',
+  [DICE]: 'Жереб',
   [BELL]: 'Дзвін',
   [BUTTON]: 'Кнопка',
   [LATCH]: 'Защіпка',
@@ -626,7 +637,7 @@ const ALL_BLOCKS = [
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
-  LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, INVERTER, REPEATER, COUNTER, ANDGATE, XORGATE, BUTTON, LATCH, TURRET, BELL, PISTON,
+  LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, INVERTER, REPEATER, COUNTER, ANDGATE, XORGATE, DICE, BUTTON, LATCH, TURRET, BELL, PISTON,
   STICKY_PISTON, OBSERVER, TARGET, TRIPWIRE, DETECTOR_RAIL, POWER_RAIL,
   SWITCH_RAIL,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
@@ -11973,10 +11984,10 @@ function computePower() {
   // (напрям позаду, з усіма сходинками): інакше линва впритул за спиною
   // зациклювала б його на самого себе. Збіг (rep 3) і розбіжність (rep 4)
   // так само не живлять ДВІ свої бокові клітинки-входи — skip тут список
-  // напрямів
+  // напрямів (жереб, rep 5, слухає позаду, як повторювач)
   for (const v of inverters.values()) {
     if (!v.out) continue;
-    const skip = v.rep >= 3
+    const skip = v.rep === 3 || v.rep === 4
       ? [v.fz + ',' + (-v.fx), (-v.fz) + ',' + v.fx]
       : [(-v.fx) + ',' + (-v.fz)];
     queue.push([v.x, v.y, v.z, 0, false, false, false, skip]);
@@ -12717,6 +12728,9 @@ const COUNTER_PULSE = 0.5;             // секунд життя імпульс
 // клітинки і жевріє вперед лише коли живі обидва входи — вентиль «І»
 // Розбіжність теж (v.rep = 4): турмаліновий кристал слухає ті самі дві
 // бокові клітинки, але жевріє лише коли живий рівно один — «виключне АБО»
+// Жереб теж живе тут (v.rep = 5): опаловий кристал на кожен фронт входу
+// кидає чесну монету — «так» жевріє вперед до наступного кидка, «ні» мовчить
+const DICE_RUN = 3;                    // стільки «так» поспіль — «Смуга талану»
 const BLINK_WINDOW = 4;                // вікно (с) для «Мигалки»
 const BLINK_FLIPS = 4;                 // стільки перекидань у вікні — осцилятор
 const inverterKey = leverKey;
@@ -12772,6 +12786,16 @@ GATE_TAIL2_GEO.translate(0, 0, 0.2);
 const XOR_CRYSTAL_OFF_MAT = new THREE.MeshLambertMaterial({ color: 0x6e2f52 });
 const XOR_CRYSTAL_ON_MAT = new THREE.MeshLambertMaterial({
   color: 0xffb0d8, emissive: 0xd82f8a, emissiveIntensity: 0.9 });
+// Кристал жеребу: тьмяний опал і перламутровий спалах «так» — свій колір
+// (єдиний білястий кристал мережі), щоб не плутати ні з бузком інвертора,
+// ні з турмаліном розбіжності; вхідний хвостик — задній, як у повторювача
+const DICE_CRYSTAL_OFF_MAT = new THREE.MeshLambertMaterial({ color: 0x807b8a });
+const DICE_CRYSTAL_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xfdf6e3, emissive: 0xcfc49a, emissiveIntensity: 0.9 });
+// Вічка-крапки на грані кристала (бік виходу): щоб жереб із першого
+// погляду читався гральною кісткою, а не ще одним вентилем
+const DICE_PIP_GEO = new THREE.BoxGeometry(0.05, 0.05, 0.05);
+const DICE_PIP_MAT = new THREE.MeshLambertMaterial({ color: 0x2a2e34 });
 
 function makeInverterModel(rep) {
   const g = new THREE.Group();
@@ -12782,30 +12806,44 @@ function makeInverterModel(rep) {
   const nose = new THREE.Mesh(INV_NOSE_GEO, INV_NOSE_MAT);
   nose.position.y = 0.13;
   g.add(nose);
-  if (rep >= 3) {                      // збіг і розбіжність слухають дві бокові клітинки
+  if (rep === 3 || rep === 4) {        // збіг і розбіжність слухають дві бокові клітинки
     const tailA = new THREE.Mesh(GATE_TAIL_GEO, REP_TAIL_MAT);
     tailA.position.y = 0.13;
     g.add(tailA);
     const tailB = new THREE.Mesh(GATE_TAIL2_GEO, REP_TAIL_MAT);
     tailB.position.y = 0.13;
     g.add(tailB);
-  } else if (rep) {                    // повторювач і лічильник слухають позаду
+  } else if (rep) {                    // повторювач, лічильник і жереб слухають позаду
     const tail = new THREE.Mesh(REP_TAIL_GEO, REP_TAIL_MAT);
     tail.position.y = 0.13;
     g.add(tail);
   }
   const crystal = new THREE.Mesh(INV_CRYSTAL_GEO,
-    rep === 4 ? XOR_CRYSTAL_OFF_MAT
+    rep === 5 ? DICE_CRYSTAL_OFF_MAT
+    : rep === 4 ? XOR_CRYSTAL_OFF_MAT
     : rep === 3 ? GATE_CRYSTAL_OFF_MAT
     : rep === 2 ? CNT_CRYSTAL_OFF_MAT : rep ? REP_CRYSTAL_OFF_MAT : INV_CRYSTAL_OFF_MAT);
   g.add(crystal);
+  if (rep === 5) {
+    // Двійка вічок навскоси на грані виходу — кристал читається кісткою;
+    // діти кристала, тож заміна матеріалу при кидку їх не чіпає
+    const pipA = new THREE.Mesh(DICE_PIP_GEO, DICE_PIP_MAT);
+    pipA.position.set(0.09, 0.53, -0.05);
+    crystal.add(pipA);
+    const pipB = new THREE.Mesh(DICE_PIP_GEO, DICE_PIP_MAT);
+    pipB.position.set(0.09, 0.43, 0.05);
+    crystal.add(pipB);
+  }
   return { g, crystal };
 }
 
 // Кристал жевріє чи згас — за станом виходу (у повторювача — мідь,
-// у лічильника — смарагд, у збігу — сапфір, у розбіжності — турмалін)
+// у лічильника — смарагд, у збігу — сапфір, у розбіжності — турмалін,
+// у жеребу — опал)
 function applyInverterLook(v) {
-  v.crystal.material = v.rep === 4
+  v.crystal.material = v.rep === 5
+    ? (v.out ? DICE_CRYSTAL_ON_MAT : DICE_CRYSTAL_OFF_MAT)
+    : v.rep === 4
     ? (v.out ? XOR_CRYSTAL_ON_MAT : XOR_CRYSTAL_OFF_MAT)
     : v.rep === 3
     ? (v.out ? GATE_CRYSTAL_ON_MAT : GATE_CRYSTAL_OFF_MAT)
@@ -12854,14 +12892,14 @@ function addInverter(x, y, z, fx = 1, fz = 0, rep = 0, dstep = 0) {
   if (!((Math.abs(fx) === 1 && fz === 0) || (fx === 0 && Math.abs(fz) === 1))) {
     fx = 1; fz = 0;
   }
-  rep = Math.min(Math.max(rep | 0, 0), 4);
+  rep = Math.min(Math.max(rep | 0, 0), 5);
   dstep = Math.min(Math.max(dstep | 0, 0), REP_DELAYS.length - 1);
   const { g, crystal } = makeInverterModel(rep);
   g.position.set(x + 0.5, y, z + 0.5);
   scene.add(g);
   const v = { x, y, z, group: g, crystal, fx, fz, rep, dstep,
     out: null, flipT: 0, flips: [],
-    count: 0, prevIn: false, pulseT: 0, beads: [] };
+    count: 0, prevIn: false, pulseT: 0, beads: [], lucky: 0 };
   applyInverterFacing(v);
   if (rep === 2) { applyCounterBeads(v); applyCounterScale(v); }
   else if (rep) applyRepeaterScale(v);
@@ -12882,7 +12920,7 @@ function breakInverter(key) {
   const v = inverters.get(key);
   if (!v) return;
   spawnParticles(v.x + 0.5, v.y + 0.3, v.z + 0.5,
-    new THREE.Color(v.rep === 4 ? 0x6e2f52 : v.rep === 3 ? 0x2f3f6e : v.rep === 2 ? 0x2f5d44 : v.rep ? 0x6e4a38 : 0x5a4a78), 6,
+    new THREE.Color(v.rep === 5 ? 0x807b8a : v.rep === 4 ? 0x6e2f52 : v.rep === 3 ? 0x2f3f6e : v.rep === 2 ? 0x2f5d44 : v.rep ? 0x6e4a38 : 0x5a4a78), 6,
     { radius: 0.25, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 10 });
   Sound.breakBlock(STONE);
   removeInverter(key);
@@ -12901,7 +12939,7 @@ function placeInverter(hit, rep = 0) {
   if (!addInverter(x, y, z, fx, fz, rep)) return false;
   Sound.place(STONE);
   spawnParticles(x + 0.5, y + 0.4, z + 0.5,
-    new THREE.Color(rep === 4 ? 0xe85fa8 : rep === 3 ? 0x4f8fe8 : rep === 2 ? 0x2fd87e : rep ? 0xd8622f : 0x8a4fd8), 6,
+    new THREE.Color(rep === 5 ? 0xe8e0c8 : rep === 4 ? 0xe85fa8 : rep === 3 ? 0x4f8fe8 : rep === 2 ? 0x2fd87e : rep ? 0xd8622f : 0x8a4fd8), 6,
     { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
   return true;
 }
@@ -12910,6 +12948,22 @@ function placeInverter(hit, rep = 0) {
 // переміряється наступним тиком тихо (рука вже клацнула — без другого цоку).
 // ПКМ по повторювачу натомість множить витримку: ×1 → ×2 → ×4 → ×8 → ×1
 function rotateInverter(v) {
+  if (v.rep === 5) {
+    // ПКМ по жеребу повертає вихід на чверть оберту (вхід позаду їде
+    // слідом); стан переміряється наступним тиком тихо, монета не кидається
+    const dfx = -v.fz, dfz = v.fx;
+    v.fx = dfx; v.fz = dfz;
+    v.out = null;
+    v.flipT = 0;
+    v.lucky = 0;
+    applyInverterFacing(v);
+    v.crystal.material = DICE_CRYSTAL_OFF_MAT;
+    Sound.lever(true);
+    spawnParticles(v.x + 0.5, v.y + 0.45, v.z + 0.5, new THREE.Color(0xe8e0c8), 4,
+      { radius: 0.15, speed: 0.9, upBias: 0.8, life: 0.4, size: 0.07, gravity: 2 });
+    flashItemName('🎲 Жереб: вихід повернуто');
+    return;
+  }
   if (v.rep === 4) {
     // ПКМ по розбіжності повертає вихід на чверть оберту (бокові входи
     // їдуть слідом, як у збігу); стан переміряється наступним тиком тихо
@@ -13014,6 +13068,32 @@ function powerFeedAt(v, bx, bz) {
   return false;
 }
 
+// Кинути жереб: чесна монета вирішує стан кристала до наступного кидка.
+// Ноти й ґніт — лише на сході виходу (як в інших вентилів), а от цок та
+// іскри — на кожен кидок: ворожіння видно, навіть коли випало те саме
+function rollDice(v) {
+  const wasOut = !!v.out;
+  const heads = Math.random() < 0.5;
+  v.out = heads;
+  applyInverterLook(v);
+  Sound.inverter(heads);
+  spawnParticles(v.x + 0.5, v.y + 0.55, v.z + 0.5,
+    new THREE.Color(heads ? 0xfdf6e3 : 0x807b8a), 5,
+    { radius: 0.2, speed: 0.8, upBias: 1.2, life: 0.5, size: 0.07, gravity: -1 });
+  if (heads) {
+    if (!wasOut) {
+      for (const n of powerNotesAround(v.x, v.y, v.z)) strikeNote(n);
+      igniteTntAround(v.x, v.y, v.z);
+    }
+    v.lucky++;
+    if (v.lucky >= DICE_RUN) unlockAch('dicerun');
+  } else {
+    v.lucky = 0;
+  }
+  unlockAch('dicecast');
+  return heads;
+}
+
 // Тик інверторів: опора, читання входу й перекидання кристала із затримкою —
 // викликається з updatePower перед BFS, щоб мережа бачила свіжі джерела
 let inverterClock = 0;                 // ігровий час (сума dt): вікно
@@ -13073,11 +13153,26 @@ function updateInverters(dt) {
       }
       continue;
     }
+    // Жереб кидає монету на кожен фронт входу; між кидками стан тримається
+    // (жевріє чи мовчить), спад входу нічого не міняє — випадок не тане
+    if (v.rep === 5) {
+      const cin = inverterInputPowered(v);
+      if (v.out === null) {            // перший замір — тихо, без ворожіння
+        v.out = false;
+        v.prevIn = cin;
+        v.lucky = 0;
+        applyInverterLook(v);
+        continue;
+      }
+      if (cin && !v.prevIn) rollDice(v);
+      v.prevIn = cin;
+      continue;
+    }
     // Повторювач віддає вхід як є; інвертор — протилежне; збіг вимагає
     // обох бокових входів одразу; розбіжність — рівно одного. Витримка:
     // у повторювача — за кроком ×1/×2/×4/×8, у решти — стала
     let target;
-    if (v.rep >= 3) {
+    if (v.rep === 3 || v.rep === 4) {
       const a = gateSidePowered(v, 1), b = gateSidePowered(v, -1);
       target = v.rep === 4 ? a !== b : a && b;
       // Живий лише один вхід — збіг мовчить: «один — не збіг»
@@ -13136,10 +13231,10 @@ function updateInverters(dt) {
 }
 
 // Відновити збережені інвертори, повторювачі, лічильники, збіги й
-// розбіжності (сумісно зі старими сейвами); шосте поле — вид (0 інвертор /
-// 1 повторювач / 2 лічильник / 3 збіг / 4 розбіжність), сьоме — крок
-// витримки чи мети; стан кристала й рахунок не зберігаються — перший тик
-// переміряє входи тихо
+// розбіжності й жереби (сумісно зі старими сейвами); шосте поле — вид
+// (0 інвертор / 1 повторювач / 2 лічильник / 3 збіг / 4 розбіжність /
+// 5 жереб), сьоме — крок витримки чи мети; стан кристала, рахунок і
+// випалий жереб не зберігаються — перший тик переміряє входи тихо
 if (savedGame && Array.isArray(savedGame.inverters)) {
   for (const e of savedGame.inverters) {
     if (Array.isArray(e) && e.length >= 5) {
@@ -18992,6 +19087,12 @@ function placeBlock() {
     return;
   }
 
+  // Жереб — орган випадку мережі: кожен фронт входу кидає чесну монету
+  if (id === DICE) {
+    placeInverter(hit, 5);
+    return;
+  }
+
   // Кнопка — імпульсний вхід мережі: сигнал живе мить і згасає сам
   if (id === BUTTON) {
     placeButton(hit);
@@ -21319,6 +21420,33 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(12, 11, 1, 1);
     return;
   }
+  if (id === DICE) {
+    // Процедурна іконка жеребу: кам'яна основа, стовпчик з опаловим
+    // кристалом-кісткою (два темні вічка навскоси), задній хвостик входу
+    // й брасова стрілка виходу — монета мережі
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тінь під основою
+    ctx.fillRect(3, 14, 10, 1);
+    ctx.fillStyle = '#6f7680';                 // кам'яна основа
+    ctx.fillRect(3, 12, 10, 2);
+    ctx.fillStyle = '#4a4f57';                 // стовпчик
+    ctx.fillRect(7, 6, 2, 6);
+    ctx.fillStyle = '#c8c2d0';                 // опаловий кристал
+    ctx.fillRect(5, 1, 6, 5);
+    ctx.fillStyle = '#fdf6e3';                 // перламутровий відблиск
+    ctx.fillRect(6, 1, 2, 2);
+    ctx.fillStyle = '#2a2e34';                 // два вічка кістки навскоси
+    ctx.fillRect(8, 2, 1, 1);
+    ctx.fillRect(6, 4, 1, 1);
+    ctx.fillStyle = '#3a3f47';                 // хвостик-маркер входу позаду
+    ctx.fillRect(3, 9, 2, 1);
+    ctx.fillStyle = '#b08a3e';                 // брасова стрілка виходу
+    ctx.fillRect(9, 9, 4, 2);
+    ctx.fillRect(12, 8, 1, 1);
+    ctx.fillRect(12, 11, 1, 1);
+    return;
+  }
   if (id === BUTTON) {
     // Процедурна іконка кнопки: кам'яна основа, темна оправа, червона
     // шапка й золоті дуги імпульсу, що розходяться від натиску
@@ -22940,6 +23068,8 @@ const ACHIEVEMENTS = [
   { id: 'echo',        icon: '📣', title: 'Відлуння пострілу',  desc: 'Стріла стрільця влучила в мішень — мережа почула власний постріл' },
   { id: 'tripwire',    icon: '🪤', title: 'Пастка на стежці',   desc: 'Нечисть чи звір зачепили розтяжку — мережа відчула прохід' },
   { id: 'tripself',    icon: '🤦', title: 'Сам у сильце',       desc: 'Зачепити власну розтяжку — пастка чесна до всіх' },
+  { id: 'dicecast',    icon: '🎲', title: 'Жереб кинуто',       desc: 'Фронт сигналу кинув монету жеребу — мережа спитала долю' },
+  { id: 'dicerun',     icon: '🍀', title: 'Смуга талану',       desc: 'Один жереб тричі поспіль випав «так» — доля всміхнулась' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -25267,14 +25397,16 @@ window.MCDebug = {
     return [...inverters.values()].map((v) =>
       ({ x: v.x, y: v.y, z: v.z, fx: v.fx, fz: v.fz,
          out: v.out === null ? null : !!v.out,
-         kind: v.rep === 4 ? 'розбіжність' : v.rep === 3 ? 'збіг'
+         kind: v.rep === 5 ? 'жереб'
+             : v.rep === 4 ? 'розбіжність' : v.rep === 3 ? 'збіг'
              : v.rep === 2 ? 'лічильник'
              : v.rep ? 'повторювач' : 'інвертор',
          dstep: v.dstep,
          count: v.rep === 2 ? v.count : undefined,
          goal: v.rep === 2 ? COUNTER_GOALS[v.dstep] : undefined,
-         inA: v.rep >= 3 ? gateSidePowered(v, 1) : undefined,
-         inB: v.rep >= 3 ? gateSidePowered(v, -1) : undefined,
+         lucky: v.rep === 5 ? v.lucky : undefined,
+         inA: v.rep === 3 || v.rep === 4 ? gateSidePowered(v, 1) : undefined,
+         inB: v.rep === 3 || v.rep === 4 ? gateSidePowered(v, -1) : undefined,
          input: v.rep === 4
            ? gateSidePowered(v, 1) !== gateSidePowered(v, -1)
            : v.rep === 3
@@ -25328,6 +25460,24 @@ window.MCDebug = {
     if (!v || v.rep !== 4) return null;
     rotateInverter(v);
     return [v.fx, v.fz];
+  },
+  // Жереб (для тестів)
+  giveDice: () => { assignBlockToSlot(DICE); return BLOCK_NAMES[DICE]; },
+  placeDiceAt: (x, y, z, fx = 1, fz = 0) => {
+    if (!powerCellFree(x, y, z)) return false;
+    return addInverter(x, y, z, fx, fz, 5);
+  },
+  rotateDiceAt: (x, y, z) => {
+    const v = inverters.get(inverterKey(x, y, z));
+    if (!v || v.rep !== 5) return null;
+    rotateInverter(v);
+    return [v.fx, v.fz];
+  },
+  rollDiceAt: (x, y, z) => {
+    const v = inverters.get(inverterKey(x, y, z));
+    if (!v || v.rep !== 5) return null;
+    if (v.out === null) { v.out = false; v.lucky = 0; }
+    return rollDice(v);
   },
   // Кнопка (для тестів)
   giveButton: () => { assignBlockToSlot(BUTTON); return BLOCK_NAMES[BUTTON]; },
