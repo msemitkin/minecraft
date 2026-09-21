@@ -452,6 +452,17 @@ const BELL = 91;
 // жереб — пастка, що спрацьовує через раз; жереб + защіпка — випадковий
 // вибір, що тримається. Нове дієслово — кидати жереб.
 const DICE = 92;
+// Чуйник — третій автоматичний «вхід» мережі: та сама кам'яна основа, що
+// в датчика світла, але малиновий кристал-серце чує ЖИВЕ довкола себе.
+// Датчик міряє небо, дощомір — погоду, розтяжка ловить мить проходу — а
+// присутність істоти як СТАН для мережі була невидима. Гравець, звір чи
+// нечисть у радіусі кількох кроків — кристал жевріє малиною і живить
+// мережу, як увімкнений важіль; пішли всі — гасне. ПКМ перемикає режим
+// «пустка» — сигнал, коли поруч нікого (сторожа навпаки: полохлива
+// комора, що замикається, щойно вартовий пес пішов). Дзвін кличе нечисть,
+// чуйник чує, що вона прийшла, — мережа вперше замикає коло «кликати →
+// відчути». Нове дієслово — чути живе.
+const LIFE_SENSOR = 93;
 const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -603,6 +614,7 @@ const BLOCK_NAMES = {
   [LAMP]: 'Сигнальна лампа',
   [SENSOR]: 'Датчик світла',
   [RAIN_SENSOR]: 'Дощомір',
+  [LIFE_SENSOR]: 'Чуйник',
   [INVERTER]: 'Інвертор',
   [REPEATER]: 'Повторювач',
   [COUNTER]: 'Лічильник',
@@ -637,7 +649,7 @@ const ALL_BLOCKS = [
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
-  LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, INVERTER, REPEATER, COUNTER, ANDGATE, XORGATE, DICE, BUTTON, LATCH, TURRET, BELL, PISTON,
+  LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, LIFE_SENSOR, INVERTER, REPEATER, COUNTER, ANDGATE, XORGATE, DICE, BUTTON, LATCH, TURRET, BELL, PISTON,
   STICKY_PISTON, OBSERVER, TARGET, TRIPWIRE, DETECTOR_RAIL, POWER_RAIL,
   SWITCH_RAIL,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
@@ -12496,7 +12508,9 @@ if (savedGame && Array.isArray(savedGame.lamps)) {
 // без опори чи під зайнятою клітинкою — розсипається.
 // Дощомір (kind 1) живе в тому самому реєстрі: та сама основа й ті самі
 // правила, але кристал-чаша чує опади над собою (режим «дощ»/«ясно»).
-const SENSOR_MAX = 32;                 // межа (спільна з дощоміром), щоб збереження не розросталося
+// Чуйник (kind 2) — теж: малиновий кристал-серце чує істот у радіусі
+// кількох кроків (режим «живе»/«пустка») — гравця, звіра й нечисть.
+const SENSOR_MAX = 32;                 // межа (спільна з дощоміром і чуйником), щоб збереження не розросталося
 const SENSOR_DAY_T = 0.15;             // поріг сонця: вище — «день» (як павуки)
 const sensorKey = leverKey;
 
@@ -12524,6 +12538,15 @@ const RAIN_WET_ON_MAT = new THREE.MeshLambertMaterial({
 const RAIN_DRY_MAT = new THREE.MeshLambertMaterial({ color: 0x5e8a6a });
 const RAIN_DRY_ON_MAT = new THREE.MeshLambertMaterial({
   color: 0xb8f0c8, emissive: 0x3ecc7a, emissiveIntensity: 0.9 });
+// Чуйник (kind 2) — той самий прилад, але кристал-серце чує живе: режим
+// «живе» — малина, режим «пустка» — кістяна сірість; активний стан —
+// засвічений варіант того самого кольору
+const LIFE_NEAR_MAT = new THREE.MeshLambertMaterial({ color: 0x8a3e5e });
+const LIFE_NEAR_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xff9fc8, emissive: 0xcc2a6a, emissiveIntensity: 0.9 });
+const LIFE_EMPTY_MAT = new THREE.MeshLambertMaterial({ color: 0x8a8572 });
+const LIFE_EMPTY_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xf0e8c8, emissive: 0xccb63e, emissiveIntensity: 0.9 });
 
 function makeSensorModel() {
   const g = new THREE.Group();
@@ -12541,14 +12564,40 @@ function makeSensorModel() {
 const rainOverhead = (s) =>
   weatherState !== 'clear' && skyOpenAt(s.x, s.y + 1, s.z);
 
+// Радіус, у якому чуйник чує живе (по горизонталі; по вертикалі — вужче,
+// щоб істота поверхом вище не смикала кристал крізь стелю)
+const LIFE_SENSE_R = 3.5;
+
+// Кого чує чуйник: гравця, нечисть чи звіра в радіусі LIFE_SENSE_R.
+// Повертає саму істоту (для досягнень) або null; розтяжка ловить мить
+// проходу в одній клітинці — чуйник тримає СТАН присутності околиці
+function sensedCreature(s) {
+  const cx = s.x + 0.5, cz = s.z + 0.5;
+  const near = (p) => Math.hypot(p.x - cx, p.z - cz) <= LIFE_SENSE_R &&
+                      p.y > s.y - 1.5 && p.y < s.y + 2.5;
+  if (!player.dead && near(player.pos)) return player;
+  for (const m of mobs) if (near(m.pos)) return m;
+  for (const a of animals) if (near(a.pos)) return a;
+  return null;
+}
+
 // Чи «бачить» датчик своє: світло (kind 0) — час доби (mode 0 — день,
-// 1 — ніч); дощомір (kind 1) — опади на чаші (mode 0 — дощ, 1 — ясно)
-const sensorActive = (s) => s.kind === 1
+// 1 — ніч); дощомір (kind 1) — опади на чаші (mode 0 — дощ, 1 — ясно);
+// чуйник (kind 2) — істоти поруч (mode 0 — живе, 1 — пустка)
+const sensorActive = (s) => s.kind === 2
+  ? (s.mode === 1 ? !sensedCreature(s) : !!sensedCreature(s))
+  : s.kind === 1
   ? (s.mode === 1 ? !rainOverhead(s) : rainOverhead(s))
   : (s.mode === 1 ? dayNightSun <= SENSOR_DAY_T : dayNightSun > SENSOR_DAY_T);
 
 // Кристал міняє колір за видом, режимом і станом
 function applySensorLook(s) {
+  if (s.kind === 2) {
+    s.eye.material = s.mode === 1
+      ? (s.active ? LIFE_EMPTY_ON_MAT : LIFE_EMPTY_MAT)
+      : (s.active ? LIFE_NEAR_ON_MAT : LIFE_NEAR_MAT);
+    return;
+  }
   if (s.kind === 1) {
     s.eye.material = s.mode === 1
       ? (s.active ? RAIN_DRY_ON_MAT : RAIN_DRY_MAT)
@@ -12569,7 +12618,7 @@ function addSensor(x, y, z, mode = 0, kind = 0) {
   g.position.set(x + 0.5, y, z + 0.5);
   scene.add(g);
   const s = { x, y, z, group: g, eye, mode: mode === 1 ? 1 : 0,
-              kind: kind === 1 ? 1 : 0, active: null };
+              kind: kind === 1 || kind === 2 ? kind : 0, active: null };
   applySensorLook(s);
   sensors.set(key, s);
   refreshWiresAround(x, y, z);
@@ -12594,14 +12643,15 @@ function breakSensor(key) {
 }
 
 // Поставити датчик у клітинку перед прицілом (лише на тверду підлогу);
-// kind 1 — дощомір: та сама основа, але кристал-чаша чує опади
+// kind 1 — дощомір: та сама основа, але кристал-чаша чує опади;
+// kind 2 — чуйник: кристал-серце чує істот поруч
 function placeSensor(hit, kind = 0) {
   const [x, y, z] = hit.prev;
   if (!powerCellFree(x, y, z)) return false;
   if (!addSensor(x, y, z, 0, kind)) return false;
   Sound.place(GLASS);
   spawnParticles(x + 0.5, y + 0.25, z + 0.5,
-    new THREE.Color(kind === 1 ? 0x3e6d8a : 0xb08a3e), 6,
+    new THREE.Color(kind === 2 ? 0x8a3e5e : kind === 1 ? 0x3e6d8a : 0xb08a3e), 6,
     { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
   return true;
 }
@@ -12613,12 +12663,18 @@ function toggleSensorMode(s) {
   s.active = null;
   applySensorLook(s);
   Sound.lever(s.mode === 1);
-  const sparkColor = s.kind === 1
+  const sparkColor = s.kind === 2
+    ? (s.mode === 1 ? 0xf0e8c8 : 0xff9fc8)
+    : s.kind === 1
     ? (s.mode === 1 ? 0xb8f0c8 : 0x9fdcff)
     : (s.mode === 1 ? 0xa8c4ff : 0xffe08a);
   spawnParticles(s.x + 0.5, s.y + 0.3, s.z + 0.5, new THREE.Color(sparkColor), 4,
     { radius: 0.15, speed: 0.9, upBias: 0.8, life: 0.4, size: 0.07, gravity: 2 });
-  flashItemName(s.kind === 1
+  flashItemName(s.kind === 2
+    ? (s.mode === 1
+      ? '🕯️ Чуйник: режим «пустка» — сигнал, коли поруч нікого'
+      : '🐾 Чуйник: режим «живе» — сигнал, коли поруч є істота')
+    : s.kind === 1
     ? (s.mode === 1
       ? '🌂 Дощомір: режим «ясно» — сигнал за сухого неба'
       : '☔ Дощомір: режим «дощ» — сигнал під опадами')
@@ -12666,7 +12722,9 @@ function updateSensors(dt) {
     applySensorLook(s);
     Sound.sensor(now);
     if (now) {
-      const sparkColor = s.kind === 1
+      const sparkColor = s.kind === 2
+        ? (s.mode === 1 ? 0xf0e8c8 : 0xff9fc8)
+        : s.kind === 1
         ? (s.mode === 1 ? 0xb8f0c8 : 0x9fdcff)
         : (s.mode === 1 ? 0xa8c4ff : 0xffd54a);
       spawnParticles(s.x + 0.5, s.y + 0.3, s.z + 0.5,
@@ -12676,9 +12734,21 @@ function updateSensors(dt) {
       const struck = powerNotesAround(s.x, s.y, s.z);
       for (const n of struck) strikeNote(n);
       igniteTntAround(s.x, s.y, s.z);
-      if (sensorFeedsNetwork(s)) unlockAch(s.kind === 1 ? 'raingauge' : 'sensor');
+      if (sensorFeedsNetwork(s)) {
+        unlockAch(s.kind === 2 ? 'lifesense' : s.kind === 1 ? 'raingauge' : 'sensor');
+      }
       // Дощомір ударив по нотному блоку — штормове попередження пробило
       if (s.kind === 1 && struck.length > 0) unlockAch('stormbell');
+      // Чуйник відчув нечисть, що йде на передзвін, — коло «дзвін кличе →
+      // мережа чує» замкнулось (режим «живе»: спрацювання і є відчуттям)
+      if (s.kind === 2 && s.mode === 0) {
+        const cx = s.x + 0.5, cz = s.z + 0.5;
+        for (const m of mobs) {
+          if (Math.hypot(m.pos.x - cx, m.pos.z - cz) <= LIFE_SENSE_R &&
+              m.pos.y > s.y - 1.5 && m.pos.y < s.y + 2.5 &&
+              nearestRingingBell(m.pos)) { unlockAch('belltrap'); break; }
+        }
+      }
     }
   }
 }
@@ -19056,6 +19126,12 @@ function placeBlock() {
     return;
   }
 
+  // Чуйник — третій автоматичний вхід: живить мережу, коли поруч є істота
+  if (id === LIFE_SENSOR) {
+    placeSensor(hit, 2);
+    return;
+  }
+
   // Інвертор — логічний елемент мережі: віддає протилежне до входу позаду
   if (id === INVERTER) {
     placeInverter(hit);
@@ -21282,6 +21358,32 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(10, 4, 1, 2);
     return;
   }
+  if (id === LIFE_SENSOR) {
+    // Процедурна іконка чуйника: кам'яна основа, малиновий кристал-серце,
+    // сердечко з пульсом угорі — живе, яке прилад чує
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тінь під основою
+    ctx.fillRect(2, 14, 12, 1);
+    ctx.fillStyle = '#6f7680';                 // кам'яна основа
+    ctx.fillRect(2, 12, 12, 2);
+    ctx.fillStyle = '#4a4f57';                 // темна оправа
+    ctx.fillRect(3, 10, 10, 2);
+    ctx.fillStyle = '#8a3e5e';                 // кристал-серце
+    ctx.fillRect(4, 7, 8, 3);
+    ctx.fillStyle = '#ff9fc8';                 // відблиск кристала
+    ctx.fillRect(5, 7, 3, 1);
+    ctx.fillStyle = '#cc2a5e';                 // сердечко вгорі
+    ctx.fillRect(6, 1, 2, 2);
+    ctx.fillRect(9, 1, 2, 2);
+    ctx.fillRect(6, 3, 5, 1);
+    ctx.fillRect(7, 4, 3, 1);
+    ctx.fillRect(8, 5, 1, 1);
+    ctx.fillStyle = '#ffd0e0';                 // риска пульсу
+    ctx.fillRect(2, 3, 2, 1);
+    ctx.fillRect(12, 3, 2, 1);
+    return;
+  }
   if (id === INVERTER) {
     // Процедурна іконка інвертора: кам'яна основа, стовпчик із бузковим
     // кристалом, брасова стрілка виходу й перекреслена іскра входу
@@ -23070,6 +23172,8 @@ const ACHIEVEMENTS = [
   { id: 'tripself',    icon: '🤦', title: 'Сам у сильце',       desc: 'Зачепити власну розтяжку — пастка чесна до всіх' },
   { id: 'dicecast',    icon: '🎲', title: 'Жереб кинуто',       desc: 'Фронт сигналу кинув монету жеребу — мережа спитала долю' },
   { id: 'dicerun',     icon: '🍀', title: 'Смуга талану',       desc: 'Один жереб тричі поспіль випав «так» — доля всміхнулась' },
+  { id: 'lifesense',   icon: '🐾', title: 'Чуйне серце',        desc: 'Чуйник сам подав сигнал у мережу — мережа відчула живе' },
+  { id: 'belltrap',    icon: '🎣', title: 'Пастка на живця',    desc: 'Чуйник відчув нечисть, заворожену дзвоном, — коло «кликати → чути» замкнулось' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -25362,8 +25466,9 @@ window.MCDebug = {
   get sensorInfo() {
     return [...sensors.values()].map((s) =>
       ({ x: s.x, y: s.y, z: s.z,
-         kind: s.kind === 1 ? 'дощомір' : 'світло',
-         mode: s.kind === 1 ? (s.mode === 1 ? 'ясно' : 'дощ')
+         kind: s.kind === 2 ? 'чуйник' : s.kind === 1 ? 'дощомір' : 'світло',
+         mode: s.kind === 2 ? (s.mode === 1 ? 'пустка' : 'живе')
+             : s.kind === 1 ? (s.mode === 1 ? 'ясно' : 'дощ')
                             : (s.mode === 1 ? 'ніч' : 'день'),
          active: !!s.active }));
   },
@@ -25371,6 +25476,13 @@ window.MCDebug = {
   giveRainSensor: () => { assignBlockToSlot(RAIN_SENSOR); return BLOCK_NAMES[RAIN_SENSOR]; },
   placeRainSensorAt: (x, y, z, mode = 0) => {
     if (!placeSensor({ prev: [x, y, z] }, 1)) return false;
+    if (mode === 1) toggleSensorMode(sensors.get(sensorKey(x, y, z)));
+    return true;
+  },
+  // Чуйник (для тестів)
+  giveLifeSensor: () => { assignBlockToSlot(LIFE_SENSOR); return BLOCK_NAMES[LIFE_SENSOR]; },
+  placeLifeSensorAt: (x, y, z, mode = 0) => {
+    if (!placeSensor({ prev: [x, y, z] }, 2)) return false;
     if (mode === 1) toggleSensorMode(sensors.get(sensorKey(x, y, z)));
     return true;
   },
