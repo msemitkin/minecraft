@@ -474,6 +474,17 @@ const LIFE_SENSOR = 93;
 // важіль + міх над ямою — рів, якого не перейти. ПКМ по міху повертає
 // подих на чверть оберту. Нове дієслово — дути.
 const FAN = 94;
+// Вухо — четвертий автоматичний «вхід» мережі й перший БЕЗДРОТОВИЙ: та сама
+// кам'яна основа, що в датчика світла, але аметистовий кристал-вушко чує
+// ЗВУК довкола себе. Мережа давно шумить — нота грає, дзвін кличе, стрілець
+// клацає тятивою, динаміт гримить — а сама до власного голосу була глуха.
+// Пролунав звук у радіусі чутності (вибух чути вдвічі далі) — кристал
+// спалахує фіалкою і живить мережу, як увімкнений важіль, ще мить після
+// луни; стихло — гасне. ПКМ перемикає режим «тиша» — сигнал, коли довкола
+// тихо (полохлива комора: замикається від першого ж гуркоту). Кнопка + нота
+// в одній хаті, вухо + двері в іншій — сигнал уперше долає повітря без
+// жодної линви. Нове дієслово — чути звук.
+const EAR = 95;
 const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -626,6 +637,7 @@ const BLOCK_NAMES = {
   [SENSOR]: 'Датчик світла',
   [RAIN_SENSOR]: 'Дощомір',
   [LIFE_SENSOR]: 'Чуйник',
+  [EAR]: 'Вухо',
   [INVERTER]: 'Інвертор',
   [REPEATER]: 'Повторювач',
   [COUNTER]: 'Лічильник',
@@ -661,7 +673,7 @@ const ALL_BLOCKS = [
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
-  LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, LIFE_SENSOR, INVERTER, REPEATER, COUNTER, ANDGATE, XORGATE, DICE, BUTTON, LATCH, TURRET, BELL, PISTON,
+  LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, LIFE_SENSOR, EAR, INVERTER, REPEATER, COUNTER, ANDGATE, XORGATE, DICE, BUTTON, LATCH, TURRET, BELL, PISTON,
   STICKY_PISTON, FAN, OBSERVER, TARGET, TRIPWIRE, DETECTOR_RAIL, POWER_RAIL,
   SWITCH_RAIL,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
@@ -8147,6 +8159,7 @@ function explode(cx, cy, cz, cause = 'tnt') {
   validateOysters();   // ... і дно устриць
   validateCactusFruits(); // ... і кактус під плодом
   Sound.explosion();
+  pingSound(cx, cy, cz, 'boom', EAR_HEAR_R * 2);   // грім чути вдвічі далі
   knockback(player, cx, cy, cz);
   for (const a of animals) knockback(a, cx, cy, cz);
 
@@ -11662,6 +11675,7 @@ function placeNote(hit) {
 // Удар по блоку: щипок тону, пружний підскок і нота в колір висоти звуку
 function strikeNote(n) {
   Sound.note(n.pitch);
+  pingSound(n.x + 0.5, n.y, n.z + 0.5, 'note');
   n.kick = 1;
   const color = new THREE.Color().setHSL((n.pitch / NOTE_PITCHES) * 0.85, 0.75, 0.62);
   spawnParticles(n.x + 0.5, n.y + 0.85, n.z + 0.5, color, 3,
@@ -12541,7 +12555,10 @@ if (savedGame && Array.isArray(savedGame.lamps)) {
 // правила, але кристал-чаша чує опади над собою (режим «дощ»/«ясно»).
 // Чуйник (kind 2) — теж: малиновий кристал-серце чує істот у радіусі
 // кількох кроків (режим «живе»/«пустка») — гравця, звіра й нечисть.
-const SENSOR_MAX = 32;                 // межа (спільна з дощоміром і чуйником), щоб збереження не розросталося
+// Вухо (kind 3) — теж: аметистовий кристал-вушко чує ЗВУК — ноту, дзвін,
+// постріл стрільця й вибух (той — удвічі далі) — і тримає сигнал ще мить
+// після луни (режим «луна»/«тиша»). Перший бездротовий вхід мережі.
+const SENSOR_MAX = 32;                 // межа (спільна з дощоміром, чуйником і вухом), щоб збереження не розросталося
 const SENSOR_DAY_T = 0.15;             // поріг сонця: вище — «день» (як павуки)
 const sensorKey = leverKey;
 
@@ -12578,6 +12595,15 @@ const LIFE_NEAR_ON_MAT = new THREE.MeshLambertMaterial({
 const LIFE_EMPTY_MAT = new THREE.MeshLambertMaterial({ color: 0x8a8572 });
 const LIFE_EMPTY_ON_MAT = new THREE.MeshLambertMaterial({
   color: 0xf0e8c8, emissive: 0xccb63e, emissiveIntensity: 0.9 });
+// Вухо (kind 3) — той самий прилад, але кристал-вушко чує звук: режим
+// «луна» — аметистова фіалка, режим «тиша» — присмеркова сірість; активний
+// стан — засвічений варіант того самого кольору
+const EAR_ECHO_MAT = new THREE.MeshLambertMaterial({ color: 0x6a4e8a });
+const EAR_ECHO_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xd8b8ff, emissive: 0x8a3ecc, emissiveIntensity: 0.9 });
+const EAR_HUSH_MAT = new THREE.MeshLambertMaterial({ color: 0x6e7480 });
+const EAR_HUSH_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xdde4f0, emissive: 0x8a9acc, emissiveIntensity: 0.9 });
 
 function makeSensorModel() {
   const g = new THREE.Group();
@@ -12612,10 +12638,43 @@ function sensedCreature(s) {
   return null;
 }
 
+// Луна світу для вуха: гучні звуки гри (нота, дзвін, постріл стрільця,
+// вибух) лишають у цьому списку короткий «відбиток» — позицію, вид і
+// радіус чутності. Вуха читають список щотика в updateSensors і той же
+// тик його спорожняють; без вух список теж чиститься — не росте дарма.
+const EAR_HEAR_R = 8;                  // радіус чутності звуку, клітинок
+const EAR_HEAR_Y = 4.5;                // вертикальне вікно чутності (± клітинок)
+const EAR_HOLD = 1.2;                  // скільки секунд кристал тримає луну
+const EAR_FAR_D = 5;                   // «здалеку» для досягнення — від стількох кроків
+const SOUND_PING_MAX = 64;             // стеля списку на тик (проти лавини вибухів)
+const soundPings = [];
+function pingSound(x, y, z, kind, r = EAR_HEAR_R) {
+  if (soundPings.length >= SOUND_PING_MAX) return;
+  soundPings.push({ x, y, z, kind, r });
+}
+
+// Чи долетіла до вуха хоч одна луна цього тика; найдальша чутна — у
+// s.heardD/heardKind (для досягнення «сигнал здолав повітря без линви»)
+function earHears(s) {
+  const cx = s.x + 0.5, cz = s.z + 0.5;
+  let heard = false;
+  for (const p of soundPings) {
+    if (Math.abs(p.y - s.y) > EAR_HEAR_Y) continue;
+    const d = Math.hypot(p.x - cx, p.z - cz);
+    if (d > p.r) continue;
+    if (!heard || d > s.heardD) { s.heardD = d; s.heardKind = p.kind; }
+    heard = true;
+  }
+  return heard;
+}
+
 // Чи «бачить» датчик своє: світло (kind 0) — час доби (mode 0 — день,
 // 1 — ніч); дощомір (kind 1) — опади на чаші (mode 0 — дощ, 1 — ясно);
-// чуйник (kind 2) — істоти поруч (mode 0 — живе, 1 — пустка)
-const sensorActive = (s) => s.kind === 2
+// чуйник (kind 2) — істоти поруч (mode 0 — живе, 1 — пустка);
+// вухо (kind 3) — недавня луна (mode 0 — луна, 1 — тиша)
+const sensorActive = (s) => s.kind === 3
+  ? (s.mode === 1 ? s.heardT <= 0 : s.heardT > 0)
+  : s.kind === 2
   ? (s.mode === 1 ? !sensedCreature(s) : !!sensedCreature(s))
   : s.kind === 1
   ? (s.mode === 1 ? !rainOverhead(s) : rainOverhead(s))
@@ -12623,6 +12682,12 @@ const sensorActive = (s) => s.kind === 2
 
 // Кристал міняє колір за видом, режимом і станом
 function applySensorLook(s) {
+  if (s.kind === 3) {
+    s.eye.material = s.mode === 1
+      ? (s.active ? EAR_HUSH_ON_MAT : EAR_HUSH_MAT)
+      : (s.active ? EAR_ECHO_ON_MAT : EAR_ECHO_MAT);
+    return;
+  }
   if (s.kind === 2) {
     s.eye.material = s.mode === 1
       ? (s.active ? LIFE_EMPTY_ON_MAT : LIFE_EMPTY_MAT)
@@ -12649,7 +12714,8 @@ function addSensor(x, y, z, mode = 0, kind = 0) {
   g.position.set(x + 0.5, y, z + 0.5);
   scene.add(g);
   const s = { x, y, z, group: g, eye, mode: mode === 1 ? 1 : 0,
-              kind: kind === 1 || kind === 2 ? kind : 0, active: null };
+              kind: kind >= 1 && kind <= 3 ? kind : 0, active: null,
+              heardT: 0, heardD: 0, heardKind: null };
   applySensorLook(s);
   sensors.set(key, s);
   refreshWiresAround(x, y, z);
@@ -12675,14 +12741,15 @@ function breakSensor(key) {
 
 // Поставити датчик у клітинку перед прицілом (лише на тверду підлогу);
 // kind 1 — дощомір: та сама основа, але кристал-чаша чує опади;
-// kind 2 — чуйник: кристал-серце чує істот поруч
+// kind 2 — чуйник: кристал-серце чує істот поруч;
+// kind 3 — вухо: кристал-вушко чує звук околиці
 function placeSensor(hit, kind = 0) {
   const [x, y, z] = hit.prev;
   if (!powerCellFree(x, y, z)) return false;
   if (!addSensor(x, y, z, 0, kind)) return false;
   Sound.place(GLASS);
   spawnParticles(x + 0.5, y + 0.25, z + 0.5,
-    new THREE.Color(kind === 2 ? 0x8a3e5e : kind === 1 ? 0x3e6d8a : 0xb08a3e), 6,
+    new THREE.Color(kind === 3 ? 0x6a4e8a : kind === 2 ? 0x8a3e5e : kind === 1 ? 0x3e6d8a : 0xb08a3e), 6,
     { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
   return true;
 }
@@ -12694,14 +12761,20 @@ function toggleSensorMode(s) {
   s.active = null;
   applySensorLook(s);
   Sound.lever(s.mode === 1);
-  const sparkColor = s.kind === 2
+  const sparkColor = s.kind === 3
+    ? (s.mode === 1 ? 0xdde4f0 : 0xd8b8ff)
+    : s.kind === 2
     ? (s.mode === 1 ? 0xf0e8c8 : 0xff9fc8)
     : s.kind === 1
     ? (s.mode === 1 ? 0xb8f0c8 : 0x9fdcff)
     : (s.mode === 1 ? 0xa8c4ff : 0xffe08a);
   spawnParticles(s.x + 0.5, s.y + 0.3, s.z + 0.5, new THREE.Color(sparkColor), 4,
     { radius: 0.15, speed: 0.9, upBias: 0.8, life: 0.4, size: 0.07, gravity: 2 });
-  flashItemName(s.kind === 2
+  flashItemName(s.kind === 3
+    ? (s.mode === 1
+      ? '🤫 Вухо: режим «тиша» — сигнал, поки довкола тихо'
+      : '👂 Вухо: режим «луна» — сигнал, поки чути звук')
+    : s.kind === 2
     ? (s.mode === 1
       ? '🕯️ Чуйник: режим «пустка» — сигнал, коли поруч нікого'
       : '🐾 Чуйник: режим «живе» — сигнал, коли поруч є істота')
@@ -12735,12 +12808,17 @@ function sensorFeedsNetwork(s) {
 // Тик датчиків: опора, замір неба й фронт спрацювання — перед updatePower,
 // щоб мережа цього ж кадру бачила свіжий стан
 function updateSensors(dt) {
-  if (sensors.size === 0) return;
+  if (sensors.size === 0) { soundPings.length = 0; return; }
   for (const [key, s] of sensors) {
     // Блок зайняв клітинку чи зникла опора — розібрати
     if (isSolid(blockAt(s.x, s.y, s.z)) || !isSolid(blockAt(s.x, s.y - 1, s.z))) {
       breakSensor(key);
       continue;
+    }
+    // Вухо: луна цього тика заводить (чи подовжує) утримання кристала
+    if (s.kind === 3) {
+      s.heardT = Math.max(0, s.heardT - dt);
+      if (soundPings.length > 0 && earHears(s)) s.heardT = EAR_HOLD;
     }
     const now = sensorActive(s);
     if (s.active === null) {           // перший замір — тихо
@@ -12753,7 +12831,9 @@ function updateSensors(dt) {
     applySensorLook(s);
     Sound.sensor(now);
     if (now) {
-      const sparkColor = s.kind === 2
+      const sparkColor = s.kind === 3
+        ? (s.mode === 1 ? 0xdde4f0 : 0xd8b8ff)
+        : s.kind === 2
         ? (s.mode === 1 ? 0xf0e8c8 : 0xff9fc8)
         : s.kind === 1
         ? (s.mode === 1 ? 0xb8f0c8 : 0x9fdcff)
@@ -12766,8 +12846,11 @@ function updateSensors(dt) {
       for (const n of struck) strikeNote(n);
       igniteTntAround(s.x, s.y, s.z);
       if (sensorFeedsNetwork(s)) {
-        unlockAch(s.kind === 2 ? 'lifesense' : s.kind === 1 ? 'raingauge' : 'sensor');
+        unlockAch(s.kind === 3 ? 'earwire' : s.kind === 2 ? 'lifesense' : s.kind === 1 ? 'raingauge' : 'sensor');
       }
+      // Вухо почуло звук здалеку (режим «луна») — сигнал здолав повітря
+      // без жодної линви: перший бездротовий зв'язок мережі
+      if (s.kind === 3 && s.mode === 0 && s.heardD >= EAR_FAR_D) unlockAch('farecho');
       // Дощомір ударив по нотному блоку — штормове попередження пробило
       if (s.kind === 1 && struck.length > 0) unlockAch('stormbell');
       // Чуйник відчув нечисть, що йде на передзвін, — коло «дзвін кличе →
@@ -12782,6 +12865,8 @@ function updateSensors(dt) {
       }
     }
   }
+  // Луна цього тика відлунала: список чистий до наступних звуків
+  soundPings.length = 0;
 }
 
 // Відновити збережені датчики (сумісно зі старими сейвами); стан «активний»
@@ -13852,6 +13937,7 @@ function fireTurret(t) {
   arrows.push(a);
   t.kick = TURRET_KICK;
   Sound.turret();
+  pingSound(t.x + 0.5, t.y, t.z + 0.5, 'shot');
   unlockAch('turret');
   spawnParticles(a.pos.x, a.pos.y, a.pos.z, new THREE.Color(0xd8dde4), 3,
     { radius: 0.12, speed: 1.1, upBias: 0.5, life: 0.3, size: 0.06, gravity: 4 });
@@ -14038,6 +14124,7 @@ function ringBell(b) {
   b.swing = BELL_RING_TIME;
   b.lure = BELL_LURE_TIME;
   Sound.bell();
+  pingSound(b.x + 0.5, b.y, b.z + 0.5, 'bell');
   unlockAch('bell');
   spawnParticles(b.x + 0.5, b.y + 0.55, b.z + 0.5, BELL_RING_COLOR, 6,
     { radius: 0.3, speed: 1.4, upBias: 0.7, life: 0.5, size: 0.09, gravity: 2 });
@@ -19423,6 +19510,13 @@ function placeBlock() {
     return;
   }
 
+  // Вухо — четвертий автоматичний вхід і перший бездротовий: живить мережу,
+  // поки чує звук — ноту, дзвін, постріл стрільця чи вибух
+  if (id === EAR) {
+    placeSensor(hit, 3);
+    return;
+  }
+
   // Інвертор — логічний елемент мережі: віддає протилежне до входу позаду
   if (id === INVERTER) {
     placeInverter(hit);
@@ -21681,6 +21775,34 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(12, 3, 2, 1);
     return;
   }
+  if (id === EAR) {
+    // Процедурна іконка вуха: кам'яна основа, аметистовий кристал-вушко,
+    // дужки луни збоку — звук, що долітає до приладу
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тінь під основою
+    ctx.fillRect(2, 14, 12, 1);
+    ctx.fillStyle = '#6f7680';                 // кам'яна основа
+    ctx.fillRect(2, 12, 12, 2);
+    ctx.fillStyle = '#4a4f57';                 // темна оправа
+    ctx.fillRect(3, 10, 10, 2);
+    ctx.fillStyle = '#6a4e8a';                 // кристал-вушко
+    ctx.fillRect(4, 7, 8, 3);
+    ctx.fillStyle = '#d8b8ff';                 // відблиск кристала
+    ctx.fillRect(5, 7, 3, 1);
+    ctx.fillStyle = '#b48ae8';                 // нота, що летить до вуха
+    ctx.fillRect(6, 2, 1, 3);
+    ctx.fillRect(7, 2, 2, 1);
+    ctx.fillRect(5, 4, 1, 2);
+    ctx.fillStyle = '#8a6ac9';                 // дужки луни
+    ctx.fillRect(11, 2, 1, 1);
+    ctx.fillRect(12, 3, 1, 2);
+    ctx.fillRect(11, 5, 1, 1);
+    ctx.fillRect(13, 1, 1, 1);
+    ctx.fillRect(14, 2, 1, 4);
+    ctx.fillRect(13, 6, 1, 1);
+    return;
+  }
   if (id === INVERTER) {
     // Процедурна іконка інвертора: кам'яна основа, стовпчик із бузковим
     // кристалом, брасова стрілка виходу й перекреслена іскра входу
@@ -23500,6 +23622,8 @@ const ACHIEVEMENTS = [
   { id: 'belltrap',    icon: '🎣', title: 'Пастка на живця',    desc: 'Чуйник відчув нечисть, заворожену дзвоном, — коло «кликати → чути» замкнулось' },
   { id: 'gust',        icon: '💨', title: 'Протяг',             desc: 'Міх під напругою зніс істоту — мережа вперше штовхнула тіло' },
   { id: 'windblown',   icon: '🪁', title: 'Здуло з ніг',        desc: 'Потік міха відніс вас самих — вітер не розбирає, хто тут господар' },
+  { id: 'earwire',     icon: '👂', title: 'Тонкий слух',        desc: 'Вухо саме подало сигнал у мережу — мережа почула звук' },
+  { id: 'farecho',     icon: '📡', title: 'Луна без линви',     desc: 'Вухо почуло звук за 5 і більше кроків — сигнал уперше здолав повітря без дроту' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -25812,6 +25936,21 @@ window.MCDebug = {
     if (mode === 1) toggleSensorMode(sensors.get(sensorKey(x, y, z)));
     return true;
   },
+  // Вухо (для тестів)
+  giveEar: () => { assignBlockToSlot(EAR); return BLOCK_NAMES[EAR]; },
+  placeEarAt: (x, y, z, mode = 0) => {
+    if (!placeSensor({ prev: [x, y, z] }, 3)) return false;
+    if (mode === 1) toggleSensorMode(sensors.get(sensorKey(x, y, z)));
+    return true;
+  },
+  pingSoundAt: (x, y, z, kind = 'note', r = EAR_HEAR_R) => {
+    pingSound(x + 0.5, y, z + 0.5, kind, r);
+    return true;
+  },
+  earInfo: () => [...sensors.values()].filter((s) => s.kind === 3).map((s) =>
+    ({ x: s.x, y: s.y, z: s.z, mode: s.mode, active: s.active,
+       heardT: +s.heardT.toFixed(2), heardKind: s.heardKind,
+       heardD: +s.heardD.toFixed(2) })),
   setWeather: (state = 'rain', dur = 60) => {
     if (state !== 'rain' && state !== 'snow' && state !== 'clear') return false;
     weatherState = state;
