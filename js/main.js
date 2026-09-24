@@ -485,6 +485,18 @@ const FAN = 94;
 // в одній хаті, вухо + двері в іншій — сигнал уперше долає повітря без
 // жодної линви. Нове дієслово — чути звук.
 const EAR = 95;
+// Шлюз — перший вихід мережі, що править СТИХІЄЮ: кам'яна арка з дубовою
+// заслінкою й мідним жолобом-носиком. Поки на вході позаду (сходинки ±1,
+// як у міха) є сигнал — заслінка піднята і з жолоба ллється СПРАВЖНЄ джерело
+// води в клітинку попереду: потік тече, гасить полум'я, зустрічає лаву
+// каменем — усе, що вміє вода з відра, тепер робить мережа. Сигнал зник —
+// заслінка падає, шлюз забирає своє джерело назад, і потоки чесно висихають.
+// Мережа рухала блоки, штовхала тіла, кликала розум — а стихій світу ще
+// ніколи не торкалася: вода досі текла лише туди, куди її вилило відро в
+// руці. Важіль + шлюз — рів, що вмикається; кнопка + шлюз над лавою —
+// каменярня мережі; плита + шлюз — душ, що сам гасить палаючого гостя.
+// ПКМ по шлюзу повертає жолоб на чверть оберту. Нове дієслово — лити воду.
+const SLUICE = 96;
 const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -646,6 +658,7 @@ const BLOCK_NAMES = {
   [DICE]: 'Жереб',
   [BELL]: 'Дзвін',
   [FAN]: 'Міх',
+  [SLUICE]: 'Шлюз',
   [BUTTON]: 'Кнопка',
   [LATCH]: 'Защіпка',
   [TURRET]: 'Стрілець',
@@ -674,7 +687,7 @@ const ALL_BLOCKS = [
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
   LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, LIFE_SENSOR, EAR, INVERTER, REPEATER, COUNTER, ANDGATE, XORGATE, DICE, BUTTON, LATCH, TURRET, BELL, PISTON,
-  STICKY_PISTON, FAN, OBSERVER, TARGET, TRIPWIRE, DETECTOR_RAIL, POWER_RAIL,
+  STICKY_PISTON, FAN, SLUICE, OBSERVER, TARGET, TRIPWIRE, DETECTOR_RAIL, POWER_RAIL,
   SWITCH_RAIL,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
@@ -981,6 +994,8 @@ function saveGame() {
       pistons: [...pistons.values()].map((p) =>
         [p.x, p.y, p.z, p.fx, p.fz, p.extended ? 1 : 0, p.sticky ? 1 : 0]),
       fans: [...fans.values()].map((f) => [f.x, f.y, f.z, f.fx, f.fz]),
+      sluices: [...sluices.values()].map((s) =>
+        [s.x, s.y, s.z, s.fx, s.fz, s.poured ? 1 : 0]),
       observers: [...observers.values()].map((ob) =>
         [ob.x, ob.y, ob.z, ob.fx, ob.fz]),
       targets: [...targets.values()].map((t) =>
@@ -2099,6 +2114,8 @@ function lavaMeetsWater(x, y, z, id) {
       spawnParticles(x + 0.5, y + 0.9, z + 0.5, SMOKE_COLOR, 8,
         { radius: 0.4, speed: 1.2, upBias: 1.4, life: 0.9, size: 0.14, gravity: -4 });
       Sound.lavaHiss();
+      // Камінь скувала вода з відкритого шлюзу неподалік — досягнення
+      if (sluices.size > 0) sluiceStoneFormed(x, y, z);
       return true;
     }
   }
@@ -7334,7 +7351,7 @@ function startBreakOrAttack() {
       plates.size > 0 || notes.size > 0 || chests.size > 0 ||
       levers.size > 0 || wires.size > 0 || lamps.size > 0 || sensors.size > 0 ||
       inverters.size > 0 || buttons.size > 0 || latches.size > 0 ||
-      turrets.size > 0 || bells.size > 0 || pistons.size > 0 || fans.size > 0 || observers.size > 0 ||
+      turrets.size > 0 || bells.size > 0 || pistons.size > 0 || fans.size > 0 || sluices.size > 0 || observers.size > 0 ||
       targets.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
@@ -7485,6 +7502,11 @@ function startBreakOrAttack() {
       }
       if (fans.has(key)) {
         breakFan(key);
+        triggerSwing();
+        return;
+      }
+      if (sluices.has(key)) {
+        breakSluice(key);
         triggerSwing();
         return;
       }
@@ -8664,7 +8686,7 @@ function placeTorch(hit) {
       inverters.has(torchKey(x, y, z)) ||
       buttons.has(torchKey(x, y, z)) ||
       latches.has(torchKey(x, y, z)) || turrets.has(torchKey(x, y, z)) || bells.has(torchKey(x, y, z)) ||
-      pistons.has(torchKey(x, y, z)) || fans.has(torchKey(x, y, z)) ||
+      pistons.has(torchKey(x, y, z)) || fans.has(torchKey(x, y, z)) || sluices.has(torchKey(x, y, z)) ||
       observers.has(torchKey(x, y, z)) || targets.has(torchKey(x, y, z)) || tripwires.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
@@ -8836,7 +8858,7 @@ function placeLadder(hit) {
       inverters.has(ladderKey(x, y, z)) ||
       buttons.has(ladderKey(x, y, z)) ||
       latches.has(ladderKey(x, y, z)) || turrets.has(ladderKey(x, y, z)) || bells.has(ladderKey(x, y, z)) ||
-      pistons.has(ladderKey(x, y, z)) || fans.has(ladderKey(x, y, z)) ||
+      pistons.has(ladderKey(x, y, z)) || fans.has(ladderKey(x, y, z)) || sluices.has(ladderKey(x, y, z)) ||
       observers.has(ladderKey(x, y, z)) || targets.has(ladderKey(x, y, z)) || tripwires.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
@@ -9049,7 +9071,7 @@ function placeDoor(hit) {
         beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
         lightningRods.has(k) ||
         mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -9318,7 +9340,7 @@ function fenceCellFree(x, y, z) {
          !lightningRods.has(k) &&
          !mushrooms.has(k) && !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
          !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k) && !inverters.has(k) && !buttons.has(k) &&
-         !latches.has(k) && !turrets.has(k) && !bells.has(k) && !pistons.has(k) && !fans.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
+         !latches.has(k) && !turrets.has(k) && !bells.has(k) && !pistons.has(k) && !fans.has(k) && !sluices.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -9497,7 +9519,7 @@ function plantCrop(hit) {
       sensors.has(cropKey(x, y, z)) || inverters.has(cropKey(x, y, z)) ||
       buttons.has(cropKey(x, y, z)) ||
       latches.has(cropKey(x, y, z)) || turrets.has(cropKey(x, y, z)) || bells.has(cropKey(x, y, z)) ||
-      pistons.has(cropKey(x, y, z)) || fans.has(cropKey(x, y, z)) ||
+      pistons.has(cropKey(x, y, z)) || fans.has(cropKey(x, y, z)) || sluices.has(cropKey(x, y, z)) ||
       observers.has(cropKey(x, y, z)) || targets.has(cropKey(x, y, z)) || tripwires.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
@@ -9676,7 +9698,7 @@ function plantSapling(hit) {
       sensors.has(saplingKey(x, y, z)) || inverters.has(saplingKey(x, y, z)) ||
       buttons.has(saplingKey(x, y, z)) ||
       latches.has(saplingKey(x, y, z)) || turrets.has(saplingKey(x, y, z)) || bells.has(saplingKey(x, y, z)) ||
-      pistons.has(saplingKey(x, y, z)) || fans.has(saplingKey(x, y, z)) ||
+      pistons.has(saplingKey(x, y, z)) || fans.has(saplingKey(x, y, z)) || sluices.has(saplingKey(x, y, z)) ||
       observers.has(saplingKey(x, y, z)) || targets.has(saplingKey(x, y, z)) || tripwires.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
@@ -9848,7 +9870,7 @@ function placeBed(hit) {
       sensors.has(bedKey(x, y, z)) || inverters.has(bedKey(x, y, z)) ||
       buttons.has(bedKey(x, y, z)) ||
       latches.has(bedKey(x, y, z)) || turrets.has(bedKey(x, y, z)) || bells.has(bedKey(x, y, z)) ||
-      pistons.has(bedKey(x, y, z)) || fans.has(bedKey(x, y, z)) ||
+      pistons.has(bedKey(x, y, z)) || fans.has(bedKey(x, y, z)) || sluices.has(bedKey(x, y, z)) ||
       observers.has(bedKey(x, y, z)) || targets.has(bedKey(x, y, z)) || tripwires.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
@@ -10083,7 +10105,7 @@ function signCellFree(x, y, z) {
          !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k) &&
          !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
          !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k) && !inverters.has(k) && !buttons.has(k) &&
-         !latches.has(k) && !turrets.has(k) && !bells.has(k) && !pistons.has(k) && !fans.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
+         !latches.has(k) && !turrets.has(k) && !bells.has(k) && !pistons.has(k) && !fans.has(k) && !sluices.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
 }
 
 // ===== Редактор напису (створюється в JS — без правок HTML) =====
@@ -10782,7 +10804,7 @@ function placeRail(hit, det = false, pw = false, sw = false) {
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) ||
       flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       lightningRods.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
@@ -11419,7 +11441,7 @@ function breakPlate(key) {
 function placePlate(hit) {
   const [x, y, z] = hit.prev;
   const k = plateKey(x, y, z);
-  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
+  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -11658,7 +11680,7 @@ function placeNote(hit) {
   const [x, y, z] = hit.prev;
   const k = noteKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || notes.has(k) || plates.has(k) || levers.has(k) ||
-      wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
+      wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -11767,6 +11789,8 @@ const bells = new Map();               // дзвони (секція нижче)
                                        // раніше за секцію
 const fans = new Map();                // міхи (секція нижче); реєстр тут —
                                        // гарди й линви бачать їх раніше за секцію
+const sluices = new Map();             // шлюзи (секція нижче); реєстр тут —
+                                       // гарди й линви бачать їх раніше за секцію
 const observers = new Map();           // спостерігачі (секція нижче); реєстр
                                        // тут — на нього посилаються спільні
                                        // перевірки клітинок і мережа
@@ -11822,7 +11846,7 @@ function powerNodeAt(x, y, z) {
   const k = wireKey(x, y, z);
   if (wires.has(k) || levers.has(k) || plates.has(k) || sensors.has(k) ||
       inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) ||
-      bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) ||
+      bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) ||
       tripwires.has(k)) return true;
   const r = rails.get(k);
   return !!(r && r.det);   // датчикова рейка — теж вузол мережі
@@ -11936,7 +11960,7 @@ function breakWire(key) {
 function powerCellFree(x, y, z) {
   const k = leverKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
@@ -12093,7 +12117,7 @@ const heldByPower = (tag) => powerHeld.has(tag) || powerNeed.has(tag);
 function updatePower(dt) {
   if (levers.size === 0 && wires.size === 0 && sensors.size === 0 &&
       inverters.size === 0 && buttons.size === 0 && latches.size === 0 &&
-      turrets.size === 0 && bells.size === 0 && pistons.size === 0 && fans.size === 0 &&
+      turrets.size === 0 && bells.size === 0 && pistons.size === 0 && fans.size === 0 && sluices.size === 0 &&
       observers.size === 0 &&
       targets.size === 0 && tripwires.size === 0 &&
       detRailCount === 0 &&
@@ -12147,6 +12171,9 @@ function updatePower(dt) {
   // Міхи: опора, читання входу й вітер, що зносить тіла — після поршнів,
   // з тих самих причин: читають стан минулого кадру
   updateFans(dt);
+  // Шлюзи: опора, читання входу, заслінка й джерело води — після міхів,
+  // з тих самих причин: читають стан минулого кадру
+  updateSluices(dt);
   // Інвертори: опора, читання входу й перекидання кристала (з затримкою) —
   // до BFS, щоб мережа цього ж кадру бачила свіжі джерела
   updateInverters(dt);
@@ -14359,7 +14386,7 @@ function pistonDestFree(x, y, z) {
   const k = pistonKey(x, y, z);
   return !(plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) ||
     lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) ||
-    latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
+    latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
     ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
     saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
     beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) ||
@@ -14764,6 +14791,250 @@ if (savedGame && Array.isArray(savedGame.fans)) {
   for (const e of savedGame.fans) {
     if (Array.isArray(e) && e.length >= 5) {
       addFan(e[0], e[1], e[2], e[3] | 0, e[4] | 0);
+    }
+  }
+}
+
+// ============================================================
+// Шлюз: мережа править стихією
+// ============================================================
+// Шлюз — перший вихід мережі, що торкається СТИХІЇ: кам'яна арка з дубовою
+// заслінкою й мідним жолобом. Поки на вході позаду (сходинки ±1, як у міха)
+// є сигнал — заслінка піднята і шлюз тримає СПРАВЖНЄ джерело води в клітинці
+// перед жолобом: потік тече, гасить полум'я, застигає лаву в камінь — усе,
+// що вміє вода з відра. Сигнал зник — заслінка падає, шлюз забирає джерело
+// назад, і потоки чесно висихають. Нове дієслово — лити воду.
+
+const sluiceKey = leverKey;
+const SLUICE_MAX = 32;                 // межа, щоб збереження не розросталося
+
+const SLUICE_BASE_GEO = new THREE.BoxGeometry(0.34, 0.1, 0.34);
+const SLUICE_BASE_MAT = new THREE.MeshLambertMaterial({ color: 0x6f7680 });
+// Дві кам'яні опори арки обабіч жолоба (до повороту групи вихід — у +X)
+const SLUICE_PIER_GEO = new THREE.BoxGeometry(0.16, 0.62, 0.14);
+SLUICE_PIER_GEO.translate(0, 0.41, 0);
+const SLUICE_PIER_MAT = new THREE.MeshLambertMaterial({ color: 0x596069 });
+const SLUICE_ARCH_GEO = new THREE.BoxGeometry(0.16, 0.1, 0.42);
+const SLUICE_ARCH_MAT = SLUICE_PIER_MAT;
+// Мідний жолоб-носик, з якого ллється вода (як носик інвертора)
+const SLUICE_SPOUT_GEO = new THREE.BoxGeometry(0.26, 0.08, 0.18);
+SLUICE_SPOUT_GEO.translate(0.21, 0.5, 0);
+const SLUICE_SPOUT_MAT = new THREE.MeshLambertMaterial({ color: 0xb0793c });
+// Дубова заслінка: піднімається, коли шлюз відкрито
+const SLUICE_GATE_GEO = new THREE.BoxGeometry(0.05, 0.4, 0.3);
+const SLUICE_GATE_MAT = new THREE.MeshLambertMaterial({ color: 0x8a6a3f });
+// Хвостик входу: темний маркер позаду — звідки слухає
+const SLUICE_TAIL_GEO = new THREE.BoxGeometry(0.14, 0.06, 0.14);
+SLUICE_TAIL_GEO.translate(-0.24, 0.13, 0);
+const SLUICE_TAIL_MAT = new THREE.MeshLambertMaterial({ color: 0x3a3f46 });
+const SLUICE_WATER_COLOR = new THREE.Color(0x3f76e4);
+
+function makeSluiceModel() {
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(SLUICE_BASE_GEO, SLUICE_BASE_MAT);
+  base.position.y = 0.05;
+  g.add(base);
+  g.add(new THREE.Mesh(SLUICE_TAIL_GEO, SLUICE_TAIL_MAT));
+  for (const gz of [0.2, -0.2]) {
+    const pier = new THREE.Mesh(SLUICE_PIER_GEO, SLUICE_PIER_MAT);
+    pier.position.set(0.05, 0, gz);
+    g.add(pier);
+  }
+  const arch = new THREE.Mesh(SLUICE_ARCH_GEO, SLUICE_ARCH_MAT);
+  arch.position.set(0.05, 0.77, 0);
+  g.add(arch);
+  g.add(new THREE.Mesh(SLUICE_SPOUT_GEO, SLUICE_SPOUT_MAT));
+  const gate = new THREE.Mesh(SLUICE_GATE_GEO, SLUICE_GATE_MAT);
+  gate.position.set(0.05, 0.3, 0);
+  g.add(gate);
+  return { g, gate };
+}
+
+// Повернути групу так, щоб жолоб дивився в бік виливу (fx, fz)
+function applySluiceFacing(s) {
+  s.group.rotation.y = Math.atan2(-s.fz, s.fx);
+}
+
+// inPrev: null — «ще не міряв»: перший тик запам'ятає стан входу тихо, без
+// плюскоту (важливо після завантаження сейву — вилив не вигадується)
+function addSluice(x, y, z, fx = 1, fz = 0, poured = false) {
+  const key = sluiceKey(x, y, z);
+  if (sluices.has(key) || sluices.size >= SLUICE_MAX) return false;
+  // Зіпсований напрям (правлений сейв) — лити на схід
+  if (!((Math.abs(fx) === 1 && fz === 0) || (fx === 0 && Math.abs(fz) === 1))) {
+    fx = 1; fz = 0;
+  }
+  const { g, gate } = makeSluiceModel();
+  g.position.set(x + 0.5, y, z + 0.5);
+  scene.add(g);
+  const s = { x, y, z, group: g, gate, fx, fz, on: false, poured: !!poured,
+              inPrev: null };
+  applySluiceFacing(s);
+  sluices.set(key, s);
+  refreshWiresAround(x, y, z);
+  return true;
+}
+
+// Забрати вилите джерело назад (потоки без джерела висохнуть самі)
+function sluiceRetract(s) {
+  if (!s.poured) return;
+  const px = s.x + s.fx, pz = s.z + s.fz;
+  if (blockAt(px, s.y, pz) === WATER) {
+    setBlock(px, s.y, pz, AIR);
+    spawnParticles(px + 0.5, s.y + 0.5, pz + 0.5, SLUICE_WATER_COLOR, 6,
+      { radius: 0.3, speed: 1.2, upBias: 0.5, life: 0.4, size: 0.07, gravity: 8 });
+  }
+  s.poured = false;
+}
+
+function removeSluice(key) {
+  const s = sluices.get(key);
+  if (!s) return;
+  sluiceRetract(s);
+  scene.remove(s.group);   // геометрія/матеріали спільні — не dispose
+  sluices.delete(key);
+  refreshWiresAround(s.x, s.y, s.z);
+}
+
+function breakSluice(key) {
+  const s = sluices.get(key);
+  if (!s) return;
+  spawnParticles(s.x + 0.5, s.y + 0.5, s.z + 0.5, new THREE.Color(0x596069), 6,
+    { radius: 0.25, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 10 });
+  Sound.breakBlock(STONE);
+  removeSluice(key);
+}
+
+// Поставити шлюз у клітинку перед прицілом (лише на тверду підлогу);
+// жолоб дивиться туди ж, куди гравець — вода ллється вперед
+function placeSluice(hit) {
+  const [x, y, z] = hit.prev;
+  if (!powerCellFree(x, y, z)) return false;
+  const fwdX = -Math.sin(player.yaw), fwdZ = -Math.cos(player.yaw);
+  let fx = 0, fz = 0;
+  if (Math.abs(fwdX) >= Math.abs(fwdZ)) fx = fwdX >= 0 ? 1 : -1;
+  else fz = fwdZ >= 0 ? 1 : -1;
+  if (!addSluice(x, y, z, fx, fz)) return false;
+  Sound.place(STONE);
+  spawnParticles(x + 0.5, y + 0.5, z + 0.5, new THREE.Color(0x596069), 6,
+    { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
+  return true;
+}
+
+// ПКМ по шлюзу: повернути жолоб на чверть оберту за годинником; вилите
+// джерело чесно забирається, вхід перемірюється тихо
+function rotateSluice(s) {
+  sluiceRetract(s);
+  const nfx = -s.fz, nfz = s.fx;
+  s.fx = nfx; s.fz = nfz;
+  s.inPrev = null;
+  s.on = false;
+  applySluiceFacing(s);
+  Sound.lever(true);
+  spawnParticles(s.x + 0.5, s.y + 0.55, s.z + 0.5, new THREE.Color(0x596069), 4,
+    { radius: 0.15, speed: 0.9, upBias: 0.8, life: 0.4, size: 0.07, gravity: 2 });
+  flashItemName('🚰 Шлюз: жолоб повернуто');
+}
+
+// Стан входу шлюзу (клітинка позаду, сходинки ±1, як у міха)
+function sluiceInputPowered(s) {
+  const bx = s.x - s.fx, bz = s.z - s.fz;
+  for (let dy = -1; dy <= 1; dy++) {
+    const k = sluiceKey(bx, s.y + dy, bz);
+    const w = wires.get(k);
+    if (w && w.powered) return true;
+    const l = levers.get(k);
+    if (l && l.on) return true;
+    const pl = plates.get(k);
+    if (pl && pl.pressed) return true;
+    const se = sensors.get(k);
+    if (se && se.active) return true;
+    const b = buttons.get(k);
+    if (b && b.pressed) return true;
+    const v = inverters.get(k);
+    if (v && v.out) return true;
+    const o = latches.get(k);
+    if (o && o.out) return true;
+    const ob = observers.get(k);
+    if (ob && ob.pulsing) return true;
+    const tg = targets.get(k);
+    if (tg && tg.pulsing) return true;
+    const r = rails.get(k);
+    if (r && r.det && r.pressed) return true;
+  }
+  return false;
+}
+
+// Вилити джерело в клітинку перед жолобом: лише в повітря чи потік води
+// (тверді блоки й лаву шлюз шанує — вода туди не поміщається)
+function sluicePour(s, silent = false) {
+  const px = s.x + s.fx, pz = s.z + s.fz;
+  const id = blockAt(px, s.y, pz);
+  if (id === WATER) { s.poured = true; return true; }  // вже стоїть джерело
+  if (id !== AIR && !isWaterId(id)) return false;
+  setBlock(px, s.y, pz, WATER);   // джерело — setBlock запускає симуляцію
+  s.poured = true;
+  if (!silent) {
+    Sound.splash();
+    spawnParticles(px + 0.5, s.y + 0.7, pz + 0.5, SLUICE_WATER_COLOR, 8,
+      { radius: 0.3, speed: 1.4, upBias: 0.6, life: 0.4, size: 0.08, gravity: 8 });
+    unlockAch('sluice');
+  }
+  return true;
+}
+
+// Вода шлюзу зустріла лаву — десь поряд утворився камінь: викликається з
+// lavaMeetsWater; шукаємо відкритий шлюз неподалік від нового каменя
+function sluiceStoneFormed(x, y, z) {
+  for (const s of sluices.values()) {
+    if (!s.poured) continue;
+    const dx = s.x + s.fx - x, dy = s.y - y, dz = s.z + s.fz - z;
+    if (dx * dx + dy * dy + dz * dz <= 100) { unlockAch('lavastone'); return; }
+  }
+}
+
+// Тик шлюзів: опора, читання входу, заслінка й джерело води — викликається
+// з updatePower після міхів (стан минулого кадру)
+function updateSluices(dt) {
+  if (sluices.size === 0) return;
+  for (const [key, s] of sluices) {
+    // Блок зайняв клітинку чи зникла опора — розібрати (вода забирається)
+    if (isSolid(blockAt(s.x, s.y, s.z)) || !isSolid(blockAt(s.x, s.y - 1, s.z))) {
+      breakSluice(key);
+      continue;
+    }
+    const on = sluiceInputPowered(s);
+    if (s.inPrev === null) {           // перший замір — тихо, без плюскоту
+      s.inPrev = on;
+      s.on = on;
+      if (on) sluicePour(s, true);
+      else sluiceRetract(s);
+    } else {
+      if (on && !s.inPrev) sluicePour(s);        // заслінка піднялась — лити
+      if (!on && s.inPrev) sluiceRetract(s);     // сигнал зник — забрати
+      s.inPrev = on;
+      s.on = on;
+      // Джерело забрали відром чи потоком лави, а шлюз досі відкритий —
+      // долити тихо (без повторного досягнення й плюскоту щокадру)
+      if (on && s.poured && blockAt(s.x + s.fx, s.y, s.z + s.fz) !== WATER) {
+        s.poured = false;
+        sluicePour(s, true);
+      }
+      // Відкритий, але вилити нікуди (стіна/лава попереду) — спробувати ще
+      if (on && !s.poured) sluicePour(s, true);
+    }
+    // Заслінка плавно їде вгору, коли шлюз відкрито
+    const target = s.on ? 0.62 : 0.3;
+    s.gate.position.y += (target - s.gate.position.y) * Math.min(1, dt * 8);
+  }
+}
+
+// Відновити збережені шлюзи (сумісно зі старими сейвами); після
+// завантаження перший тик міряє вхід тихо — вилив не вигадується
+if (savedGame && Array.isArray(savedGame.sluices)) {
+  for (const e of savedGame.sluices) {
+    if (Array.isArray(e) && e.length >= 5) {
+      addSluice(e[0], e[1], e[2], e[3] | 0, e[4] | 0, !!e[5]);
     }
   }
 }
@@ -15535,7 +15806,7 @@ function placeCampfire(hit) {
       rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
   Sound.torch(0.2);
@@ -15985,7 +16256,7 @@ function placeBeehive(hit) {
       signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addBeehive(x, y, z)) return false;
   Sound.place(PLANK);
@@ -16182,7 +16453,7 @@ function placeScarecrow(hit) {
       saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addScarecrow(x, y, z)) return false;
   Sound.place(PLANK);
@@ -16321,7 +16592,7 @@ function placeLightningRod(hit) {
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!Object.entries(LROD_COST).every(([ore, n]) => (player[ore] || 0) >= n)) {
     flashItemName('Потрібно ⛓ 2 × залізо + 🟡 1 × золото з торби');
@@ -16572,7 +16843,7 @@ function placeAnvil(hit) {
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addAnvil(x, y, z)) return false;
   Sound.place(STONE);
@@ -17062,7 +17333,7 @@ function placeChest(hit) {
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
       rails.has(k) || lightningRods.has(k) || cauldrons.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addChest(x, y, z)) return false;
   Sound.place(PLANK);
@@ -17340,7 +17611,7 @@ function placeMill(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addMill(x, y, z)) return false;
   Sound.place(PLANK);
@@ -17555,7 +17826,7 @@ function placeCauldron(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCauldron(x, y, z)) return false;
   Sound.place(STONE);
@@ -17796,7 +18067,7 @@ function mushCellFree(x, y, z) {
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || beds.has(k) ||
       lightningRods.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       fences.has(k) || gates.has(k) || doorAtCell(x, y, z)) return false;
   if (blockAt(x, y, z) !== AIR) return false;
   return mushSupportable(blockAt(x, y - 1, z));
@@ -18756,7 +19027,7 @@ const flowerSupportable = (id, planted) => id === GRASS || (planted && id === DI
 function flowerCellFree(x, y, z, planted = false) {
   const k = flowerKey(x, y, z);
   if (flowers.has(k) || mushrooms.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       torches.has(k) || crops.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       campfires.has(k) || beehives.has(k) || scarecrows.has(k) ||
@@ -19337,6 +19608,12 @@ function placeBlock() {
     if (fans.has(fk)) { rotateFan(fans.get(fk)); return; }
   }
 
+  // Шлюз у прицілі (ПКМ) → повернути жолоб на чверть оберту
+  if (sluices.size > 0) {
+    const sk = sluiceKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    if (sluices.has(sk)) { rotateSluice(sluices.get(sk)); return; }
+  }
+
   // Спостерігач у прицілі (ПКМ) → повернути око на чверть оберту
   if (observers.size > 0) {
     const ok = observerKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -19593,6 +19870,12 @@ function placeBlock() {
   // Міх — вихід мережі, що дме: поки є сигнал, вітер зносить тіла істот
   if (id === FAN) {
     placeFan(hit);
+    return;
+  }
+
+  // Шлюз — вихід мережі, що править стихією: поки є сигнал, ллється вода
+  if (id === SLUICE) {
+    placeSluice(hit);
     return;
   }
 
@@ -22148,6 +22431,32 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(11, 9, 2, 1);
     return;
   }
+  if (id === SLUICE) {
+    // Процедурна іконка шлюзу: кам'яна арка, дубова заслінка, мідний
+    // жолоб і струмінь води, що ллється вбік виливу
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тінь під основою
+    ctx.fillRect(2, 14, 10, 1);
+    ctx.fillStyle = '#6f7680';                 // кам'яна основа
+    ctx.fillRect(2, 12, 10, 2);
+    ctx.fillStyle = '#596069';                 // опори арки
+    ctx.fillRect(2, 2, 3, 10);
+    ctx.fillRect(7, 2, 3, 10);
+    ctx.fillStyle = '#6d747e';                 // перекладина арки
+    ctx.fillRect(2, 1, 8, 2);
+    ctx.fillStyle = '#8a6a3f';                 // дубова заслінка (піднята)
+    ctx.fillRect(5, 3, 2, 5);
+    ctx.fillStyle = '#b0793c';                 // мідний жолоб →
+    ctx.fillRect(10, 6, 3, 2);
+    ctx.fillStyle = '#3f76e4';                 // струмінь води
+    ctx.fillRect(12, 8, 2, 3);
+    ctx.fillStyle = '#7fb2ff';                 // відблиск струменя
+    ctx.fillRect(12, 8, 1, 2);
+    ctx.fillStyle = '#3f76e4';                 // калюжка внизу
+    ctx.fillRect(11, 11, 4, 1);
+    return;
+  }
   if (id === OBSERVER) {
     // Процедурна іконка спостерігача: кам'яна основа, кам'яна скринька,
     // темна зіниця з бурштиновим зблиском і брова, що показує напрям
@@ -23624,6 +23933,8 @@ const ACHIEVEMENTS = [
   { id: 'windblown',   icon: '🪁', title: 'Здуло з ніг',        desc: 'Потік міха відніс вас самих — вітер не розбирає, хто тут господар' },
   { id: 'earwire',     icon: '👂', title: 'Тонкий слух',        desc: 'Вухо саме подало сигнал у мережу — мережа почула звук' },
   { id: 'farecho',     icon: '📡', title: 'Луна без линви',     desc: 'Вухо почуло звук за 5 і більше кроків — сигнал уперше здолав повітря без дроту' },
+  { id: 'sluice',      icon: '🚰', title: 'Водогін',            desc: 'Шлюз під напругою пролив воду — мережа вперше править стихією' },
+  { id: 'lavastone',   icon: '🗿', title: 'Каменяр мережі',     desc: 'Вода з відкритого шлюзу застигла лаву в камінь — порода скута без жодного відра' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -26185,6 +26496,24 @@ window.MCDebug = {
     return [...fans.values()].map((f) =>
       ({ x: f.x, y: f.y, z: f.z, fx: f.fx, fz: f.fz, on: !!f.on,
          range: fanStreamRange(f), input: fanInputPowered(f) }));
+  },
+  // Шлюз (для тестів)
+  giveSluice: () => { assignBlockToSlot(SLUICE); return BLOCK_NAMES[SLUICE]; },
+  placeSluiceAt: (x, y, z, fx = 1, fz = 0) => {
+    if (!powerCellFree(x, y, z)) return false;
+    return addSluice(x, y, z, fx, fz);
+  },
+  rotateSluiceAt: (x, y, z) => {
+    const s = sluices.get(sluiceKey(x, y, z));
+    if (!s) return null;
+    rotateSluice(s);
+    return [s.fx, s.fz];
+  },
+  get sluiceInfo() {
+    return [...sluices.values()].map((s) =>
+      ({ x: s.x, y: s.y, z: s.z, fx: s.fx, fz: s.fz, on: !!s.on,
+         poured: !!s.poured, input: sluiceInputPowered(s),
+         front: blockAt(s.x + s.fx, s.y, s.z + s.fz) }));
   },
   // Спостерігач (для тестів)
   giveObserver: () => { assignBlockToSlot(OBSERVER); return BLOCK_NAMES[OBSERVER]; },
