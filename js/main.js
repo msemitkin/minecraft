@@ -511,6 +511,20 @@ const SLUICE = 96;
 // господаря. ПКМ по жниварці повертає косу на чверть оберту.
 // Нове дієслово — жати.
 const HARVESTER = 97;
+// Годівниця — перший вихід мережі, що ГОДУЄ життя: кам'яне корито на тумбі
+// з дубовими бортами й темним хвостиком-маркером входу позаду. Фронт
+// сигналу на вході позаду (сходинки ±1, як у жниварки) — черпак подає
+// частунок: колосок 🌾 береться З ПОЛИЦІ СКРИНІ поруч із годівницею
+// (сусідні клітинки, і по діагоналі теж) і дістається найближчій свійській
+// тварині коло корита: доросла входить «у настрій» і шукає пару, маля росте
+// швидше. Без скрині з колоском поруч чи без голодної тварини коло корита —
+// черпак хлюпає впорожні, і зерно лишається на полиці: не пропадає в нікуди.
+// Мережа жала врожай у скриню — а ГОДУВАЛА досі лише рука гравця: кожне
+// частування вимагало особистого ПКМ. Жниварка жне в скриню, годівниця
+// носить зі скрині до ясел — коло «зерно → скриня → приплід» уперше
+// замикається без господаря. ПКМ по годівниці повертає корито на чверть
+// оберту. Нове дієслово — годувати.
+const FEEDER = 98;
 const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -674,6 +688,7 @@ const BLOCK_NAMES = {
   [FAN]: 'Міх',
   [SLUICE]: 'Шлюз',
   [HARVESTER]: 'Жниварка',
+  [FEEDER]: 'Годівниця',
   [BUTTON]: 'Кнопка',
   [LATCH]: 'Защіпка',
   [TURRET]: 'Стрілець',
@@ -702,7 +717,7 @@ const ALL_BLOCKS = [
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
   LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, LIFE_SENSOR, EAR, INVERTER, REPEATER, COUNTER, ANDGATE, XORGATE, DICE, BUTTON, LATCH, TURRET, BELL, PISTON,
-  STICKY_PISTON, FAN, SLUICE, HARVESTER, OBSERVER, TARGET, TRIPWIRE, DETECTOR_RAIL, POWER_RAIL,
+  STICKY_PISTON, FAN, SLUICE, HARVESTER, FEEDER, OBSERVER, TARGET, TRIPWIRE, DETECTOR_RAIL, POWER_RAIL,
   SWITCH_RAIL,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
@@ -1012,6 +1027,7 @@ function saveGame() {
       sluices: [...sluices.values()].map((s) =>
         [s.x, s.y, s.z, s.fx, s.fz, s.poured ? 1 : 0]),
       harvesters: [...harvesters.values()].map((h) => [h.x, h.y, h.z, h.fx, h.fz]),
+      feeders: [...feeders.values()].map((f) => [f.x, f.y, f.z, f.fx, f.fz]),
       observers: [...observers.values()].map((ob) =>
         [ob.x, ob.y, ob.z, ob.fx, ob.fz]),
       targets: [...targets.values()].map((t) =>
@@ -4410,6 +4426,7 @@ function updateAnimal(a, dt) {
   // Після приплоду батьки перепочивають, перш ніж їх можна годувати знову.
   if (a.love > 0) {
     a.love -= dt * (a.pursuing ? 0.5 : 1);
+    if (a.love <= 0) a.netFed = false;   // настрій станув — частунок мережі забуто
     if (Math.random() < dt * 1.6) {
       spawnParticles(a.pos.x, a.pos.y + a.height + 0.25, a.pos.z, HEART_COLOR, 1,
         { radius: 0.2, speed: 0.5, upBias: 1.2, life: 0.7, size: 0.11, gravity: -2 });
@@ -4685,6 +4702,9 @@ function findMate(a) {
 
 // Пара зійшлася: маля між батьками, феєрверк сердечок, обом — перепочинок
 function breedPair(a, b) {
+  // Обох батьків частувала годівниця — розведення замкнулось без господаря
+  if (a.netFed && b.netFed) unlockAch('feedloop');
+  a.netFed = false; b.netFed = false;
   a.love = 0; b.love = 0;
   a.breedCd = BREED_COOLDOWN; b.breedCd = BREED_COOLDOWN;
   const x = (a.pos.x + b.pos.x) / 2;
@@ -4746,6 +4766,7 @@ function tryFeedFarmAnimal() {
   updateFoodHud();
   a.love = LOVE_TIME;
   a.panic = 0;
+  a.netFed = false;                    // частунок із рук — не мережевий
   spawnParticles(a.pos.x, a.pos.y + a.height + 0.25, a.pos.z, HEART_COLOR, 7,
     { radius: 0.35, speed: 1.2, upBias: 1.6, life: 0.8, size: 0.12, gravity: -2 });
   Sound.eat();
@@ -7367,7 +7388,7 @@ function startBreakOrAttack() {
       plates.size > 0 || notes.size > 0 || chests.size > 0 ||
       levers.size > 0 || wires.size > 0 || lamps.size > 0 || sensors.size > 0 ||
       inverters.size > 0 || buttons.size > 0 || latches.size > 0 ||
-      turrets.size > 0 || bells.size > 0 || pistons.size > 0 || fans.size > 0 || sluices.size > 0 || harvesters.size > 0 || observers.size > 0 ||
+      turrets.size > 0 || bells.size > 0 || pistons.size > 0 || fans.size > 0 || sluices.size > 0 || harvesters.size > 0 || feeders.size > 0 || observers.size > 0 ||
       targets.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
@@ -7528,6 +7549,11 @@ function startBreakOrAttack() {
       }
       if (harvesters.has(key)) {
         breakHarvester(key);
+        triggerSwing();
+        return;
+      }
+      if (feeders.has(key)) {
+        breakFeeder(key);
         triggerSwing();
         return;
       }
@@ -8707,7 +8733,7 @@ function placeTorch(hit) {
       inverters.has(torchKey(x, y, z)) ||
       buttons.has(torchKey(x, y, z)) ||
       latches.has(torchKey(x, y, z)) || turrets.has(torchKey(x, y, z)) || bells.has(torchKey(x, y, z)) ||
-      pistons.has(torchKey(x, y, z)) || fans.has(torchKey(x, y, z)) || sluices.has(torchKey(x, y, z)) || harvesters.has(torchKey(x, y, z)) ||
+      pistons.has(torchKey(x, y, z)) || fans.has(torchKey(x, y, z)) || sluices.has(torchKey(x, y, z)) || harvesters.has(torchKey(x, y, z)) || feeders.has(torchKey(x, y, z)) ||
       observers.has(torchKey(x, y, z)) || targets.has(torchKey(x, y, z)) || tripwires.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
@@ -8879,7 +8905,7 @@ function placeLadder(hit) {
       inverters.has(ladderKey(x, y, z)) ||
       buttons.has(ladderKey(x, y, z)) ||
       latches.has(ladderKey(x, y, z)) || turrets.has(ladderKey(x, y, z)) || bells.has(ladderKey(x, y, z)) ||
-      pistons.has(ladderKey(x, y, z)) || fans.has(ladderKey(x, y, z)) || sluices.has(ladderKey(x, y, z)) || harvesters.has(ladderKey(x, y, z)) ||
+      pistons.has(ladderKey(x, y, z)) || fans.has(ladderKey(x, y, z)) || sluices.has(ladderKey(x, y, z)) || harvesters.has(ladderKey(x, y, z)) || feeders.has(ladderKey(x, y, z)) ||
       observers.has(ladderKey(x, y, z)) || targets.has(ladderKey(x, y, z)) || tripwires.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
@@ -9092,7 +9118,7 @@ function placeDoor(hit) {
         beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
         lightningRods.has(k) ||
         mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -9361,7 +9387,7 @@ function fenceCellFree(x, y, z) {
          !lightningRods.has(k) &&
          !mushrooms.has(k) && !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
          !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k) && !inverters.has(k) && !buttons.has(k) &&
-         !latches.has(k) && !turrets.has(k) && !bells.has(k) && !pistons.has(k) && !fans.has(k) && !sluices.has(k) && !harvesters.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
+         !latches.has(k) && !turrets.has(k) && !bells.has(k) && !pistons.has(k) && !fans.has(k) && !sluices.has(k) && !harvesters.has(k) && !feeders.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -9543,7 +9569,7 @@ function plantCrop(hit) {
       sensors.has(cropKey(x, y, z)) || inverters.has(cropKey(x, y, z)) ||
       buttons.has(cropKey(x, y, z)) ||
       latches.has(cropKey(x, y, z)) || turrets.has(cropKey(x, y, z)) || bells.has(cropKey(x, y, z)) ||
-      pistons.has(cropKey(x, y, z)) || fans.has(cropKey(x, y, z)) || sluices.has(cropKey(x, y, z)) || harvesters.has(cropKey(x, y, z)) ||
+      pistons.has(cropKey(x, y, z)) || fans.has(cropKey(x, y, z)) || sluices.has(cropKey(x, y, z)) || harvesters.has(cropKey(x, y, z)) || feeders.has(cropKey(x, y, z)) ||
       observers.has(cropKey(x, y, z)) || targets.has(cropKey(x, y, z)) || tripwires.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
@@ -9722,7 +9748,7 @@ function plantSapling(hit) {
       sensors.has(saplingKey(x, y, z)) || inverters.has(saplingKey(x, y, z)) ||
       buttons.has(saplingKey(x, y, z)) ||
       latches.has(saplingKey(x, y, z)) || turrets.has(saplingKey(x, y, z)) || bells.has(saplingKey(x, y, z)) ||
-      pistons.has(saplingKey(x, y, z)) || fans.has(saplingKey(x, y, z)) || sluices.has(saplingKey(x, y, z)) || harvesters.has(saplingKey(x, y, z)) ||
+      pistons.has(saplingKey(x, y, z)) || fans.has(saplingKey(x, y, z)) || sluices.has(saplingKey(x, y, z)) || harvesters.has(saplingKey(x, y, z)) || feeders.has(saplingKey(x, y, z)) ||
       observers.has(saplingKey(x, y, z)) || targets.has(saplingKey(x, y, z)) || tripwires.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
@@ -9894,7 +9920,7 @@ function placeBed(hit) {
       sensors.has(bedKey(x, y, z)) || inverters.has(bedKey(x, y, z)) ||
       buttons.has(bedKey(x, y, z)) ||
       latches.has(bedKey(x, y, z)) || turrets.has(bedKey(x, y, z)) || bells.has(bedKey(x, y, z)) ||
-      pistons.has(bedKey(x, y, z)) || fans.has(bedKey(x, y, z)) || sluices.has(bedKey(x, y, z)) || harvesters.has(bedKey(x, y, z)) ||
+      pistons.has(bedKey(x, y, z)) || fans.has(bedKey(x, y, z)) || sluices.has(bedKey(x, y, z)) || harvesters.has(bedKey(x, y, z)) || feeders.has(bedKey(x, y, z)) ||
       observers.has(bedKey(x, y, z)) || targets.has(bedKey(x, y, z)) || tripwires.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
@@ -10129,7 +10155,7 @@ function signCellFree(x, y, z) {
          !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k) &&
          !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
          !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k) && !inverters.has(k) && !buttons.has(k) &&
-         !latches.has(k) && !turrets.has(k) && !bells.has(k) && !pistons.has(k) && !fans.has(k) && !sluices.has(k) && !harvesters.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
+         !latches.has(k) && !turrets.has(k) && !bells.has(k) && !pistons.has(k) && !fans.has(k) && !sluices.has(k) && !harvesters.has(k) && !feeders.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
 }
 
 // ===== Редактор напису (створюється в JS — без правок HTML) =====
@@ -10828,7 +10854,7 @@ function placeRail(hit, det = false, pw = false, sw = false) {
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) ||
       flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       lightningRods.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
@@ -11465,7 +11491,7 @@ function breakPlate(key) {
 function placePlate(hit) {
   const [x, y, z] = hit.prev;
   const k = plateKey(x, y, z);
-  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
+  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -11704,7 +11730,7 @@ function placeNote(hit) {
   const [x, y, z] = hit.prev;
   const k = noteKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || notes.has(k) || plates.has(k) || levers.has(k) ||
-      wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
+      wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -11817,6 +11843,8 @@ const sluices = new Map();             // шлюзи (секція нижче); 
                                        // гарди й линви бачать їх раніше за секцію
 const harvesters = new Map();          // жниварки (секція нижче); реєстр тут —
                                        // гарди й линви бачать їх раніше за секцію
+const feeders = new Map();             // годівниці (секція нижче); реєстр тут —
+                                       // гарди й линви бачать їх раніше за секцію
 const observers = new Map();           // спостерігачі (секція нижче); реєстр
                                        // тут — на нього посилаються спільні
                                        // перевірки клітинок і мережа
@@ -11872,7 +11900,7 @@ function powerNodeAt(x, y, z) {
   const k = wireKey(x, y, z);
   if (wires.has(k) || levers.has(k) || plates.has(k) || sensors.has(k) ||
       inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) ||
-      bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) ||
+      bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) ||
       tripwires.has(k)) return true;
   const r = rails.get(k);
   return !!(r && r.det);   // датчикова рейка — теж вузол мережі
@@ -11986,7 +12014,7 @@ function breakWire(key) {
 function powerCellFree(x, y, z) {
   const k = leverKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
@@ -12143,7 +12171,7 @@ const heldByPower = (tag) => powerHeld.has(tag) || powerNeed.has(tag);
 function updatePower(dt) {
   if (levers.size === 0 && wires.size === 0 && sensors.size === 0 &&
       inverters.size === 0 && buttons.size === 0 && latches.size === 0 &&
-      turrets.size === 0 && bells.size === 0 && pistons.size === 0 && fans.size === 0 && sluices.size === 0 && harvesters.size === 0 &&
+      turrets.size === 0 && bells.size === 0 && pistons.size === 0 && fans.size === 0 && sluices.size === 0 && harvesters.size === 0 && feeders.size === 0 &&
       observers.size === 0 &&
       targets.size === 0 && tripwires.size === 0 &&
       detRailCount === 0 &&
@@ -12203,6 +12231,9 @@ function updatePower(dt) {
   // Жниварки: опора, читання входу й замах коси — після шлюзів,
   // з тих самих причин: читають стан минулого кадру
   updateHarvesters(dt);
+  // Годівниці: опора, читання входу й частунок зі скрині — після жниварок,
+  // з тих самих причин: читають стан минулого кадру
+  updateFeeders(dt);
   // Інвертори: опора, читання входу й перекидання кристала (з затримкою) —
   // до BFS, щоб мережа цього ж кадру бачила свіжі джерела
   updateInverters(dt);
@@ -14415,7 +14446,7 @@ function pistonDestFree(x, y, z) {
   const k = pistonKey(x, y, z);
   return !(plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) ||
     lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) ||
-    latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
+    latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
     ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
     saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
     beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) ||
@@ -15295,6 +15326,283 @@ if (savedGame && Array.isArray(savedGame.harvesters)) {
 }
 
 // ============================================================
+// Годівниця: мережа годує життя
+// ============================================================
+// Годівниця — перший вихід мережі, що годує: кам'яна тумба з дубовим коритом,
+// черпаком на стовпчику й темним хвостиком-маркером входу позаду. Фронт
+// сигналу на вході позаду — черпак кидає частунок: колосок береться зі
+// скрині поруч (сусідні клітинки, і по діагоналі теж) і дістається
+// найближчій свійській тварині коло корита: доросла входить «у настрій»,
+// маля росте швидше. Нема скрині з колоском чи голодної тварини поруч —
+// черпак хлюпає впорожні, зерно лишається на полиці.
+
+const feederKey = leverKey;
+const FEEDER_MAX = 32;                 // межа, щоб збереження не розросталося
+const FEEDER_SWING = 0.45;             // секунд триває кивок черпака
+const FEEDER_REACH = 2.6;              // радіус ясел: як далеко дістає частунок
+const FEEDER_REACH_Y = 1.5;            // вертикальне вікно ясел (± клітинок)
+
+const FDR_BASE_GEO = new THREE.BoxGeometry(0.34, 0.1, 0.34);
+// Дубове корито: дно й чотири борти, куди падає частунок
+const FDR_TROUGH_GEO = new THREE.BoxGeometry(0.44, 0.1, 0.34);
+FDR_TROUGH_GEO.translate(0.12, 0.15, 0);
+const FDR_WALL_X_GEO = new THREE.BoxGeometry(0.06, 0.16, 0.34);
+const FDR_WALL_Z_GEO = new THREE.BoxGeometry(0.44, 0.16, 0.06);
+const FDR_WOOD_MAT = new THREE.MeshLambertMaterial({ color: 0x8a6a3f });
+// Купка зерна в кориті — пульсує від частунку
+const FDR_GRAIN_GEO = new THREE.BoxGeometry(0.26, 0.08, 0.2);
+FDR_GRAIN_GEO.translate(0.12, 0.24, 0);
+const FDR_GRAIN_MAT = new THREE.MeshLambertMaterial({ color: 0xe7c45a });
+// Стовпчик із черпаком, що кланяється до корита
+const FDR_POST_GEO = new THREE.BoxGeometry(0.1, 0.5, 0.1);
+FDR_POST_GEO.translate(0, 0.35, 0);
+const FDR_SCOOP_GEO = new THREE.BoxGeometry(0.3, 0.05, 0.12);
+FDR_SCOOP_GEO.translate(0.16, 0, 0);
+const FDR_SCOOP_MAT = new THREE.MeshLambertMaterial({ color: 0xb0793c });
+// Хвостик входу: темний маркер позаду — звідки слухає
+const FDR_TAIL_GEO = new THREE.BoxGeometry(0.14, 0.06, 0.14);
+FDR_TAIL_GEO.translate(-0.24, 0.13, 0);
+const FDR_TAIL_MAT = new THREE.MeshLambertMaterial({ color: 0x3a3f46 });
+const FDR_BASE_MAT = new THREE.MeshLambertMaterial({ color: 0x6f7680 });
+const FDR_GRAIN_COLOR = new THREE.Color(0xe7c45a);
+
+function makeFeederModel() {
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(FDR_BASE_GEO, FDR_BASE_MAT);
+  base.position.y = 0.05;
+  g.add(base);
+  g.add(new THREE.Mesh(FDR_TAIL_GEO, FDR_TAIL_MAT));
+  g.add(new THREE.Mesh(FDR_TROUGH_GEO, FDR_WOOD_MAT));
+  const wallL = new THREE.Mesh(FDR_WALL_X_GEO, FDR_WOOD_MAT);
+  wallL.position.set(-0.07, 0.24, 0);
+  g.add(wallL);
+  const wallR = new THREE.Mesh(FDR_WALL_X_GEO, FDR_WOOD_MAT);
+  wallR.position.set(0.31, 0.24, 0);
+  g.add(wallR);
+  const wallN = new THREE.Mesh(FDR_WALL_Z_GEO, FDR_WOOD_MAT);
+  wallN.position.set(0.12, 0.24, -0.14);
+  g.add(wallN);
+  const wallF = new THREE.Mesh(FDR_WALL_Z_GEO, FDR_WOOD_MAT);
+  wallF.position.set(0.12, 0.24, 0.14);
+  g.add(wallF);
+  const grain = new THREE.Mesh(FDR_GRAIN_GEO, FDR_GRAIN_MAT);
+  g.add(grain);
+  const arm = new THREE.Group();
+  arm.position.set(-0.12, 0.56, 0);
+  arm.add(new THREE.Mesh(FDR_SCOOP_GEO, FDR_SCOOP_MAT));
+  const post = new THREE.Mesh(FDR_POST_GEO, FDR_WOOD_MAT);
+  post.position.set(-0.12, 0, 0);
+  g.add(post);
+  g.add(arm);
+  return { g, arm, grain };
+}
+
+// Повернути групу так, щоб корито дивилось у бік ясел (fx, fz)
+function applyFeederFacing(f) {
+  f.group.rotation.y = Math.atan2(-f.fz, f.fx);
+}
+
+// inPrev: null — «ще не міряв»: перший тик запам'ятає стан входу тихо, без
+// частунку (важливо після завантаження сейву — частування не вигадується)
+function addFeeder(x, y, z, fx = 1, fz = 0) {
+  const key = feederKey(x, y, z);
+  if (feeders.has(key) || feeders.size >= FEEDER_MAX) return false;
+  // Зіпсований напрям (правлений сейв) — корито на схід
+  if (!((Math.abs(fx) === 1 && fz === 0) || (fx === 0 && Math.abs(fz) === 1))) {
+    fx = 1; fz = 0;
+  }
+  const { g, arm, grain } = makeFeederModel();
+  g.position.set(x + 0.5, y, z + 0.5);
+  scene.add(g);
+  const f = { x, y, z, group: g, arm, grain, fx, fz, on: false, swingT: 0,
+              inPrev: null };
+  applyFeederFacing(f);
+  feeders.set(key, f);
+  refreshWiresAround(x, y, z);
+  return true;
+}
+
+function removeFeeder(key) {
+  const f = feeders.get(key);
+  if (!f) return;
+  scene.remove(f.group);   // геометрія/матеріали спільні — не dispose
+  feeders.delete(key);
+  refreshWiresAround(f.x, f.y, f.z);
+}
+
+function breakFeeder(key) {
+  const f = feeders.get(key);
+  if (!f) return;
+  spawnParticles(f.x + 0.5, f.y + 0.5, f.z + 0.5, new THREE.Color(0x8a6a3f), 6,
+    { radius: 0.25, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 10 });
+  Sound.breakBlock(STONE);
+  removeFeeder(key);
+}
+
+// Поставити годівницю в клітинку перед прицілом (лише на тверду підлогу);
+// корито дивиться туди ж, куди гравець — ясла попереду
+function placeFeeder(hit) {
+  const [x, y, z] = hit.prev;
+  if (!powerCellFree(x, y, z)) return false;
+  const fwdX = -Math.sin(player.yaw), fwdZ = -Math.cos(player.yaw);
+  let fx = 0, fz = 0;
+  if (Math.abs(fwdX) >= Math.abs(fwdZ)) fx = fwdX >= 0 ? 1 : -1;
+  else fz = fwdZ >= 0 ? 1 : -1;
+  if (!addFeeder(x, y, z, fx, fz)) return false;
+  Sound.place(STONE);
+  spawnParticles(x + 0.5, y + 0.5, z + 0.5, new THREE.Color(0x6f7680), 6,
+    { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
+  return true;
+}
+
+// ПКМ по годівниці: повернути корито на чверть оберту за годинником;
+// вхід перемірюється тихо, без частунку
+function rotateFeeder(f) {
+  const nfx = -f.fz, nfz = f.fx;
+  f.fx = nfx; f.fz = nfz;
+  f.inPrev = null;
+  f.on = false;
+  applyFeederFacing(f);
+  Sound.lever(true);
+  spawnParticles(f.x + 0.5, f.y + 0.55, f.z + 0.5, new THREE.Color(0x8a6a3f), 4,
+    { radius: 0.15, speed: 0.9, upBias: 0.8, life: 0.4, size: 0.07, gravity: 2 });
+  flashItemName('🥣 Годівниця: корито повернуто');
+}
+
+// Стан входу годівниці (клітинка позаду, сходинки ±1, як у жниварки)
+function feederInputPowered(f) {
+  const bx = f.x - f.fx, bz = f.z - f.fz;
+  for (let dy = -1; dy <= 1; dy++) {
+    const k = feederKey(bx, f.y + dy, bz);
+    const w = wires.get(k);
+    if (w && w.powered) return true;
+    const l = levers.get(k);
+    if (l && l.on) return true;
+    const pl = plates.get(k);
+    if (pl && pl.pressed) return true;
+    const se = sensors.get(k);
+    if (se && se.active) return true;
+    const b = buttons.get(k);
+    if (b && b.pressed) return true;
+    const v = inverters.get(k);
+    if (v && v.out) return true;
+    const o = latches.get(k);
+    if (o && o.out) return true;
+    const ob = observers.get(k);
+    if (ob && ob.pulsing) return true;
+    const tg = targets.get(k);
+    if (tg && tg.pulsing) return true;
+    const r = rails.get(k);
+    if (r && r.det && r.pressed) return true;
+  }
+  return false;
+}
+
+// Скриня-комора поруч із годівницею (сусідні клітинки, і по діагоналі теж),
+// на чиїй полиці ще лишились колоски
+function feederChest(f) {
+  for (const c of chests.values()) {
+    if (Math.abs(c.x - f.x) <= 1 && Math.abs(c.y - f.y) <= 1 &&
+        Math.abs(c.z - f.z) <= 1 && (c.store.wheat || 0) > 0) return c;
+  }
+  return null;
+}
+
+// Найближча голодна свійська тварина коло ясел: маля — завжди раде
+// частунку, доросла — коли не «в настрої» і не перепочиває (і загін не
+// переповнений, як і при годуванні з рук)
+function feederAnimal(f) {
+  const cx = f.x + 0.5, cy = f.y + 0.5, cz = f.z + 0.5;
+  let best = null, bestDist = Infinity;
+  for (const a of animals) {
+    if (!BREED_TYPES.has(a.type)) continue;
+    if (Math.abs(a.pos.y - cy) > FEEDER_REACH_Y) continue;
+    if (a.baby) {
+      // маля росте від частунку
+    } else {
+      if (a.love > 0 || a.breedCd > 0) continue;       // сита чи перепочиває
+      if (animals.length >= BREED_ANIMAL_CAP) continue; // загону затісно
+    }
+    const d = Math.hypot(a.pos.x - cx, a.pos.z - cz);
+    if (d > FEEDER_REACH) continue;
+    if (d < bestDist) { bestDist = d; best = a; }
+  }
+  return best;
+}
+
+// Кивок черпака: колосок зі скрині — найближчій голодній тварині коло ясел;
+// нема скрині з зерном чи тварини — хлюп упорожні, зерно на полиці
+function feederServe(f) {
+  f.swingT = FEEDER_SWING;
+  const chest = feederChest(f);
+  if (!chest) return;
+  const a = feederAnimal(f);
+  if (!a) return;
+  chest.store.wheat--;
+  if (!chest.store.wheat) delete chest.store.wheat;
+  if (chestOpen && chestCur === chest) {
+    updateChestKindHud('wheat');
+    renderChestPanel();
+  }
+  spawnParticles(f.x + 0.5 + f.fx * 0.3, f.y + 0.35, f.z + 0.5 + f.fz * 0.3,
+    FDR_GRAIN_COLOR, 10,
+    { radius: 0.25, speed: 1.8, upBias: 0.9, life: 0.6, size: 0.09, gravity: 6 });
+  Sound.eat();
+  pingSound(f.x + 0.5, f.y, f.z + 0.5, 'feed');
+  if (a.baby) {
+    a.growth += BABY_FEED_BOOST;
+    spawnParticles(a.pos.x, a.pos.y + a.height + 0.2, a.pos.z, HEART_COLOR, 4,
+      { radius: 0.2, speed: 0.8, upBias: 1.4, life: 0.7, size: 0.1, gravity: -2 });
+  } else {
+    a.love = LOVE_TIME;
+    a.panic = 0;
+    a.netFed = true;         // для «приплоду без господаря» — обох частувала мережа
+    spawnParticles(a.pos.x, a.pos.y + a.height + 0.25, a.pos.z, HEART_COLOR, 7,
+      { radius: 0.35, speed: 1.2, upBias: 1.6, life: 0.8, size: 0.12, gravity: -2 });
+  }
+  unlockAch('feed');
+}
+
+// Тик годівниць: опора, читання входу й кивок на фронті — викликається з
+// updatePower після жниварок (стан минулого кадру)
+function updateFeeders(dt) {
+  if (feeders.size === 0) return;
+  for (const [key, f] of feeders) {
+    // Блок зайняв клітинку чи зникла опора — розібрати
+    if (isSolid(blockAt(f.x, f.y, f.z)) || !isSolid(blockAt(f.x, f.y - 1, f.z))) {
+      breakFeeder(key);
+      continue;
+    }
+    // Черпак кланяється до корита й плавно вертається
+    if (f.swingT > 0) {
+      f.swingT = Math.max(0, f.swingT - dt);
+      const t = Math.sin((1 - f.swingT / FEEDER_SWING) * Math.PI);
+      f.arm.rotation.z = t * -0.9;
+      f.grain.scale.y = 1 + t * 0.8;
+    }
+    const on = feederInputPowered(f);
+    if (f.inPrev === null) {           // перший замір — тихо, без частунку
+      f.inPrev = on;
+      f.on = on;
+      continue;
+    }
+    if (on && !f.inPrev) feederServe(f);  // фронт сигналу — кивок черпака
+    f.inPrev = on;
+    f.on = on;
+  }
+}
+
+// Відновити збережені годівниці (сумісно зі старими сейвами); після
+// завантаження перший тик міряє вхід тихо — частунок не вигадується
+if (savedGame && Array.isArray(savedGame.feeders)) {
+  for (const e of savedGame.feeders) {
+    if (Array.isArray(e) && e.length >= 5) {
+      addFeeder(e[0], e[1], e[2], e[3] | 0, e[4] | 0);
+    }
+  }
+}
+
+// ============================================================
 // Спостерігач: мережа бачить
 // ============================================================
 // Спостерігач — перше «око» мережі: кам'яна скринька зі зіницею, що дивиться
@@ -16061,7 +16369,7 @@ function placeCampfire(hit) {
       rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
   Sound.torch(0.2);
@@ -16511,7 +16819,7 @@ function placeBeehive(hit) {
       signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addBeehive(x, y, z)) return false;
   Sound.place(PLANK);
@@ -16708,7 +17016,7 @@ function placeScarecrow(hit) {
       saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addScarecrow(x, y, z)) return false;
   Sound.place(PLANK);
@@ -16847,7 +17155,7 @@ function placeLightningRod(hit) {
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!Object.entries(LROD_COST).every(([ore, n]) => (player[ore] || 0) >= n)) {
     flashItemName('Потрібно ⛓ 2 × залізо + 🟡 1 × золото з торби');
@@ -17098,7 +17406,7 @@ function placeAnvil(hit) {
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addAnvil(x, y, z)) return false;
   Sound.place(STONE);
@@ -17588,7 +17896,7 @@ function placeChest(hit) {
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
       rails.has(k) || lightningRods.has(k) || cauldrons.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addChest(x, y, z)) return false;
   Sound.place(PLANK);
@@ -17866,7 +18174,7 @@ function placeMill(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addMill(x, y, z)) return false;
   Sound.place(PLANK);
@@ -18081,7 +18389,7 @@ function placeCauldron(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCauldron(x, y, z)) return false;
   Sound.place(STONE);
@@ -18322,7 +18630,7 @@ function mushCellFree(x, y, z) {
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || beds.has(k) ||
       lightningRods.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       fences.has(k) || gates.has(k) || doorAtCell(x, y, z)) return false;
   if (blockAt(x, y, z) !== AIR) return false;
   return mushSupportable(blockAt(x, y - 1, z));
@@ -19282,7 +19590,7 @@ const flowerSupportable = (id, planted) => id === GRASS || (planted && id === DI
 function flowerCellFree(x, y, z, planted = false) {
   const k = flowerKey(x, y, z);
   if (flowers.has(k) || mushrooms.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       torches.has(k) || crops.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       campfires.has(k) || beehives.has(k) || scarecrows.has(k) ||
@@ -19875,6 +20183,12 @@ function placeBlock() {
     if (harvesters.has(hk)) { rotateHarvester(harvesters.get(hk)); return; }
   }
 
+  // Годівниця в прицілі (ПКМ) → повернути корито на чверть оберту
+  if (feeders.size > 0) {
+    const fk = feederKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    if (feeders.has(fk)) { rotateFeeder(feeders.get(fk)); return; }
+  }
+
   // Спостерігач у прицілі (ПКМ) → повернути око на чверть оберту
   if (observers.size > 0) {
     const ok = observerKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -20143,6 +20457,12 @@ function placeBlock() {
   // Жниварка — вихід мережі, що збирає врожай: фронт сигналу жне стигле
   if (id === HARVESTER) {
     placeHarvester(hit);
+    return;
+  }
+
+  // Годівниця — вихід мережі, що годує життя: фронт сигналу частує тварину
+  if (id === FEEDER) {
+    placeFeeder(hit);
     return;
   }
 
@@ -22747,6 +23067,32 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(14, 8, 1, 1);
     return;
   }
+  if (id === FEEDER) {
+    // Процедурна іконка годівниці: кам'яна тумба, дубове корито з зерном,
+    // черпак над яслами й сердечко частунку
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тінь під основою
+    ctx.fillRect(2, 14, 11, 1);
+    ctx.fillStyle = '#6f7680';                 // кам'яна тумба
+    ctx.fillRect(3, 12, 9, 2);
+    ctx.fillStyle = '#8a6a3f';                 // дубове корито
+    ctx.fillRect(2, 8, 2, 4);
+    ctx.fillRect(11, 8, 2, 4);
+    ctx.fillRect(2, 11, 11, 1);
+    ctx.fillStyle = '#e7c45a';                 // зерно в кориті
+    ctx.fillRect(4, 9, 7, 2);
+    ctx.fillStyle = '#c9a13e';                 // вершечок купки
+    ctx.fillRect(6, 8, 3, 1);
+    ctx.fillStyle = '#b0793c';                 // черпак над яслами
+    ctx.fillRect(9, 3, 5, 1);
+    ctx.fillRect(12, 4, 2, 2);
+    ctx.fillStyle = '#e5638a';                 // сердечко частунку
+    ctx.fillRect(3, 3, 2, 2);
+    ctx.fillRect(6, 3, 2, 2);
+    ctx.fillRect(4, 5, 3, 2);
+    return;
+  }
   if (id === OBSERVER) {
     // Процедурна іконка спостерігача: кам'яна основа, кам'яна скринька,
     // темна зіниця з бурштиновим зблиском і брова, що показує напрям
@@ -24227,6 +24573,8 @@ const ACHIEVEMENTS = [
   { id: 'lavastone',   icon: '🗿', title: 'Каменяр мережі',     desc: 'Вода з відкритого шлюзу застигла лаву в камінь — порода скута без жодного відра' },
   { id: 'reap',        icon: '🌾', title: 'Жнива без рук',      desc: 'Жниварка зжала стиглий колос просто в скриню — мережа вперше збирає врожай' },
   { id: 'breadloop',   icon: '🔁', title: 'Кругообіг хліба',    desc: 'Жниварка зжала колос, який сама ж і засіяла — жнива замкнулись у кільце' },
+  { id: 'feed',        icon: '🥣', title: 'Ситий двір',         desc: 'Годівниця почастувала тварину колоском зі скрині — мережа вперше годує життя' },
+  { id: 'feedloop',    icon: '💞', title: 'Приплід без господаря', desc: 'Пара, яку частувала годівниця, привела маля — розведення замкнулось без рук' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -26828,6 +27176,28 @@ window.MCDebug = {
       return { x: h.x, y: h.y, z: h.z, fx: h.fx, fz: h.fz, on: !!h.on,
                input: harvesterInputPowered(h),
                crop: c ? c.stage : null, cropSown: c ? !!c.sown : null,
+               chest: ch ? [ch.x, ch.y, ch.z, ch.store.wheat || 0] : null };
+    });
+  },
+  // Годівниця (для тестів)
+  giveFeeder: () => { assignBlockToSlot(FEEDER); return BLOCK_NAMES[FEEDER]; },
+  placeFeederAt: (x, y, z, fx = 1, fz = 0) => {
+    if (!powerCellFree(x, y, z)) return false;
+    return addFeeder(x, y, z, fx, fz);
+  },
+  rotateFeederAt: (x, y, z) => {
+    const f = feeders.get(feederKey(x, y, z));
+    if (!f) return null;
+    rotateFeeder(f);
+    return [f.fx, f.fz];
+  },
+  get feederInfo() {
+    return [...feeders.values()].map((f) => {
+      const ch = feederChest(f);
+      const a = feederAnimal(f);
+      return { x: f.x, y: f.y, z: f.z, fx: f.fx, fz: f.fz, on: !!f.on,
+               input: feederInputPowered(f),
+               animal: a ? { type: a.type, baby: !!a.baby } : null,
                chest: ch ? [ch.x, ch.y, ch.z, ch.store.wheat || 0] : null };
     });
   },
