@@ -525,6 +525,19 @@ const HARVESTER = 97;
 // замикається без господаря. ПКМ по годівниці повертає корито на чверть
 // оберту. Нове дієслово — годувати.
 const FEEDER = 98;
+// Комірник — п'ятий автоматичний «вхід» мережі: та сама кам'яна основа, що
+// в датчика світла, але бірюзовий кристал-скарбничка чує ДОБРО в скринях
+// упритул. Жниварка засипає зерно в скриню, годівниця вигрібає його до
+// тварин — а сама мережа до власних запасів була сліпа: кожна перевірка
+// комори вимагала руки гравця на кришці. Лежить у сусідній скрині (і по
+// діагоналі теж, як бачить годівниця) хоч один предмет — кристал жевріє
+// бірюзою і живить мережу, як увімкнений важіль; полиці вигребли — гасне.
+// ПКМ перемикає режим «нестача» — сигнал, коли полиці порожні (дзвін
+// тривоги над засікою, що показала дно). Жниварка + скриня + комірник +
+// лампа — стодола, що сама світить, коли зерно є; комірник «нестачі» +
+// дзвін — комора, що кличе господаря, щойно годівниця вигребла останній
+// колосок. Нове дієслово — відчувати достаток.
+const STOCK_SENSOR = 99;
 const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -678,6 +691,7 @@ const BLOCK_NAMES = {
   [RAIN_SENSOR]: 'Дощомір',
   [LIFE_SENSOR]: 'Чуйник',
   [EAR]: 'Вухо',
+  [STOCK_SENSOR]: 'Комірник',
   [INVERTER]: 'Інвертор',
   [REPEATER]: 'Повторювач',
   [COUNTER]: 'Лічильник',
@@ -716,7 +730,7 @@ const ALL_BLOCKS = [
   BUCKET, BOAT, LADDER, DOOR, FENCE, GATE, EGG, SIGN, RAIL, MINECART, CAMPFIRE,
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
-  LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, LIFE_SENSOR, EAR, INVERTER, REPEATER, COUNTER, ANDGATE, XORGATE, DICE, BUTTON, LATCH, TURRET, BELL, PISTON,
+  LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, LIFE_SENSOR, EAR, STOCK_SENSOR, INVERTER, REPEATER, COUNTER, ANDGATE, XORGATE, DICE, BUTTON, LATCH, TURRET, BELL, PISTON,
   STICKY_PISTON, FAN, SLUICE, HARVESTER, FEEDER, OBSERVER, TARGET, TRIPWIRE, DETECTOR_RAIL, POWER_RAIL,
   SWITCH_RAIL,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
@@ -12645,7 +12659,10 @@ if (savedGame && Array.isArray(savedGame.lamps)) {
 // Вухо (kind 3) — теж: аметистовий кристал-вушко чує ЗВУК — ноту, дзвін,
 // постріл стрільця й вибух (той — удвічі далі) — і тримає сигнал ще мить
 // після луни (режим «луна»/«тиша»). Перший бездротовий вхід мережі.
-const SENSOR_MAX = 32;                 // межа (спільна з дощоміром, чуйником і вухом), щоб збереження не розросталося
+// Комірник (kind 4) — теж: бірюзовий кристал-скарбничка чує ДОБРО в
+// скринях упритул (сусідні клітинки, і по діагоналі теж) — сигнал, поки
+// на полицях є хоч один предмет (режим «достаток»/«нестача»).
+const SENSOR_MAX = 32;                 // межа (спільна з дощоміром, чуйником, вухом і комірником), щоб збереження не розросталося
 const SENSOR_DAY_T = 0.15;             // поріг сонця: вище — «день» (як павуки)
 const sensorKey = leverKey;
 
@@ -12691,6 +12708,15 @@ const EAR_ECHO_ON_MAT = new THREE.MeshLambertMaterial({
 const EAR_HUSH_MAT = new THREE.MeshLambertMaterial({ color: 0x6e7480 });
 const EAR_HUSH_ON_MAT = new THREE.MeshLambertMaterial({
   color: 0xdde4f0, emissive: 0x8a9acc, emissiveIntensity: 0.9 });
+// Комірник (kind 4) — той самий прилад, але кристал-скарбничка чує добро
+// в скринях поруч: режим «достаток» — бірюза, режим «нестача» — глиняна
+// вохра; активний стан — засвічений варіант того самого кольору
+const STOCK_FULL_MAT = new THREE.MeshLambertMaterial({ color: 0x3e8a8a });
+const STOCK_FULL_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xa8fff0, emissive: 0x2accb8, emissiveIntensity: 0.9 });
+const STOCK_LACK_MAT = new THREE.MeshLambertMaterial({ color: 0x8a5a4e });
+const STOCK_LACK_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xffbfa8, emissive: 0xcc5a2a, emissiveIntensity: 0.9 });
 
 function makeSensorModel() {
   const g = new THREE.Group();
@@ -12755,11 +12781,30 @@ function earHears(s) {
   return heard;
 }
 
+// Що бачить комірник у скринях упритул (сусідні клітинки, і по діагоналі
+// теж, як скриню бачить годівниця): чи стоїть поруч хоч одна скриня і чи
+// лежить на її полицях хоч один предмет будь-якого виду
+function stockNearby(s) {
+  let hasChest = false;
+  for (const c of chests.values()) {
+    if (Math.abs(c.x - s.x) > 1 || Math.abs(c.y - s.y) > 1 ||
+        Math.abs(c.z - s.z) > 1) continue;
+    hasChest = true;
+    for (const k in c.store) {
+      if (c.store[k] > 0) return { hasChest: true, goods: true };
+    }
+  }
+  return { hasChest, goods: false };
+}
+
 // Чи «бачить» датчик своє: світло (kind 0) — час доби (mode 0 — день,
 // 1 — ніч); дощомір (kind 1) — опади на чаші (mode 0 — дощ, 1 — ясно);
 // чуйник (kind 2) — істоти поруч (mode 0 — живе, 1 — пустка);
-// вухо (kind 3) — недавня луна (mode 0 — луна, 1 — тиша)
-const sensorActive = (s) => s.kind === 3
+// вухо (kind 3) — недавня луна (mode 0 — луна, 1 — тиша);
+// комірник (kind 4) — добро в скрині поруч (mode 0 — достаток, 1 — нестача)
+const sensorActive = (s) => s.kind === 4
+  ? (s.mode === 1 ? !stockNearby(s).goods : stockNearby(s).goods)
+  : s.kind === 3
   ? (s.mode === 1 ? s.heardT <= 0 : s.heardT > 0)
   : s.kind === 2
   ? (s.mode === 1 ? !sensedCreature(s) : !!sensedCreature(s))
@@ -12769,6 +12814,12 @@ const sensorActive = (s) => s.kind === 3
 
 // Кристал міняє колір за видом, режимом і станом
 function applySensorLook(s) {
+  if (s.kind === 4) {
+    s.eye.material = s.mode === 1
+      ? (s.active ? STOCK_LACK_ON_MAT : STOCK_LACK_MAT)
+      : (s.active ? STOCK_FULL_ON_MAT : STOCK_FULL_MAT);
+    return;
+  }
   if (s.kind === 3) {
     s.eye.material = s.mode === 1
       ? (s.active ? EAR_HUSH_ON_MAT : EAR_HUSH_MAT)
@@ -12801,7 +12852,7 @@ function addSensor(x, y, z, mode = 0, kind = 0) {
   g.position.set(x + 0.5, y, z + 0.5);
   scene.add(g);
   const s = { x, y, z, group: g, eye, mode: mode === 1 ? 1 : 0,
-              kind: kind >= 1 && kind <= 3 ? kind : 0, active: null,
+              kind: kind >= 1 && kind <= 4 ? kind : 0, active: null,
               heardT: 0, heardD: 0, heardKind: null };
   applySensorLook(s);
   sensors.set(key, s);
@@ -12829,14 +12880,15 @@ function breakSensor(key) {
 // Поставити датчик у клітинку перед прицілом (лише на тверду підлогу);
 // kind 1 — дощомір: та сама основа, але кристал-чаша чує опади;
 // kind 2 — чуйник: кристал-серце чує істот поруч;
-// kind 3 — вухо: кристал-вушко чує звук околиці
+// kind 3 — вухо: кристал-вушко чує звук околиці;
+// kind 4 — комірник: кристал-скарбничка чує добро в скринях упритул
 function placeSensor(hit, kind = 0) {
   const [x, y, z] = hit.prev;
   if (!powerCellFree(x, y, z)) return false;
   if (!addSensor(x, y, z, 0, kind)) return false;
   Sound.place(GLASS);
   spawnParticles(x + 0.5, y + 0.25, z + 0.5,
-    new THREE.Color(kind === 3 ? 0x6a4e8a : kind === 2 ? 0x8a3e5e : kind === 1 ? 0x3e6d8a : 0xb08a3e), 6,
+    new THREE.Color(kind === 4 ? 0x3e8a8a : kind === 3 ? 0x6a4e8a : kind === 2 ? 0x8a3e5e : kind === 1 ? 0x3e6d8a : 0xb08a3e), 6,
     { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
   return true;
 }
@@ -12848,7 +12900,9 @@ function toggleSensorMode(s) {
   s.active = null;
   applySensorLook(s);
   Sound.lever(s.mode === 1);
-  const sparkColor = s.kind === 3
+  const sparkColor = s.kind === 4
+    ? (s.mode === 1 ? 0xffbfa8 : 0xa8fff0)
+    : s.kind === 3
     ? (s.mode === 1 ? 0xdde4f0 : 0xd8b8ff)
     : s.kind === 2
     ? (s.mode === 1 ? 0xf0e8c8 : 0xff9fc8)
@@ -12857,7 +12911,11 @@ function toggleSensorMode(s) {
     : (s.mode === 1 ? 0xa8c4ff : 0xffe08a);
   spawnParticles(s.x + 0.5, s.y + 0.3, s.z + 0.5, new THREE.Color(sparkColor), 4,
     { radius: 0.15, speed: 0.9, upBias: 0.8, life: 0.4, size: 0.07, gravity: 2 });
-  flashItemName(s.kind === 3
+  flashItemName(s.kind === 4
+    ? (s.mode === 1
+      ? '🕳️ Комірник: режим «нестача» — сигнал, коли полиці порожні'
+      : '🧺 Комірник: режим «достаток» — сигнал, поки в скрині поруч є добро')
+    : s.kind === 3
     ? (s.mode === 1
       ? '🤫 Вухо: режим «тиша» — сигнал, поки довкола тихо'
       : '👂 Вухо: режим «луна» — сигнал, поки чути звук')
@@ -12918,7 +12976,9 @@ function updateSensors(dt) {
     applySensorLook(s);
     Sound.sensor(now);
     if (now) {
-      const sparkColor = s.kind === 3
+      const sparkColor = s.kind === 4
+        ? (s.mode === 1 ? 0xffbfa8 : 0xa8fff0)
+        : s.kind === 3
         ? (s.mode === 1 ? 0xdde4f0 : 0xd8b8ff)
         : s.kind === 2
         ? (s.mode === 1 ? 0xf0e8c8 : 0xff9fc8)
@@ -12933,7 +12993,12 @@ function updateSensors(dt) {
       for (const n of struck) strikeNote(n);
       igniteTntAround(s.x, s.y, s.z);
       if (sensorFeedsNetwork(s)) {
-        unlockAch(s.kind === 3 ? 'earwire' : s.kind === 2 ? 'lifesense' : s.kind === 1 ? 'raingauge' : 'sensor');
+        unlockAch(s.kind === 4 ? 'stocksense' : s.kind === 3 ? 'earwire' : s.kind === 2 ? 'lifesense' : s.kind === 1 ? 'raingauge' : 'sensor');
+      }
+      // Комірник у режимі «нестача» здійняв сигнал над СПРАВЖНЬОЮ порожньою
+      // скринею (а не над голою землею) — засіка показала дно
+      if (s.kind === 4 && s.mode === 1 && stockNearby(s).hasChest) {
+        unlockAch('ranempty');
       }
       // Вухо почуло звук здалеку (режим «луна») — сигнал здолав повітря
       // без жодної линви: перший бездротовий зв'язок мережі
@@ -20369,6 +20434,13 @@ function placeBlock() {
     return;
   }
 
+  // Комірник — п'ятий автоматичний вхід: живить мережу, поки в скрині
+  // впритул лежить хоч один предмет
+  if (id === STOCK_SENSOR) {
+    placeSensor(hit, 4);
+    return;
+  }
+
   // Інвертор — логічний елемент мережі: віддає протилежне до входу позаду
   if (id === INVERTER) {
     placeInverter(hit);
@@ -22673,6 +22745,32 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(13, 6, 1, 1);
     return;
   }
+  if (id === STOCK_SENSOR) {
+    // Процедурна іконка комірника: кам'яна основа, бірюзовий
+    // кристал-скарбничка й скринька з добром поруч — запас, який він чує
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тінь під основою
+    ctx.fillRect(2, 14, 12, 1);
+    ctx.fillStyle = '#6f7680';                 // кам'яна основа
+    ctx.fillRect(2, 12, 12, 2);
+    ctx.fillStyle = '#4a4f57';                 // темна оправа
+    ctx.fillRect(3, 10, 10, 2);
+    ctx.fillStyle = '#3e8a8a';                 // кристал-скарбничка
+    ctx.fillRect(4, 7, 8, 3);
+    ctx.fillStyle = '#a8fff0';                 // відблиск кристала
+    ctx.fillRect(5, 7, 3, 1);
+    ctx.fillStyle = '#7a5230';                 // скринька з добром угорі
+    ctx.fillRect(9, 2, 6, 4);
+    ctx.fillStyle = '#9a6b3f';                 // кришка скриньки
+    ctx.fillRect(9, 2, 6, 1);
+    ctx.fillStyle = '#e8c437';                 // золота защіпка
+    ctx.fillRect(11, 3, 2, 2);
+    ctx.fillStyle = '#57c9b0';                 // іскра чуття до кристала
+    ctx.fillRect(7, 4, 1, 1);
+    ctx.fillRect(6, 5, 1, 1);
+    return;
+  }
   if (id === INVERTER) {
     // Процедурна іконка інвертора: кам'яна основа, стовпчик із бузковим
     // кристалом, брасова стрілка виходу й перекреслена іскра входу
@@ -24575,6 +24673,8 @@ const ACHIEVEMENTS = [
   { id: 'breadloop',   icon: '🔁', title: 'Кругообіг хліба',    desc: 'Жниварка зжала колос, який сама ж і засіяла — жнива замкнулись у кільце' },
   { id: 'feed',        icon: '🥣', title: 'Ситий двір',         desc: 'Годівниця почастувала тварину колоском зі скрині — мережа вперше годує життя' },
   { id: 'feedloop',    icon: '💞', title: 'Приплід без господаря', desc: 'Пара, яку частувала годівниця, привела маля — розведення замкнулось без рук' },
+  { id: 'stocksense',  icon: '🧺', title: 'Повна комора',       desc: 'Комірник сам подав сигнал у мережу — мережа відчула достаток у скрині' },
+  { id: 'ranempty',    icon: '🕳️', title: 'Дно засіка',         desc: 'Комірник у режимі «нестача» здійняв сигнал над порожньою скринею — полиці вигребли до дна' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -26869,8 +26969,11 @@ window.MCDebug = {
   get sensorInfo() {
     return [...sensors.values()].map((s) =>
       ({ x: s.x, y: s.y, z: s.z,
-         kind: s.kind === 2 ? 'чуйник' : s.kind === 1 ? 'дощомір' : 'світло',
-         mode: s.kind === 2 ? (s.mode === 1 ? 'пустка' : 'живе')
+         kind: s.kind === 4 ? 'комірник' : s.kind === 3 ? 'вухо'
+             : s.kind === 2 ? 'чуйник' : s.kind === 1 ? 'дощомір' : 'світло',
+         mode: s.kind === 4 ? (s.mode === 1 ? 'нестача' : 'достаток')
+             : s.kind === 3 ? (s.mode === 1 ? 'тиша' : 'луна')
+             : s.kind === 2 ? (s.mode === 1 ? 'пустка' : 'живе')
              : s.kind === 1 ? (s.mode === 1 ? 'ясно' : 'дощ')
                             : (s.mode === 1 ? 'ніч' : 'день'),
          active: !!s.active }));
@@ -26904,6 +27007,16 @@ window.MCDebug = {
     ({ x: s.x, y: s.y, z: s.z, mode: s.mode, active: s.active,
        heardT: +s.heardT.toFixed(2), heardKind: s.heardKind,
        heardD: +s.heardD.toFixed(2) })),
+  // Комірник (для тестів)
+  giveStockSensor: () => { assignBlockToSlot(STOCK_SENSOR); return BLOCK_NAMES[STOCK_SENSOR]; },
+  placeStockSensorAt: (x, y, z, mode = 0) => {
+    if (!placeSensor({ prev: [x, y, z] }, 4)) return false;
+    if (mode === 1) toggleSensorMode(sensors.get(sensorKey(x, y, z)));
+    return true;
+  },
+  stockInfo: () => [...sensors.values()].filter((s) => s.kind === 4).map((s) =>
+    ({ x: s.x, y: s.y, z: s.z, mode: s.mode, active: s.active,
+       ...stockNearby(s) })),
   setWeather: (state = 'rain', dur = 60) => {
     if (state !== 'rain' && state !== 'snow' && state !== 'clear') return false;
     weatherState = state;
