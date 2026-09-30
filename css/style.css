@@ -290,6 +290,7 @@ kbd {
 #baked-badge,
 #truffle-badge,
 #crown-badge,
+#wool-badge,
 #armor-badge {
   position: fixed;
   right: 16px;
@@ -366,6 +367,10 @@ kbd {
 
 #armor-badge {
   bottom: 838px;
+}
+
+#wool-badge {
+  bottom: 882px;
 }
 
 /* Розбитий обладунок: бейдж тьмяніє, доки панцир не полагоджено */
@@ -540,6 +545,7 @@ kbd {
 #baked-badge[hidden],
 #truffle-badge[hidden],
 #crown-badge[hidden],
+#wool-badge[hidden],
 #armor-badge[hidden] {
   display: none;
 }
@@ -564,6 +570,7 @@ kbd {
   #baked-badge,
   #truffle-badge,
   #crown-badge,
+  #wool-badge,
   #armor-badge,
   #ore-badge,
   #flower-badge,
