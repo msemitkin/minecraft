@@ -577,6 +577,18 @@ const COLLECTOR = 101;
 // носій возить — вовняна мануфактура без господаря. Нове дієслово —
 // стригти.
 const SHEARER = 102;
+// Жорна — вихід мережі, що МЕЛЕ: перша машина переробки. Кам'яний постамент
+// із двома млиновими каменями й дубовим коробом-засипом. Поки поруч
+// (сусідні клітинки, ±1 по всіх осях — як у лампи) є живий сигнал і впритул
+// стоїть СКРИНЯ з колосками 🌾 на полиці — верхній камінь крутиться, і за
+// GRINDER_GRIND_TIME секунд WHEAT_PER_FLOUR колосків зі скрині стають
+// борошном 🥣 на тій самій полиці. Обмін атомарний у мить домелювання, тож
+// зламані по дорозі жорна зерна не гублять. Без скрині, без колосків чи з
+// повною полицею борошна — камені стоять тихо. Дотепер жорна були лише у
+// вітряку і мололи тільки з торби гравця: жниварка жне в скриню, жорна
+// мелють на полиці, носій возить — млинарство без господаря. Нове
+// дієслово — молоти.
+const GRINDER = 103;
 const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -745,6 +757,7 @@ const BLOCK_NAMES = {
   [PORTER]: 'Носій',
   [COLLECTOR]: 'Збирач',
   [SHEARER]: 'Стригаль',
+  [GRINDER]: 'Жорна',
   [BUTTON]: 'Кнопка',
   [LATCH]: 'Защіпка',
   [TURRET]: 'Стрілець',
@@ -773,7 +786,7 @@ const ALL_BLOCKS = [
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
   LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, LIFE_SENSOR, EAR, STOCK_SENSOR, INVERTER, REPEATER, COUNTER, ANDGATE, XORGATE, DICE, BUTTON, LATCH, TURRET, BELL, PISTON,
-  STICKY_PISTON, FAN, SLUICE, HARVESTER, FEEDER, PORTER, COLLECTOR, SHEARER, OBSERVER, TARGET, TRIPWIRE, DETECTOR_RAIL, POWER_RAIL,
+  STICKY_PISTON, FAN, SLUICE, HARVESTER, FEEDER, PORTER, COLLECTOR, SHEARER, GRINDER, OBSERVER, TARGET, TRIPWIRE, DETECTOR_RAIL, POWER_RAIL,
   SWITCH_RAIL,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
@@ -1091,6 +1104,8 @@ function saveGame() {
         [c.x, c.y, c.z, c.gathered | 0]),
       shearers: [...shearers.values()].map((s) =>
         [s.x, s.y, s.z, s.shorn | 0]),
+      grinders: [...grinders.values()].map((g) =>
+        [g.x, g.y, g.z, g.ground | 0]),
       observers: [...observers.values()].map((ob) =>
         [ob.x, ob.y, ob.z, ob.fx, ob.fz]),
       targets: [...targets.values()].map((t) =>
@@ -7462,7 +7477,7 @@ function startBreakOrAttack() {
       plates.size > 0 || notes.size > 0 || chests.size > 0 ||
       levers.size > 0 || wires.size > 0 || lamps.size > 0 || sensors.size > 0 ||
       inverters.size > 0 || buttons.size > 0 || latches.size > 0 ||
-      turrets.size > 0 || bells.size > 0 || pistons.size > 0 || fans.size > 0 || sluices.size > 0 || harvesters.size > 0 || feeders.size > 0 || porters.size > 0 || collectors.size > 0 || shearers.size > 0 || observers.size > 0 ||
+      turrets.size > 0 || bells.size > 0 || pistons.size > 0 || fans.size > 0 || sluices.size > 0 || harvesters.size > 0 || feeders.size > 0 || porters.size > 0 || collectors.size > 0 || shearers.size > 0 || grinders.size > 0 || observers.size > 0 ||
       targets.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
@@ -7643,6 +7658,11 @@ function startBreakOrAttack() {
       }
       if (shearers.has(key)) {
         breakShearer(key);
+        triggerSwing();
+        return;
+      }
+      if (grinders.has(key)) {
+        breakGrinder(key);
         triggerSwing();
         return;
       }
@@ -8822,7 +8842,7 @@ function placeTorch(hit) {
       inverters.has(torchKey(x, y, z)) ||
       buttons.has(torchKey(x, y, z)) ||
       latches.has(torchKey(x, y, z)) || turrets.has(torchKey(x, y, z)) || bells.has(torchKey(x, y, z)) ||
-      pistons.has(torchKey(x, y, z)) || fans.has(torchKey(x, y, z)) || sluices.has(torchKey(x, y, z)) || harvesters.has(torchKey(x, y, z)) || feeders.has(torchKey(x, y, z)) || porters.has(torchKey(x, y, z)) || collectors.has(torchKey(x, y, z)) || shearers.has(torchKey(x, y, z)) ||
+      pistons.has(torchKey(x, y, z)) || fans.has(torchKey(x, y, z)) || sluices.has(torchKey(x, y, z)) || harvesters.has(torchKey(x, y, z)) || feeders.has(torchKey(x, y, z)) || porters.has(torchKey(x, y, z)) || collectors.has(torchKey(x, y, z)) || shearers.has(torchKey(x, y, z)) || grinders.has(torchKey(x, y, z)) ||
       observers.has(torchKey(x, y, z)) || targets.has(torchKey(x, y, z)) || tripwires.has(torchKey(x, y, z))) return false;
   // Напрямок від клітинки смолоскипа до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
@@ -8994,7 +9014,7 @@ function placeLadder(hit) {
       inverters.has(ladderKey(x, y, z)) ||
       buttons.has(ladderKey(x, y, z)) ||
       latches.has(ladderKey(x, y, z)) || turrets.has(ladderKey(x, y, z)) || bells.has(ladderKey(x, y, z)) ||
-      pistons.has(ladderKey(x, y, z)) || fans.has(ladderKey(x, y, z)) || sluices.has(ladderKey(x, y, z)) || harvesters.has(ladderKey(x, y, z)) || feeders.has(ladderKey(x, y, z)) || porters.has(ladderKey(x, y, z)) || collectors.has(ladderKey(x, y, z)) || shearers.has(ladderKey(x, y, z)) ||
+      pistons.has(ladderKey(x, y, z)) || fans.has(ladderKey(x, y, z)) || sluices.has(ladderKey(x, y, z)) || harvesters.has(ladderKey(x, y, z)) || feeders.has(ladderKey(x, y, z)) || porters.has(ladderKey(x, y, z)) || collectors.has(ladderKey(x, y, z)) || shearers.has(ladderKey(x, y, z)) || grinders.has(ladderKey(x, y, z)) ||
       observers.has(ladderKey(x, y, z)) || targets.has(ladderKey(x, y, z)) || tripwires.has(ladderKey(x, y, z))) return false;
   // Напрямок від клітинки драбини до блока, по якому клікнули
   const sx = hit.block[0] - x, sy = hit.block[1] - y, sz = hit.block[2] - z;
@@ -9207,7 +9227,7 @@ function placeDoor(hit) {
         beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
         lightningRods.has(k) ||
         mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -9476,7 +9496,7 @@ function fenceCellFree(x, y, z) {
          !lightningRods.has(k) &&
          !mushrooms.has(k) && !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
          !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k) && !inverters.has(k) && !buttons.has(k) &&
-         !latches.has(k) && !turrets.has(k) && !bells.has(k) && !pistons.has(k) && !fans.has(k) && !sluices.has(k) && !harvesters.has(k) && !feeders.has(k) && !porters.has(k) && !collectors.has(k) && !shearers.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
+         !latches.has(k) && !turrets.has(k) && !bells.has(k) && !pistons.has(k) && !fans.has(k) && !sluices.has(k) && !harvesters.has(k) && !feeders.has(k) && !porters.has(k) && !collectors.has(k) && !shearers.has(k) && !grinders.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -9658,7 +9678,7 @@ function plantCrop(hit) {
       sensors.has(cropKey(x, y, z)) || inverters.has(cropKey(x, y, z)) ||
       buttons.has(cropKey(x, y, z)) ||
       latches.has(cropKey(x, y, z)) || turrets.has(cropKey(x, y, z)) || bells.has(cropKey(x, y, z)) ||
-      pistons.has(cropKey(x, y, z)) || fans.has(cropKey(x, y, z)) || sluices.has(cropKey(x, y, z)) || harvesters.has(cropKey(x, y, z)) || feeders.has(cropKey(x, y, z)) || porters.has(cropKey(x, y, z)) || collectors.has(cropKey(x, y, z)) || shearers.has(cropKey(x, y, z)) ||
+      pistons.has(cropKey(x, y, z)) || fans.has(cropKey(x, y, z)) || sluices.has(cropKey(x, y, z)) || harvesters.has(cropKey(x, y, z)) || feeders.has(cropKey(x, y, z)) || porters.has(cropKey(x, y, z)) || collectors.has(cropKey(x, y, z)) || shearers.has(cropKey(x, y, z)) || grinders.has(cropKey(x, y, z)) ||
       observers.has(cropKey(x, y, z)) || targets.has(cropKey(x, y, z)) || tripwires.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
@@ -9837,7 +9857,7 @@ function plantSapling(hit) {
       sensors.has(saplingKey(x, y, z)) || inverters.has(saplingKey(x, y, z)) ||
       buttons.has(saplingKey(x, y, z)) ||
       latches.has(saplingKey(x, y, z)) || turrets.has(saplingKey(x, y, z)) || bells.has(saplingKey(x, y, z)) ||
-      pistons.has(saplingKey(x, y, z)) || fans.has(saplingKey(x, y, z)) || sluices.has(saplingKey(x, y, z)) || harvesters.has(saplingKey(x, y, z)) || feeders.has(saplingKey(x, y, z)) || porters.has(saplingKey(x, y, z)) || collectors.has(saplingKey(x, y, z)) || shearers.has(saplingKey(x, y, z)) ||
+      pistons.has(saplingKey(x, y, z)) || fans.has(saplingKey(x, y, z)) || sluices.has(saplingKey(x, y, z)) || harvesters.has(saplingKey(x, y, z)) || feeders.has(saplingKey(x, y, z)) || porters.has(saplingKey(x, y, z)) || collectors.has(saplingKey(x, y, z)) || shearers.has(saplingKey(x, y, z)) || grinders.has(saplingKey(x, y, z)) ||
       observers.has(saplingKey(x, y, z)) || targets.has(saplingKey(x, y, z)) || tripwires.has(saplingKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addSapling(x, y, z)) return false;
@@ -10009,7 +10029,7 @@ function placeBed(hit) {
       sensors.has(bedKey(x, y, z)) || inverters.has(bedKey(x, y, z)) ||
       buttons.has(bedKey(x, y, z)) ||
       latches.has(bedKey(x, y, z)) || turrets.has(bedKey(x, y, z)) || bells.has(bedKey(x, y, z)) ||
-      pistons.has(bedKey(x, y, z)) || fans.has(bedKey(x, y, z)) || sluices.has(bedKey(x, y, z)) || harvesters.has(bedKey(x, y, z)) || feeders.has(bedKey(x, y, z)) || porters.has(bedKey(x, y, z)) || collectors.has(bedKey(x, y, z)) || shearers.has(bedKey(x, y, z)) ||
+      pistons.has(bedKey(x, y, z)) || fans.has(bedKey(x, y, z)) || sluices.has(bedKey(x, y, z)) || harvesters.has(bedKey(x, y, z)) || feeders.has(bedKey(x, y, z)) || porters.has(bedKey(x, y, z)) || collectors.has(bedKey(x, y, z)) || shearers.has(bedKey(x, y, z)) || grinders.has(bedKey(x, y, z)) ||
       observers.has(bedKey(x, y, z)) || targets.has(bedKey(x, y, z)) || tripwires.has(bedKey(x, y, z))) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;           // потрібна тверда підлога
   // Не ставити ліжко всередину гравця
@@ -10244,7 +10264,7 @@ function signCellFree(x, y, z) {
          !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k) &&
          !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
          !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k) && !inverters.has(k) && !buttons.has(k) &&
-         !latches.has(k) && !turrets.has(k) && !bells.has(k) && !pistons.has(k) && !fans.has(k) && !sluices.has(k) && !harvesters.has(k) && !feeders.has(k) && !porters.has(k) && !collectors.has(k) && !shearers.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
+         !latches.has(k) && !turrets.has(k) && !bells.has(k) && !pistons.has(k) && !fans.has(k) && !sluices.has(k) && !harvesters.has(k) && !feeders.has(k) && !porters.has(k) && !collectors.has(k) && !shearers.has(k) && !grinders.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
 }
 
 // ===== Редактор напису (створюється в JS — без правок HTML) =====
@@ -10943,7 +10963,7 @@ function placeRail(hit, det = false, pw = false, sw = false) {
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) ||
       flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       lightningRods.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
@@ -11580,7 +11600,7 @@ function breakPlate(key) {
 function placePlate(hit) {
   const [x, y, z] = hit.prev;
   const k = plateKey(x, y, z);
-  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
+  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -11819,7 +11839,7 @@ function placeNote(hit) {
   const [x, y, z] = hit.prev;
   const k = noteKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || notes.has(k) || plates.has(k) || levers.has(k) ||
-      wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
+      wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -11937,6 +11957,8 @@ const feeders = new Map();             // годівниці (секція ни�
 const porters = new Map();             // носії (секція нижче); реєстр тут —
                                        // гарди й линви бачать їх раніше за секцію
 const shearers = new Map();            // стригалі (секція нижче); реєстр тут —
+const grinders = new Map();            // жорна (секція нижче); реєстр тут —
+                                       // гарди й линви бачать їх раніше за секцію
 const collectors = new Map();          // збирачі (секція нижче); реєстр тут —
                                        // гарди й линви бачать їх раніше за секцію
 const observers = new Map();           // спостерігачі (секція нижче); реєстр
@@ -11994,7 +12016,7 @@ function powerNodeAt(x, y, z) {
   const k = wireKey(x, y, z);
   if (wires.has(k) || levers.has(k) || plates.has(k) || sensors.has(k) ||
       inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) ||
-      bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) ||
+      bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) ||
       tripwires.has(k)) return true;
   const r = rails.get(k);
   return !!(r && r.det);   // датчикова рейка — теж вузол мережі
@@ -12108,7 +12130,7 @@ function breakWire(key) {
 function powerCellFree(x, y, z) {
   const k = leverKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
@@ -12265,7 +12287,7 @@ const heldByPower = (tag) => powerHeld.has(tag) || powerNeed.has(tag);
 function updatePower(dt) {
   if (levers.size === 0 && wires.size === 0 && sensors.size === 0 &&
       inverters.size === 0 && buttons.size === 0 && latches.size === 0 &&
-      turrets.size === 0 && bells.size === 0 && pistons.size === 0 && fans.size === 0 && sluices.size === 0 && harvesters.size === 0 && feeders.size === 0 && porters.size === 0 && collectors.size === 0 && shearers.size === 0 &&
+      turrets.size === 0 && bells.size === 0 && pistons.size === 0 && fans.size === 0 && sluices.size === 0 && harvesters.size === 0 && feeders.size === 0 && porters.size === 0 && collectors.size === 0 && shearers.size === 0 && grinders.size === 0 &&
       observers.size === 0 &&
       targets.size === 0 && tripwires.size === 0 &&
       detRailCount === 0 &&
@@ -12337,6 +12359,7 @@ function updatePower(dt) {
   // Стригалі: опора, живий сигнал поруч і стрижка овець у скриню — після
   // збирачів, з тих самих причин: читають стан минулого кадру
   updateShearers(dt);
+  updateGrinders(dt);
   // Інвертори: опора, читання входу й перекидання кристала (з затримкою) —
   // до BFS, щоб мережа цього ж кадру бачила свіжі джерела
   updateInverters(dt);
@@ -14600,7 +14623,7 @@ function pistonDestFree(x, y, z) {
   const k = pistonKey(x, y, z);
   return !(plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) ||
     lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) ||
-    latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
+    latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
     ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
     saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
     beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) ||
@@ -15826,7 +15849,7 @@ function applyPorterFacing(p) {
 // пакунка (важливо після завантаження сейву — перенесення не вигадується)
 function addPorter(x, y, z, fx = 1, fz = 0, carried = 0) {
   const key = porterKey(x, y, z);
-  if (porters.has(key) || collectors.has(key) || shearers.has(key) || porters.size >= PORTER_MAX) return false;
+  if (porters.has(key) || collectors.has(key) || shearers.has(key) || grinders.has(key) || porters.size >= PORTER_MAX) return false;
   // Зіпсований напрям (правлений сейв) — жолоб на схід
   if (!((Math.abs(fx) === 1 && fz === 0) || (fx === 0 && Math.abs(fz) === 1))) {
     fx = 1; fz = 0;
@@ -16538,6 +16561,197 @@ if (savedGame && Array.isArray(savedGame.shearers)) {
   for (const e of savedGame.shearers) {
     if (Array.isArray(e) && e.length >= 3) {
       addShearer(e[0], e[1], e[2], e[3] | 0);
+    }
+  }
+}
+
+// ============================================================
+// Жорна: мережа меле зерно
+// ============================================================
+// Жорна — перша машина переробки: кам'яний постамент із лежнем і бігуном —
+// двома млиновими каменями, як у вітряка, тільки без крил і без господаря.
+// Поки поруч (сусідні клітинки, ±1 по всіх осях — як засвічується лампа) є
+// живий сигнал і впритул стоїть скриня з колосками на полиці — бігун
+// крутиться, сиплеться пилок, і за GRINDER_GRIND_TIME секунд
+// WHEAT_PER_FLOUR колосків зі скрині стають борошном на тій самій полиці.
+// Обмін атомарний у мить домелювання: зламані по дорозі жорна зерна не
+// гублять. Без скрині, без колосків чи з повною полицею борошна — камені
+// стоять тихо, зерно лишається лежати, де лежало.
+
+const grinderKey = leverKey;
+const GRINDER_MAX = 32;                // межа, щоб збереження не розросталося
+const GRINDER_GRIND_TIME = 8;          // секунд на одну засипку (як у вітряка)
+const GRINDER_GUILD_N = 24;            // борошна на «Борошняний цех»
+
+const GRN_BASE_GEO = new THREE.BoxGeometry(0.6, 0.14, 0.6);
+const GRN_BASE_MAT = new THREE.MeshLambertMaterial({ color: 0x6f7680 });
+const GRN_BED_GEO = new THREE.BoxGeometry(0.52, 0.12, 0.52);
+const GRN_BED_MAT = new THREE.MeshLambertMaterial({ color: 0x7d848d });
+const GRN_RUN_GEO = new THREE.BoxGeometry(0.46, 0.14, 0.46);
+const GRN_RUN_MAT = new THREE.MeshLambertMaterial({ color: 0x868d96 });
+const GRN_RUN_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0x9aa1aa, emissive: 0x4a3b22 });
+const GRN_HANDLE_GEO = new THREE.BoxGeometry(0.07, 0.2, 0.07);
+GRN_HANDLE_GEO.translate(0.16, 0.14, 0.16);
+const GRN_HANDLE_MAT = new THREE.MeshLambertMaterial({ color: 0x8a6a3f });
+const GRN_STONE_COLOR = new THREE.Color(0x7d848d);
+
+function makeGrinderModel() {
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(GRN_BASE_GEO, GRN_BASE_MAT);
+  base.position.y = 0.07;
+  g.add(base);
+  const bed = new THREE.Mesh(GRN_BED_GEO, GRN_BED_MAT);
+  bed.position.y = 0.2;
+  g.add(bed);
+  // Бігун — верхній камінь із дерев'яним руків'ям, крутиться окремою групою
+  const runner = new THREE.Group();
+  runner.position.y = 0.33;
+  const runMesh = new THREE.Mesh(GRN_RUN_GEO, GRN_RUN_MAT);
+  runner.add(runMesh, new THREE.Mesh(GRN_HANDLE_GEO, GRN_HANDLE_MAT));
+  g.add(runner);
+  return { g, runner, runMesh };
+}
+
+function addGrinder(x, y, z, ground = 0) {
+  const key = grinderKey(x, y, z);
+  if (grinders.has(key) || grinders.size >= GRINDER_MAX) return false;
+  const { g, runner, runMesh } = makeGrinderModel();
+  g.position.set(x + 0.5, y, z + 0.5);
+  scene.add(g);
+  grinders.set(key, { x, y, z, group: g, runner, runMesh,
+    on: false, grindT: 0, dustT: 0, creakT: 0,
+    ground: Math.max(0, ground | 0) });
+  refreshWiresAround(x, y, z);
+  return true;
+}
+
+function removeGrinder(key) {
+  const g = grinders.get(key);
+  if (!g) return;
+  scene.remove(g.group);   // геометрія/матеріали спільні — не dispose
+  grinders.delete(key);
+  refreshWiresAround(g.x, g.y, g.z);
+}
+
+// Розібрати жорна ударом (чи втратою опори): обмін атомарний у мить
+// домелювання, тож недомелена засипка — це ще колоски в скрині, нічого
+// не пропадає
+function breakGrinder(key) {
+  const g = grinders.get(key);
+  if (!g) return;
+  spawnParticles(g.x + 0.5, g.y + 0.3, g.z + 0.5, GRN_STONE_COLOR, 6,
+    { radius: 0.25, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 10 });
+  Sound.breakBlock(STONE);
+  removeGrinder(key);
+}
+
+// Поставити жорна в клітинку перед прицілом (лише на тверду підлогу);
+// напряму не мають — скриню бачать з усіх боків
+function placeGrinder(hit) {
+  const [x, y, z] = hit.prev;
+  if (!powerCellFree(x, y, z)) return false;
+  if (!addGrinder(x, y, z)) return false;
+  Sound.place(STONE);
+  spawnParticles(x + 0.5, y + 0.3, z + 0.5, GRN_STONE_COLOR, 6,
+    { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
+  return true;
+}
+
+// Стан живлення жорен: живий сигнал у сусідніх клітинках (±1 по всіх
+// осях, і по діагоналі теж — як засвічується лампа)
+function grinderPowered(g) {
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        if (dx === 0 && dy === 0 && dz === 0) continue;
+        if (powerSourceLiveAt(grinderKey(g.x + dx, g.y + dy, g.z + dz))) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function setGrinderGlow(g, on) {
+  g.runMesh.material = on ? GRN_RUN_ON_MAT : GRN_RUN_MAT;
+}
+
+// Скриня впритул до жорен (сусідні клітинки, і по діагоналі теж, як бачить
+// скриню стригаль) із засипкою колосків і місцем для борошна на полиці
+function grinderChest(g) {
+  for (const ch of chests.values()) {
+    if (Math.abs(ch.x - g.x) > 1 || Math.abs(ch.y - g.y) > 1 ||
+        Math.abs(ch.z - g.z) > 1) continue;
+    if ((ch.store.wheat || 0) >= WHEAT_PER_FLOUR &&
+        (ch.store.flour || 0) < CHEST_STACK) return ch;
+  }
+  return null;
+}
+
+// Засипка домелена: WHEAT_PER_FLOUR колосків зі скрині стають борошном на
+// тій самій полиці — одним атомарним обміном
+function grinderFinish(g, chest) {
+  chest.store.wheat -= WHEAT_PER_FLOUR;
+  chest.store.flour = (chest.store.flour || 0) + 1;
+  if (chest.store.flour >= CHEST_STACK) unlockAch('chest_stack');
+  if (chestOpen && chestCur === chest) {
+    updateChestKindHud('flour');
+    renderChestPanel();
+  }
+  spawnParticles(g.x + 0.5, g.y + 0.4, g.z + 0.5, FLOUR_COLOR, 10,
+    { radius: 0.25, speed: 1.2, upBias: 0.9, life: 0.6, size: 0.08, gravity: 3 });
+  pingSound(g.x + 0.5, g.y, g.z + 0.5, 'grind');
+  if (g.group.position.distanceToSquared(player.pos) < 140) Sound.cookDone();
+  g.ground = (g.ground | 0) + 1;
+  unlockAch('autogrind');
+  if (g.ground >= GRINDER_GUILD_N) unlockAch('flourworks');
+}
+
+// Тик жорен: опора, живлення поруч, скриня із зерном — і бігун меле;
+// викликається з updatePower після стригалів (стан минулого кадру)
+function updateGrinders(dt) {
+  if (grinders.size === 0) return;
+  for (const [key, g] of grinders) {
+    // Блок зайняв клітинку чи зникла опора — розібрати
+    if (isSolid(blockAt(g.x, g.y, g.z)) || !isSolid(blockAt(g.x, g.y - 1, g.z))) {
+      breakGrinder(key);
+      continue;
+    }
+    const on = grinderPowered(g);
+    if (on !== g.on) {
+      g.on = on;
+      setGrinderGlow(g, on);
+    }
+    if (!on) continue;
+    const chest = grinderChest(g);
+    if (!chest) continue;                // нема зерна чи місця — камені стоять
+    g.runner.rotation.y += dt * 2.4;
+    g.grindT += dt;
+    g.dustT -= dt;
+    if (g.dustT <= 0) {
+      g.dustT = 0.4 + Math.random() * 0.5;
+      spawnParticles(g.x + 0.5, g.y + 0.28, g.z + 0.5, FLOUR_COLOR, 1,
+        { radius: 0.24, speed: 0.5, upBias: 0.5, life: 0.7, size: 0.07, gravity: 2 });
+    }
+    g.creakT -= dt;
+    if (g.creakT <= 0) {
+      g.creakT = 0.9 + Math.random() * 0.6;
+      if (g.group.position.distanceToSquared(player.pos) < 140) Sound.grind(0.05);
+    }
+    if (g.grindT >= GRINDER_GRIND_TIME) {
+      g.grindT = 0;
+      grinderFinish(g, chest);
+    }
+  }
+}
+
+// Відновити збережені жорна (сумісно зі старими сейвами)
+if (savedGame && Array.isArray(savedGame.grinders)) {
+  for (const e of savedGame.grinders) {
+    if (Array.isArray(e) && e.length >= 3) {
+      addGrinder(e[0], e[1], e[2], e[3] | 0);
     }
   }
 }
@@ -17309,7 +17523,7 @@ function placeCampfire(hit) {
       rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
   Sound.torch(0.2);
@@ -17759,7 +17973,7 @@ function placeBeehive(hit) {
       signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addBeehive(x, y, z)) return false;
   Sound.place(PLANK);
@@ -17956,7 +18170,7 @@ function placeScarecrow(hit) {
       saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addScarecrow(x, y, z)) return false;
   Sound.place(PLANK);
@@ -18095,7 +18309,7 @@ function placeLightningRod(hit) {
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!Object.entries(LROD_COST).every(([ore, n]) => (player[ore] || 0) >= n)) {
     flashItemName('Потрібно ⛓ 2 × залізо + 🟡 1 × золото з торби');
@@ -18346,7 +18560,7 @@ function placeAnvil(hit) {
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addAnvil(x, y, z)) return false;
   Sound.place(STONE);
@@ -18838,7 +19052,7 @@ function placeChest(hit) {
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
       rails.has(k) || lightningRods.has(k) || cauldrons.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addChest(x, y, z)) return false;
   Sound.place(PLANK);
@@ -19116,7 +19330,7 @@ function placeMill(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addMill(x, y, z)) return false;
   Sound.place(PLANK);
@@ -19331,7 +19545,7 @@ function placeCauldron(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCauldron(x, y, z)) return false;
   Sound.place(STONE);
@@ -19572,7 +19786,7 @@ function mushCellFree(x, y, z) {
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || beds.has(k) ||
       lightningRods.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       fences.has(k) || gates.has(k) || doorAtCell(x, y, z)) return false;
   if (blockAt(x, y, z) !== AIR) return false;
   return mushSupportable(blockAt(x, y - 1, z));
@@ -20532,7 +20746,7 @@ const flowerSupportable = (id, planted) => id === GRASS || (planted && id === DI
 function flowerCellFree(x, y, z, planted = false) {
   const k = flowerKey(x, y, z);
   if (flowers.has(k) || mushrooms.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       torches.has(k) || crops.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       campfires.has(k) || beehives.has(k) || scarecrows.has(k) ||
@@ -21167,6 +21381,23 @@ function placeBlock() {
     }
   }
 
+  // Жорна в прицілі (ПКМ) → підказка стану: скільки змелено й чи є скриня
+  if (grinders.size > 0) {
+    const gk = grinderKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    const g = grinders.get(gk);
+    if (g) {
+      const hasChest = [...chests.values()].some((ch) =>
+        Math.abs(ch.x - g.x) <= 1 && Math.abs(ch.y - g.y) <= 1 &&
+        Math.abs(ch.z - g.z) <= 1);
+      flashItemName(!hasChest
+        ? '🪨 Жорна: постав скриню впритул — звідти зерно, туди й борошно'
+        : grinderChest(g)
+          ? `🪨 Жорна: змелено ${g.ground | 0}`
+          : `🪨 Жорна: змелено ${g.ground | 0} — чекають 🌾 ${WHEAT_PER_FLOUR} колосків на полиці`);
+      return;
+    }
+  }
+
   // Спостерігач у прицілі (ПКМ) → повернути око на чверть оберту
   if (observers.size > 0) {
     const ok = observerKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -21466,6 +21697,12 @@ function placeBlock() {
   // Стригаль — вихід мережі, що стриже овець у скриню
   if (id === SHEARER) {
     placeShearer(hit);
+    return;
+  }
+
+  // Жорна — машина переробки: мелють колоски зі скрині в борошно на полиці
+  if (id === GRINDER) {
+    placeGrinder(hit);
     return;
   }
 
@@ -24229,6 +24466,32 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(12, 6, 1, 1);
     return;
   }
+  if (id === GRINDER) {
+    // Процедурна іконка жорен: кам'яний постамент, лежень і бігун із
+    // дерев'яним руків'ям, золотаве зерно зверху й борошняний пилок
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тінь під основою
+    ctx.fillRect(3, 14, 10, 1);
+    ctx.fillStyle = '#6f7680';                 // кам'яний постамент
+    ctx.fillRect(3, 11, 10, 3);
+    ctx.fillStyle = '#7d848d';                 // лежень — нижній камінь
+    ctx.fillRect(2, 8, 12, 3);
+    ctx.fillStyle = '#868d96';                 // бігун — верхній камінь
+    ctx.fillRect(3, 5, 10, 3);
+    ctx.fillStyle = '#9aa1aa';                 // відблиск бігуна
+    ctx.fillRect(3, 5, 10, 1);
+    ctx.fillStyle = '#8a6a3f';                 // дерев'яне руків'я
+    ctx.fillRect(11, 2, 2, 3);
+    ctx.fillStyle = '#d9b45a';                 // золотаве зерно в засипі
+    ctx.fillRect(5, 3, 2, 2);
+    ctx.fillRect(7, 4, 2, 1);
+    ctx.fillStyle = '#ece4cf';                 // борошняний пилок
+    ctx.fillRect(1, 10, 1, 1);
+    ctx.fillRect(14, 9, 1, 1);
+    ctx.fillRect(2, 12, 1, 1);
+    return;
+  }
   if (id === OBSERVER) {
     // Процедурна іконка спостерігача: кам'яна основа, кам'яна скринька,
     // темна зіниця з бурштиновим зблиском і брова, що показує напрям
@@ -25720,6 +25983,8 @@ const ACHIEVEMENTS = [
   { id: 'tidy',        icon: '🧹', title: 'Чисте подвірʼя', desc: 'Один збирач підібрав 32 предмети — жодна кістка не зотліла марно' },
   { id: 'autoshear',   icon: '✂️', title: 'Стрижка без рук',    desc: 'Стригаль зістриг руно з вівці просто в скриню — мережа вперше збирає вовну' },
   { id: 'woolworks',   icon: '🧶', title: 'Вовняна мануфактура', desc: 'Один стригаль зістриг 24 руна — отара вдягає цілу комору' },
+  { id: 'autogrind',   icon: '🪨', title: 'Помел без рук',       desc: 'Жорна змололи колоски зі скрині в борошно на полиці — мережа вперше переробляє крам' },
+  { id: 'flourworks',  icon: '🥣', title: 'Борошняний цех',      desc: 'Одні жорна змололи 24 засипки — комора пахне свіжим борошном' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -28435,6 +28700,33 @@ window.MCDebug = {
     });
   },
   get woolCount() { return player.wool | 0; },
+  // Жорна (для тестів)
+  giveGrinder: () => { assignBlockToSlot(GRINDER); return BLOCK_NAMES[GRINDER]; },
+  placeGrinderAt: (x, y, z) => {
+    if (!powerCellFree(x, y, z)) return false;
+    return addGrinder(x, y, z);
+  },
+  // Миттєво домолоти всі засипки жорен (наступний тик завершить помел)
+  grinderFast: () => {
+    let n = 0;
+    for (const g of grinders.values()) {
+      if (g.on && grinderChest(g)) { g.grindT = GRINDER_GRIND_TIME; n++; }
+    }
+    return n;
+  },
+  get grinderInfo() {
+    return [...grinders.values()].map((g) => {
+      const chest = [...chests.values()].find((ch) =>
+        Math.abs(ch.x - g.x) <= 1 && Math.abs(ch.y - g.y) <= 1 &&
+        Math.abs(ch.z - g.z) <= 1) || null;
+      return { x: g.x, y: g.y, z: g.z, on: !!g.on, ground: g.ground | 0,
+               powered: grinderPowered(g), grindT: +g.grindT.toFixed(1),
+               chest: chest ? [chest.x, chest.y, chest.z] : null,
+               chestWheat: chest ? (chest.store.wheat | 0) : 0,
+               chestFlour: chest ? (chest.store.flour | 0) : 0,
+               feedable: !!grinderChest(g) };
+    });
+  },
   // Спостерігач (для тестів)
   giveObserver: () => { assignBlockToSlot(OBSERVER); return BLOCK_NAMES[OBSERVER]; },
   placeObserverAt: (x, y, z, fx = 1, fz = 0) => {
