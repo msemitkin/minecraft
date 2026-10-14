@@ -1,0 +1,21 @@
+name: UI tests
+
+on:
+  pull_request:
+    branches: [claude/minecraft-clone-vj3fr8]
+  push:
+    branches: [claude/minecraft-clone-vj3fr8]
+
+permissions:
+  contents: read
+
+jobs:
+  controls-search:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test controls search
+        run: node --test tests/*.test.mjs
