@@ -1,0 +1,26 @@
+name: Test MineClone
+
+on:
+  pull_request:
+    branches: [claude/minecraft-clone-vj3fr8]
+  push:
+    branches: [claude/minecraft-clone-vj3fr8]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check JavaScript syntax
+        run: node --check js/main.js && node --check js/world-backup.mjs
+      - name: Run backup tests
+        run: node --test tests/world-backup.test.mjs

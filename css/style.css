@@ -87,6 +87,44 @@ canvas {
   background: #555;
 }
 
+.backup-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.backup-actions button {
+  padding: 8px 12px;
+  border: 1px solid #6c8761;
+  border-radius: 4px;
+  background: #263d27;
+  color: #f1f7ed;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+
+.backup-actions button:hover,
+.backup-actions button:focus-visible {
+  background: #365b38;
+}
+
+#backup-status {
+  max-width: 340px;
+  color: #bce7b1;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+#backup-status.error {
+  color: #ffb3a6;
+}
+
+#backup-status:empty {
+  display: none;
+}
+
 #controls-touch {
   display: none;
 }

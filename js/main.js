@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { installBackupUI } from './world-backup.mjs';
 
 // ============================================================
 // Константи світу
@@ -1002,7 +1003,7 @@ function loadGame() {
 let saveEnabled = true;
 
 function saveGame() {
-  if (!saveEnabled) return;
+  if (!saveEnabled) return false;
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
       edits: [...edits],
@@ -1171,8 +1172,10 @@ function saveGame() {
       hotbar: [...hotbar],
       soundOn: Sound.isEnabled(),
     }));
+    return true;
   } catch {
-    // сховище переповнене або недоступне — просто пропускаємо
+    // Сховище переповнене або недоступне; експорт покаже помилку.
+    return false;
   }
 }
 
@@ -25743,6 +25746,14 @@ document.getElementById('new-game-btn').addEventListener('click', () => {
   saveEnabled = false;
   clearSave();
   location.reload();
+});
+
+installBackupUI({
+  saveGame,
+  saveKey: SAVE_KEY,
+  seed: SEED,
+  saveVersion: 'v4',
+  disableSave: () => { saveEnabled = false; },
 });
 
 // Зберегти, коли вкладку згортають або закривають

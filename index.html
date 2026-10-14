@@ -21,6 +21,12 @@
       <div class="menu-buttons">
         <button id="play-btn">Грати</button>
         <button id="new-game-btn" title="Стерти збереження і згенерувати світ заново">Нова гра</button>
+        <div class="backup-actions">
+          <button id="export-world-btn" type="button">⬇ Зберегти копію</button>
+          <button id="import-world-btn" type="button">⬆ Відновити копію</button>
+        </div>
+        <input id="backup-file-input" type="file" accept=".json,application/json" hidden>
+        <p id="backup-status" role="status" aria-live="polite"></p>
       </div>
       <div class="controls" id="controls-desktop">
         <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> — рух</div>
