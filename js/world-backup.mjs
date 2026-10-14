@@ -33,9 +33,18 @@ export function validateWorld(world) {
     }
   }
   for (const field of ARRAY_FIELDS) {
-    if (world[field] !== undefined && !Array.isArray(world[field])) {
+    if (world[field] === undefined) continue;
+    if (!Array.isArray(world[field]) ||
+        (field !== 'hotbar' && field !== 'night' &&
+         world[field].some((entry) => !Array.isArray(entry)))) {
       throw new Error('Пошкоджений розділ збереження: ' + field + '.');
     }
+  }
+  if (world.chests?.some((chest) =>
+    chest.length < 4 || !Array.isArray(chest[3]) ||
+    chest[3].some((item) => !Array.isArray(item) || item.length !== 2 ||
+      typeof item[0] !== 'string' || !Number.isFinite(item[1])))) {
+    throw new Error('Пошкоджений вміст скрині.');
   }
   if (world.weather !== undefined && !isObject(world.weather)) {
     throw new Error('Пошкоджені дані погоди.');

@@ -66,3 +66,12 @@ test('round-trips Unicode sign text', () => {
   original.signs = [[1, 27, -3, 0, 'Привіт, світ! 🌍']];
   assert.deepEqual(parseBackup(createBackup(original, SEED, VERSION), SEED, VERSION), original);
 });
+
+test('rejects malformed nested entity rows and chest inventories', () => {
+  const badTorches = world();
+  badTorches.torches = [null];
+  assert.throws(() => validateWorld(badTorches), /torches/);
+  const badChest = world();
+  badChest.chests = [[2, 26, -3, [null]]];
+  assert.throws(() => validateWorld(badChest), /скрині/);
+});
