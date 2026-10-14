@@ -1340,3 +1340,11 @@ kbd {
   #overlay { padding: 8px; }
   #overlay-content { width: 100%; max-height: calc(100dvh - 16px); padding: 8px; }
 }
+
+
+/* Touch HUD: never show on desktops, even if JS enables the wrapper.
+   A coarse primary pointer without hover is the mobile/touch-only UI. */
+#touch-controls { display: none !important; }
+@media (hover: none) and (pointer: coarse) {
+  #touch-controls:not([hidden]) { display: block !important; }
+}
