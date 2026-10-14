@@ -22,6 +22,14 @@
         <button id="play-btn">Грати</button>
         <button id="new-game-btn" title="Стерти збереження і згенерувати світ заново">Нова гра</button>
       </div>
+      <div class="controls-search-bar" role="search" aria-label="Пошук у довідці керування">
+        <label for="controls-search">🔎 Знайти команду чи предмет</label>
+        <div class="controls-search-input-row">
+          <input id="controls-search" type="search" placeholder="Наприклад: казан, ПКМ, рейка…" aria-controls="controls-desktop controls-touch" autocomplete="off" spellcheck="false">
+          <button id="controls-search-clear" type="button" aria-label="Очистити пошук" hidden>✕</button>
+        </div>
+        <p id="controls-search-status" role="status" aria-live="polite"></p>
+      </div>
       <div class="controls" id="controls-desktop">
         <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> — рух</div>
         <div><kbd>Space</kbd> — стрибок / плисти вгору</div>
@@ -319,6 +327,7 @@
         <button id="btn-inv">▤</button>
       </div>
       <button id="btn-pause">❚❚</button>
+      <p id="controls-search-empty" hidden>Нічого не знайдено. Спробуйте іншу назву або клавішу.</p>
     </div>
   </div>
 
@@ -383,6 +392,7 @@
     </div>
   </div>
 
+  <script src="js/controls-search.js" defer></script>
   <script type="module" src="js/main.js"></script>
 </body>
 </html>
