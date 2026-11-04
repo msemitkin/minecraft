@@ -39,7 +39,7 @@ test('milkmaid serves only a full portion, or a burning player', () => {
 test('milkmaid needs no chest: the living cow is the pantry', () => {
   // перша машина зовсім без скрині — у секції доярки немає жодної згадки полиць
   const section = js.slice(js.indexOf('// Доярка: мережа доїть корову'),
-    js.indexOf('// Спостерігач: мережа бачить'));
+    js.indexOf('// Рудокопка: мережа копає руду'));
   assert.ok(section.length > 0, 'секцію доярки знайдено');
   assert.ok(!/chests\.values\(\)/.test(section), 'доярка не читає скринь');
   assert.ok(!/\.store\[/.test(section), 'доярка не чіпає полиць');
