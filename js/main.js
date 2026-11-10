@@ -24117,7 +24117,10 @@ if (savedGame && Array.isArray(savedGame.waterbearers)) {
 
 const swineherdKey = leverKey;
 const SWINEHERD_MAX = 32;         // межа, щоб збереження не розросталося
-const SWINEHERD_PIG_R = 4;        // сяг найму свині (як у різника)
+const SWINEHERD_PIG_R = 8;        // сяг найму свині: нюх веде її аж на
+                                  // TRUFFLE_SNIFF_R від тумби, тож після
+                                  // мигу сигналу рийку в полі треба вміти
+                                  // найняти знову (вужчий сяг губив її)
 const SWINEHERD_KEEP_R = 12;      // далі — найнята свиня відпускається
 const SWINEHERD_TRUFFLES_N = 16;  // трюфелів на «Трюфельню»
 
