@@ -1163,6 +1163,19 @@ const LAMPLIGHTER = 143;
 // самий гавкіт і те саме досягнення). Поки друг живий — ріжок мовчить.
 // Петля компаньйона замикається. Нове дієслово — приручати з полиці.
 const TAMER = 144;
+// Скотар — машина, що СКЛИКАЄ СТАДО: кам'яна тумба з коритом зерна і
+// ґирлиґою на стовпчику. Годівниця давно частувала загін, доярка доїла,
+// різник порав, та коли кріпер чи лава винищували двір — нову худобу
+// гравець досі приводив РУКОЮ, ідучи в поле з повідцем (дика звірина
+// заходить у світ не ближче 16 блоків від гравця). Поки поруч є живий
+// сигнал — ліхтарик жевріє; якщо у крузі двору свійської худоби менше,
+// ніж повний двір, впритул стоїть скриня з колосками 🌾 і в сягу пасеться
+// ДИКА свійська тварина — ґирлиґа кличе її: та йде до корита тим самим
+// спільним кроком, що й на повідці, а біля корита її частує те саме
+// спільне серце частування, що й руку та годівницю (ті самі сердечка,
+// той самий «настрій» і те саме досягнення). Повний двір — ґирлиґа
+// спочиває. Петля стада замикається. Нове дієслово — скликати з полиці.
+const HERDER = 145;
 const MASK_SEE_R = 6;          // радіус, з якого нечисть бачить гравця в масці (звично 26)
 const JACK_GUARD_R = 8;         // радіус відлякування нечисті ліхтарем (смолоскип — 7)
 const JACK_BLOOD_GUARD_R = 3.5; // кривавої ночі ліхтар тримає нечисть лише впритул
@@ -1426,6 +1439,7 @@ const BLOCK_NAMES = {
   [CARPENTER]: 'Тесля',
   [LAMPLIGHTER]: 'Ліхтарник',
   [TAMER]: 'Ловчий',
+  [HERDER]: 'Скотар',
   [BUTTON]: 'Кнопка',
   [LATCH]: 'Защіпка',
   [TURRET]: 'Стрілець',
@@ -1454,7 +1468,7 @@ const ALL_BLOCKS = [
   SNOWBALL, STARBLOCK, TREASURE, BEEHIVE, BONEMEAL, SCARECROW, ANVIL, LEASH,
   GRAPPLE, LIGHTNING_ROD, MILL, CAULDRON, PLATE, NOTE, CHEST, PUMPKIN, MASK,
   LEVER, WIRE, LAMP, SENSOR, RAIN_SENSOR, LIFE_SENSOR, EAR, STOCK_SENSOR, INVERTER, REPEATER, COUNTER, ANDGATE, XORGATE, DICE, BUTTON, LATCH, TURRET, BELL, PISTON,
-  STICKY_PISTON, FAN, SLUICE, HARVESTER, FEEDER, PORTER, COLLECTOR, SHEARER, GRINDER, BAKER, EXTRACTOR, INCUBATOR, FISHER, SMOKER, FORAGER, DRYER, DREDGE, STEAMER, GARDENER, ROASTER, FLORIST, DYEHOUSE, WEAVER, FERTILIZER, HEALER, CANTEEN, STOREKEEPER, MENDER, BARTER, MILKMAID, MINER, KENNEL, BUTCHER, BREWER, CUPBEARER, WATERBEARER, SWINEHERD, OUTFITTER, LUMBERJACK, FORESTER, COLLIER, CONFECTIONER, CHAPEL, SMITH, SCULPTOR, MASON, MECHANIC, CARPENTER, LAMPLIGHTER, TAMER, OBSERVER, TARGET, TRIPWIRE, DETECTOR_RAIL, POWER_RAIL,
+  STICKY_PISTON, FAN, SLUICE, HARVESTER, FEEDER, PORTER, COLLECTOR, SHEARER, GRINDER, BAKER, EXTRACTOR, INCUBATOR, FISHER, SMOKER, FORAGER, DRYER, DREDGE, STEAMER, GARDENER, ROASTER, FLORIST, DYEHOUSE, WEAVER, FERTILIZER, HEALER, CANTEEN, STOREKEEPER, MENDER, BARTER, MILKMAID, MINER, KENNEL, BUTCHER, BREWER, CUPBEARER, WATERBEARER, SWINEHERD, OUTFITTER, LUMBERJACK, FORESTER, COLLIER, CONFECTIONER, CHAPEL, SMITH, SCULPTOR, MASON, MECHANIC, CARPENTER, LAMPLIGHTER, TAMER, HERDER, OBSERVER, TARGET, TRIPWIRE, DETECTOR_RAIL, POWER_RAIL,
   SWITCH_RAIL,
   FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER,
 ];
@@ -1862,6 +1876,8 @@ function saveGame() {
         [l.x, l.y, l.z, l.lit | 0]),
       tamers: [...tamers.values()].map((t) =>
         [t.x, t.y, t.z, t.tamedN | 0]),
+      herders: [...herders.values()].map((h) =>
+        [h.x, h.y, h.z, h.herdedN | 0]),
       observers: [...observers.values()].map((ob) =>
         [ob.x, ob.y, ob.z, ob.fx, ob.fz]),
       targets: [...targets.values()].map((t) =>
@@ -5145,6 +5161,13 @@ function updateAnimal(a, dt) {
     }
   }
 
+  // Застарілий поклик (скотаря розібрано чи знесено) — тварина знову
+  // сама собі: блукає, як блукала, і інші скотарі бачать її вільною
+  if (a.lureKey && !herders.has(a.lureKey)) a.lureKey = null;
+  // Сполохана (застрягла в дорозі до корита) перепасається, перш ніж
+  // ґирлиґа покличе її знову
+  if (a.lureShyT > 0) a.lureShyT -= dt;
+
   // Паніка після удару: тікає геть від гравця прискорено
   // (приручений вовк не панікує — його веде updateTamedWolf)
   const panicking = !a.tamed && a.panic > 0;
@@ -5174,16 +5197,14 @@ function updateAnimal(a, dt) {
     // свиня дорогою нюшить лісову землю й може звернути до трюфеля
     a.pursuing = false;
     if (!(a.type === 'pig' && updateTrufflePig(a, dt))) {
-      const d = Math.hypot(player.pos.x - a.pos.x, player.pos.z - a.pos.z);
-      if (d > LEASH_FOLLOW_MIN) {
-        a.state = 'walk';
-        a.stateTimer = 0.5;
-        a.targetYaw = Math.atan2(a.pos.x - player.pos.x, a.pos.z - player.pos.z);
-      } else {
-        a.state = 'idle';
-        a.stateTimer = 0.5;
-      }
+      followStep(a, player.pos.x, player.pos.z, LEASH_FOLLOW_MIN);
     }
+  } else if (a.lureKey && herders.has(a.lureKey)) {
+    // Покликана скотарем: іде до корита тим самим спільним кроком, що й
+    // на повідці (followStep) — тільки поводирем їй тумба, а не рука
+    a.pursuing = false;
+    const h = herders.get(a.lureKey);
+    followStep(a, h.x + 0.5, h.z + 0.5, HERDER_ARRIVE);
   } else if (a.type === 'pig' && a.herdKey && updateTrufflePig(a, dt)) {
     // Найнята свинопасом: нюшить і риє сама, як на повідці — тільки
     // поводирем їй тумба; нюх мовчить — блукає, як звичайно, нижче
@@ -5367,7 +5388,8 @@ function updateAnimals(dt) {
       updateAnimal(a, dt);
       continue;
     }
-    if (!a.tamed && !a.leashed && a.type !== 'trader' && a.type !== 'villager' &&
+    if (!a.tamed && !a.leashed && !(a.lureKey && herders.has(a.lureKey)) &&
+        a.type !== 'trader' && a.type !== 'villager' &&
         (a.pos.distanceTo(player.pos) > ANIMAL_DESPAWN_DIST || a.pos.y < -10)) {
       removeAnimal(i);
     } else {
@@ -5620,6 +5642,24 @@ function breedableInSight(reach = 3.2) {
   return best;
 }
 
+// Спільне серце частування свійської тварини (рука, годівниця і скотар):
+// маля росте швидше, доросла входить «у настрій» і шукає пару — ті самі
+// сердечка над головою. netFed каже, чия то була порція (мережі чи руки) —
+// для «приплоду без господаря». Окремого шляху частування не існує.
+function farmFeedCore(a, netFed) {
+  if (a.baby) {
+    a.growth += BABY_FEED_BOOST;
+    spawnParticles(a.pos.x, a.pos.y + a.height + 0.2, a.pos.z, HEART_COLOR, 4,
+      { radius: 0.2, speed: 0.8, upBias: 1.4, life: 0.7, size: 0.1, gravity: -2 });
+  } else {
+    a.love = LOVE_TIME;
+    a.panic = 0;
+    a.netFed = netFed;
+    spawnParticles(a.pos.x, a.pos.y + a.height + 0.25, a.pos.z, HEART_COLOR, 7,
+      { radius: 0.35, speed: 1.2, upBias: 1.6, life: 0.8, size: 0.12, gravity: -2 });
+  }
+}
+
 // ПКМ по свійській тварині з їжею в торбі (🍖) — погодувати: доросла входить
 // «у настрій» і шукає пару, маля росте швидше. З відром у руці не годуємо —
 // відро лишається доїнню корів. Повертає true, якщо клік оброблено.
@@ -5630,9 +5670,7 @@ function tryFeedFarmAnimal() {
   if (a.baby) {
     player.food--;
     updateFoodHud();
-    a.growth += BABY_FEED_BOOST;
-    spawnParticles(a.pos.x, a.pos.y + a.height + 0.2, a.pos.z, HEART_COLOR, 4,
-      { radius: 0.2, speed: 0.8, upBias: 1.4, life: 0.7, size: 0.1, gravity: -2 });
+    farmFeedCore(a, false);            // частунок із рук — не мережевий
     Sound.peep();
     triggerSwing();
     return true;
@@ -5644,11 +5682,7 @@ function tryFeedFarmAnimal() {
   }
   player.food--;
   updateFoodHud();
-  a.love = LOVE_TIME;
-  a.panic = 0;
-  a.netFed = false;                    // частунок із рук — не мережевий
-  spawnParticles(a.pos.x, a.pos.y + a.height + 0.25, a.pos.z, HEART_COLOR, 7,
-    { radius: 0.35, speed: 1.2, upBias: 1.6, life: 0.8, size: 0.12, gravity: -2 });
+  farmFeedCore(a, false);              // частунок із рук — не мережевий
   Sound.eat();
   triggerSwing();
   if (!findMate(a)) flashItemName('💞 Тварина в настрої — погодуй їй пару!');
@@ -5681,6 +5715,23 @@ const LEASH_BREAK = 12;         // далі — повідець рветься
 const LEASH_MAX_LED = 3;        // скільки тварин можна вести водночас
 const LEASH_ROPE_COLOR = 0xe8e4d8;
 const LEASH_ROPE_SEGS = 8;      // сегментів провисної мотузки
+
+// Спільний крок слідування (повідець і поклик скотаря): далі за minD —
+// тварина крокує до цілі (tx, tz), ближче — спокійно стоїть. Виділений з
+// гілки повідця, щоб покликана скотарем худоба йшла ТИМ САМИМ кроком,
+// що й на повідці — окремого ходу слідування не існує
+function followStep(a, tx, tz, minD) {
+  const d = Math.hypot(tx - a.pos.x, tz - a.pos.z);
+  if (d > minD) {
+    a.state = 'walk';
+    a.stateTimer = 0.5;
+    a.targetYaw = Math.atan2(a.pos.x - tx, a.pos.z - tz);
+  } else {
+    a.state = 'idle';
+    a.stateTimer = 0.5;
+  }
+  return d;
+}
 
 function ledCount() {
   let n = 0;
@@ -8282,7 +8333,7 @@ function startBreakOrAttack() {
       plates.size > 0 || notes.size > 0 || chests.size > 0 ||
       levers.size > 0 || wires.size > 0 || lamps.size > 0 || sensors.size > 0 ||
       inverters.size > 0 || buttons.size > 0 || latches.size > 0 ||
-      turrets.size > 0 || bells.size > 0 || pistons.size > 0 || fans.size > 0 || sluices.size > 0 || harvesters.size > 0 || feeders.size > 0 || porters.size > 0 || collectors.size > 0 || shearers.size > 0 || grinders.size > 0 || bakers.size > 0 || extractors.size > 0 || incubators.size > 0 || fishers.size > 0 || smokers.size > 0 || foragers.size > 0 || dryers.size > 0 || dredges.size > 0 || steamers.size > 0 || gardeners.size > 0 || roasters.size > 0 || florists.size > 0 || dyehouses.size > 0 || weavers.size > 0 || fertilizers.size > 0 || healers.size > 0 || canteens.size > 0 || keepers.size > 0 || menders.size > 0 || barters.size > 0 || milkmaids.size > 0 || miners.size > 0 || kennels.size > 0 || butchers.size > 0 || brewers.size > 0 || cupbearers.size > 0 || waterbearers.size > 0 || swineherds.size > 0 || outfitters.size > 0 || lumberjacks.size > 0 || foresters.size > 0 || colliers.size > 0 || confectioners.size > 0 || chapels.size > 0 || smiths.size > 0 || sculptors.size > 0 || masons.size > 0 || mechanics.size > 0 || carpenters.size > 0 || lamplighters.size > 0 || tamers.size > 0 || observers.size > 0 ||
+      turrets.size > 0 || bells.size > 0 || pistons.size > 0 || fans.size > 0 || sluices.size > 0 || harvesters.size > 0 || feeders.size > 0 || porters.size > 0 || collectors.size > 0 || shearers.size > 0 || grinders.size > 0 || bakers.size > 0 || extractors.size > 0 || incubators.size > 0 || fishers.size > 0 || smokers.size > 0 || foragers.size > 0 || dryers.size > 0 || dredges.size > 0 || steamers.size > 0 || gardeners.size > 0 || roasters.size > 0 || florists.size > 0 || dyehouses.size > 0 || weavers.size > 0 || fertilizers.size > 0 || healers.size > 0 || canteens.size > 0 || keepers.size > 0 || menders.size > 0 || barters.size > 0 || milkmaids.size > 0 || miners.size > 0 || kennels.size > 0 || butchers.size > 0 || brewers.size > 0 || cupbearers.size > 0 || waterbearers.size > 0 || swineherds.size > 0 || outfitters.size > 0 || lumberjacks.size > 0 || foresters.size > 0 || colliers.size > 0 || confectioners.size > 0 || chapels.size > 0 || smiths.size > 0 || sculptors.size > 0 || masons.size > 0 || mechanics.size > 0 || carpenters.size > 0 || lamplighters.size > 0 || tamers.size > 0 || herders.size > 0 || observers.size > 0 ||
       targets.size > 0) {
     const hit = raycastBlock();
     if (hit && hit.prev) {
@@ -8673,6 +8724,11 @@ function startBreakOrAttack() {
       }
       if (tamers.has(key)) {
         breakTamer(key);
+        triggerSwing();
+        return;
+      }
+      if (herders.has(key)) {
+        breakHerder(key);
         triggerSwing();
         return;
       }
@@ -9869,7 +9925,7 @@ function torchCellFree(x, y, z) {
       pistons.has(torchKey(x, y, z)) || fans.has(torchKey(x, y, z)) || sluices.has(torchKey(x, y, z)) || harvesters.has(torchKey(x, y, z)) || feeders.has(torchKey(x, y, z)) || porters.has(torchKey(x, y, z)) || collectors.has(torchKey(x, y, z)) || shearers.has(torchKey(x, y, z)) || grinders.has(torchKey(x, y, z)) || bakers.has(torchKey(x, y, z)) || extractors.has(torchKey(x, y, z)) || incubators.has(torchKey(x, y, z)) || fishers.has(torchKey(x, y, z)) || smokers.has(torchKey(x, y, z)) || foragers.has(torchKey(x, y, z)) || dryers.has(torchKey(x, y, z)) || dredges.has(torchKey(x, y, z)) || steamers.has(torchKey(x, y, z)) || gardeners.has(torchKey(x, y, z)) || roasters.has(torchKey(x, y, z)) || florists.has(torchKey(x, y, z)) || dyehouses.has(torchKey(x, y, z)) || weavers.has(torchKey(x, y, z)) || fertilizers.has(torchKey(x, y, z)) || healers.has(torchKey(x, y, z)) || canteens.has(torchKey(x, y, z)) || keepers.has(torchKey(x, y, z)) || menders.has(torchKey(x, y, z)) || barters.has(torchKey(x, y, z)) || milkmaids.has(torchKey(x, y, z)) || miners.has(torchKey(x, y, z)) || kennels.has(torchKey(x, y, z)) || butchers.has(torchKey(x, y, z)) || brewers.has(torchKey(x, y, z)) || cupbearers.has(torchKey(x, y, z)) || waterbearers.has(torchKey(x, y, z)) || swineherds.has(torchKey(x, y, z)) || outfitters.has(torchKey(x, y, z)) || lumberjacks.has(torchKey(x, y, z)) || foresters.has(torchKey(x, y, z)) || colliers.has(torchKey(x, y, z)) || confectioners.has(torchKey(x, y, z)) || chapels.has(torchKey(x, y, z)) || smiths.has(torchKey(x, y, z)) || sculptors.has(torchKey(x, y, z)) ||
       masons.has(torchKey(x, y, z)) || mechanics.has(torchKey(x, y, z)) ||
       carpenters.has(torchKey(x, y, z)) ||
-      lamplighters.has(torchKey(x, y, z)) || tamers.has(torchKey(x, y, z)) ||
+      lamplighters.has(torchKey(x, y, z)) || tamers.has(torchKey(x, y, z)) || herders.has(torchKey(x, y, z)) ||
       observers.has(torchKey(x, y, z)) || targets.has(torchKey(x, y, z)) || tripwires.has(torchKey(x, y, z)));
 }
 
@@ -10260,7 +10316,7 @@ function placeDoor(hit) {
         beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
         lightningRods.has(k) ||
         mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   }
   if (!isSolid(blockAt(x, y - 1, z))) return false;   // потрібна тверда підлога
   // Не ставити двері всередину гравця (колона з двох клітинок)
@@ -10529,7 +10585,7 @@ function fenceCellFree(x, y, z) {
          !lightningRods.has(k) &&
          !mushrooms.has(k) && !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
          !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k) && !inverters.has(k) && !buttons.has(k) &&
-         !latches.has(k) && !turrets.has(k) && !bells.has(k) && !pistons.has(k) && !fans.has(k) && !sluices.has(k) && !harvesters.has(k) && !feeders.has(k) && !porters.has(k) && !collectors.has(k) && !shearers.has(k) && !grinders.has(k) && !bakers.has(k) && !extractors.has(k) && !incubators.has(k) && !fishers.has(k) && !smokers.has(k) && !foragers.has(k) && !dryers.has(k) && !dredges.has(k) && !steamers.has(k) && !gardeners.has(k) && !roasters.has(k) && !florists.has(k) && !dyehouses.has(k) && !weavers.has(k) && !fertilizers.has(k) && !healers.has(k) && !canteens.has(k) && !keepers.has(k) && !menders.has(k) && !barters.has(k) && !milkmaids.has(k) && !miners.has(k) && !kennels.has(k) && !butchers.has(k) && !brewers.has(k) && !cupbearers.has(k) && !waterbearers.has(k) && !swineherds.has(k) && !outfitters.has(k) && !lumberjacks.has(k) && !foresters.has(k) && !colliers.has(k) && !confectioners.has(k) && !chapels.has(k) && !smiths.has(k) && !sculptors.has(k) && !masons.has(k) && !mechanics.has(k) && !carpenters.has(k) && !lamplighters.has(k) && !tamers.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
+         !latches.has(k) && !turrets.has(k) && !bells.has(k) && !pistons.has(k) && !fans.has(k) && !sluices.has(k) && !harvesters.has(k) && !feeders.has(k) && !porters.has(k) && !collectors.has(k) && !shearers.has(k) && !grinders.has(k) && !bakers.has(k) && !extractors.has(k) && !incubators.has(k) && !fishers.has(k) && !smokers.has(k) && !foragers.has(k) && !dryers.has(k) && !dredges.has(k) && !steamers.has(k) && !gardeners.has(k) && !roasters.has(k) && !florists.has(k) && !dyehouses.has(k) && !weavers.has(k) && !fertilizers.has(k) && !healers.has(k) && !canteens.has(k) && !keepers.has(k) && !menders.has(k) && !barters.has(k) && !milkmaids.has(k) && !miners.has(k) && !kennels.has(k) && !butchers.has(k) && !brewers.has(k) && !cupbearers.has(k) && !waterbearers.has(k) && !swineherds.has(k) && !outfitters.has(k) && !lumberjacks.has(k) && !foresters.has(k) && !colliers.has(k) && !confectioners.has(k) && !chapels.has(k) && !smiths.has(k) && !sculptors.has(k) && !masons.has(k) && !mechanics.has(k) && !carpenters.has(k) && !lamplighters.has(k) && !tamers.has(k) && !herders.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
 }
 
 // Не ставити огорожу всередину гравця (колізія накриває і клітинку вище)
@@ -10711,7 +10767,7 @@ function plantCrop(hit) {
       sensors.has(cropKey(x, y, z)) || inverters.has(cropKey(x, y, z)) ||
       buttons.has(cropKey(x, y, z)) ||
       latches.has(cropKey(x, y, z)) || turrets.has(cropKey(x, y, z)) || bells.has(cropKey(x, y, z)) ||
-      pistons.has(cropKey(x, y, z)) || fans.has(cropKey(x, y, z)) || sluices.has(cropKey(x, y, z)) || harvesters.has(cropKey(x, y, z)) || feeders.has(cropKey(x, y, z)) || porters.has(cropKey(x, y, z)) || collectors.has(cropKey(x, y, z)) || shearers.has(cropKey(x, y, z)) || grinders.has(cropKey(x, y, z)) || bakers.has(cropKey(x, y, z)) || extractors.has(cropKey(x, y, z)) || incubators.has(cropKey(x, y, z)) || fishers.has(cropKey(x, y, z)) || smokers.has(cropKey(x, y, z)) || foragers.has(cropKey(x, y, z)) || dryers.has(cropKey(x, y, z)) || dredges.has(cropKey(x, y, z)) || steamers.has(cropKey(x, y, z)) || gardeners.has(cropKey(x, y, z)) || roasters.has(cropKey(x, y, z)) || florists.has(cropKey(x, y, z)) || dyehouses.has(cropKey(x, y, z)) || weavers.has(cropKey(x, y, z)) || fertilizers.has(cropKey(x, y, z)) || healers.has(cropKey(x, y, z)) || canteens.has(cropKey(x, y, z)) || keepers.has(cropKey(x, y, z)) || menders.has(cropKey(x, y, z)) || barters.has(cropKey(x, y, z)) || milkmaids.has(cropKey(x, y, z)) || miners.has(cropKey(x, y, z)) || kennels.has(cropKey(x, y, z)) || butchers.has(cropKey(x, y, z)) || brewers.has(cropKey(x, y, z)) || cupbearers.has(cropKey(x, y, z)) || waterbearers.has(cropKey(x, y, z)) || swineherds.has(cropKey(x, y, z)) || outfitters.has(cropKey(x, y, z)) || lumberjacks.has(cropKey(x, y, z)) || foresters.has(cropKey(x, y, z)) || colliers.has(cropKey(x, y, z)) || confectioners.has(cropKey(x, y, z)) || chapels.has(cropKey(x, y, z)) || smiths.has(cropKey(x, y, z)) || sculptors.has(cropKey(x, y, z)) || masons.has(cropKey(x, y, z)) || mechanics.has(cropKey(x, y, z)) || carpenters.has(cropKey(x, y, z)) || lamplighters.has(cropKey(x, y, z)) || tamers.has(cropKey(x, y, z)) ||
+      pistons.has(cropKey(x, y, z)) || fans.has(cropKey(x, y, z)) || sluices.has(cropKey(x, y, z)) || harvesters.has(cropKey(x, y, z)) || feeders.has(cropKey(x, y, z)) || porters.has(cropKey(x, y, z)) || collectors.has(cropKey(x, y, z)) || shearers.has(cropKey(x, y, z)) || grinders.has(cropKey(x, y, z)) || bakers.has(cropKey(x, y, z)) || extractors.has(cropKey(x, y, z)) || incubators.has(cropKey(x, y, z)) || fishers.has(cropKey(x, y, z)) || smokers.has(cropKey(x, y, z)) || foragers.has(cropKey(x, y, z)) || dryers.has(cropKey(x, y, z)) || dredges.has(cropKey(x, y, z)) || steamers.has(cropKey(x, y, z)) || gardeners.has(cropKey(x, y, z)) || roasters.has(cropKey(x, y, z)) || florists.has(cropKey(x, y, z)) || dyehouses.has(cropKey(x, y, z)) || weavers.has(cropKey(x, y, z)) || fertilizers.has(cropKey(x, y, z)) || healers.has(cropKey(x, y, z)) || canteens.has(cropKey(x, y, z)) || keepers.has(cropKey(x, y, z)) || menders.has(cropKey(x, y, z)) || barters.has(cropKey(x, y, z)) || milkmaids.has(cropKey(x, y, z)) || miners.has(cropKey(x, y, z)) || kennels.has(cropKey(x, y, z)) || butchers.has(cropKey(x, y, z)) || brewers.has(cropKey(x, y, z)) || cupbearers.has(cropKey(x, y, z)) || waterbearers.has(cropKey(x, y, z)) || swineherds.has(cropKey(x, y, z)) || outfitters.has(cropKey(x, y, z)) || lumberjacks.has(cropKey(x, y, z)) || foresters.has(cropKey(x, y, z)) || colliers.has(cropKey(x, y, z)) || confectioners.has(cropKey(x, y, z)) || chapels.has(cropKey(x, y, z)) || smiths.has(cropKey(x, y, z)) || sculptors.has(cropKey(x, y, z)) || masons.has(cropKey(x, y, z)) || mechanics.has(cropKey(x, y, z)) || carpenters.has(cropKey(x, y, z)) || lamplighters.has(cropKey(x, y, z)) || tamers.has(cropKey(x, y, z)) || herders.has(cropKey(x, y, z)) ||
       observers.has(cropKey(x, y, z)) || targets.has(cropKey(x, y, z)) || tripwires.has(cropKey(x, y, z))) return false;
   if (!cropSupportable(blockAt(x, y - 1, z))) return false;  // лише на грунті
   if (!addCrop(x, y, z)) return false;
@@ -11309,7 +11365,7 @@ function signCellFree(x, y, z) {
          !fences.has(k) && !gates.has(k) && !saplings.has(k) && !mushrooms.has(k) &&
          !flowers.has(k) && !plates.has(k) && !notes.has(k) &&
          !levers.has(k) && !wires.has(k) && !lamps.has(k) && !sensors.has(k) && !inverters.has(k) && !buttons.has(k) &&
-         !latches.has(k) && !turrets.has(k) && !bells.has(k) && !pistons.has(k) && !fans.has(k) && !sluices.has(k) && !harvesters.has(k) && !feeders.has(k) && !porters.has(k) && !collectors.has(k) && !shearers.has(k) && !grinders.has(k) && !bakers.has(k) && !extractors.has(k) && !incubators.has(k) && !fishers.has(k) && !smokers.has(k) && !foragers.has(k) && !dryers.has(k) && !dredges.has(k) && !steamers.has(k) && !gardeners.has(k) && !roasters.has(k) && !florists.has(k) && !dyehouses.has(k) && !weavers.has(k) && !fertilizers.has(k) && !healers.has(k) && !canteens.has(k) && !keepers.has(k) && !menders.has(k) && !barters.has(k) && !milkmaids.has(k) && !miners.has(k) && !kennels.has(k) && !butchers.has(k) && !brewers.has(k) && !cupbearers.has(k) && !waterbearers.has(k) && !swineherds.has(k) && !outfitters.has(k) && !lumberjacks.has(k) && !foresters.has(k) && !colliers.has(k) && !confectioners.has(k) && !chapels.has(k) && !smiths.has(k) && !sculptors.has(k) && !masons.has(k) && !mechanics.has(k) && !carpenters.has(k) && !lamplighters.has(k) && !tamers.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
+         !latches.has(k) && !turrets.has(k) && !bells.has(k) && !pistons.has(k) && !fans.has(k) && !sluices.has(k) && !harvesters.has(k) && !feeders.has(k) && !porters.has(k) && !collectors.has(k) && !shearers.has(k) && !grinders.has(k) && !bakers.has(k) && !extractors.has(k) && !incubators.has(k) && !fishers.has(k) && !smokers.has(k) && !foragers.has(k) && !dryers.has(k) && !dredges.has(k) && !steamers.has(k) && !gardeners.has(k) && !roasters.has(k) && !florists.has(k) && !dyehouses.has(k) && !weavers.has(k) && !fertilizers.has(k) && !healers.has(k) && !canteens.has(k) && !keepers.has(k) && !menders.has(k) && !barters.has(k) && !milkmaids.has(k) && !miners.has(k) && !kennels.has(k) && !butchers.has(k) && !brewers.has(k) && !cupbearers.has(k) && !waterbearers.has(k) && !swineherds.has(k) && !outfitters.has(k) && !lumberjacks.has(k) && !foresters.has(k) && !colliers.has(k) && !confectioners.has(k) && !chapels.has(k) && !smiths.has(k) && !sculptors.has(k) && !masons.has(k) && !mechanics.has(k) && !carpenters.has(k) && !lamplighters.has(k) && !tamers.has(k) && !herders.has(k) && !observers.has(k) && !targets.has(k) && !tripwires.has(k);
 }
 
 // ===== Редактор напису (створюється в JS — без правок HTML) =====
@@ -12014,7 +12070,7 @@ function placeRail(hit, det = false, pw = false, sw = false) {
       ladders.has(k) || saplings.has(k) || signs.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) ||
       flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       lightningRods.has(k) ||
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k)) return false;
   const nbr = [];
@@ -12651,7 +12707,7 @@ function breakPlate(key) {
 function placePlate(hit) {
   const [x, y, z] = hit.prev;
   const k = plateKey(x, y, z);
-  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
+  if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -12890,7 +12946,7 @@ function placeNote(hit) {
   const [x, y, z] = hit.prev;
   const k = noteKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || notes.has(k) || plates.has(k) || levers.has(k) ||
-      wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
+      wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
@@ -13059,6 +13115,8 @@ const lamplighters = new Map();        // ліхтарники (секція н�
                                        // щоб гарди клітинок бачили їх заздалегідь
 const tamers = new Map();              // ловчі (секція нижче); реєстр тут —
                                        // щоб гарди клітинок бачили їх заздалегідь
+const herders = new Map();             // скотарі (секція нижче); реєстр тут —
+                                       // щоб гарди клітинок бачили їх заздалегідь
 const milkmaids = new Map();           // доярки (секція нижче); реєстр тут —
 const barters = new Map();             // крамарки (секція нижче); реєстр тут —
 const florists = new Map();            // квітникарі (секція нижче); реєстр тут —
@@ -13130,7 +13188,7 @@ function powerNodeAt(x, y, z) {
   const k = wireKey(x, y, z);
   if (wires.has(k) || levers.has(k) || plates.has(k) || sensors.has(k) ||
       inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) ||
-      bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) ||
+      bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) ||
       tripwires.has(k)) return true;
   const r = rails.get(k);
   return !!(r && r.det);   // датчикова рейка — теж вузол мережі
@@ -13247,7 +13305,7 @@ function breakWire(key) {
 function fixtureCellFree(x, y, z) {
   const k = leverKey(x, y, z);
   if (blockAt(x, y, z) !== AIR || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       torches.has(k) ||
       ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
@@ -13612,6 +13670,9 @@ function updatePower(dt) {
   // дикий вовк у сягу і м'ясо на полиці скрині впритул — після
   // ліхтарників, тим самим кроком
   updateTamers(dt);
+  // Скотарі: опора, живий сигнал поруч, двір не повний, дика худоба в
+  // сягу і зерно на полиці скрині впритул — після ловчих, тим самим кроком
+  updateHerders(dt);
   // Інвертори: опора, читання входу й перекидання кристала (з затримкою) —
   // до BFS, щоб мережа цього ж кадру бачила свіжі джерела
   updateInverters(dt);
@@ -15875,7 +15936,7 @@ function pistonDestFree(x, y, z) {
   const k = pistonKey(x, y, z);
   return !(plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) ||
     lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) ||
-    latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
+    latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) || torches.has(k) ||
     ladders.has(k) || doorAtCell(x, y, z) || fences.has(k) || gates.has(k) ||
     saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
     beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) ||
@@ -16978,17 +17039,8 @@ function feederServe(f) {
     { radius: 0.25, speed: 1.8, upBias: 0.9, life: 0.6, size: 0.09, gravity: 6 });
   Sound.eat();
   pingSound(f.x + 0.5, f.y, f.z + 0.5, 'feed');
-  if (a.baby) {
-    a.growth += BABY_FEED_BOOST;
-    spawnParticles(a.pos.x, a.pos.y + a.height + 0.2, a.pos.z, HEART_COLOR, 4,
-      { radius: 0.2, speed: 0.8, upBias: 1.4, life: 0.7, size: 0.1, gravity: -2 });
-  } else {
-    a.love = LOVE_TIME;
-    a.panic = 0;
-    a.netFed = true;         // для «приплоду без господаря» — обох частувала мережа
-    spawnParticles(a.pos.x, a.pos.y + a.height + 0.25, a.pos.z, HEART_COLOR, 7,
-      { radius: 0.35, speed: 1.2, upBias: 1.6, life: 0.8, size: 0.12, gravity: -2 });
-  }
+  // для «приплоду без господаря» — дорослу частувала мережа (netFed)
+  farmFeedCore(a, true);
   unlockAch('feed');
 }
 
@@ -17101,7 +17153,7 @@ function applyPorterFacing(p) {
 // пакунка (важливо після завантаження сейву — перенесення не вигадується)
 function addPorter(x, y, z, fx = 1, fz = 0, carried = 0) {
   const key = porterKey(x, y, z);
-  if (porters.has(key) || collectors.has(key) || shearers.has(key) || grinders.has(key) || bakers.has(key) || extractors.has(key) || incubators.has(key) || fishers.has(key) || smokers.has(key) || foragers.has(key) || dryers.has(key) || dredges.has(key) || steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || porters.size >= PORTER_MAX) return false;
+  if (porters.has(key) || collectors.has(key) || shearers.has(key) || grinders.has(key) || bakers.has(key) || extractors.has(key) || incubators.has(key) || fishers.has(key) || smokers.has(key) || foragers.has(key) || dryers.has(key) || dredges.has(key) || steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || porters.size >= PORTER_MAX) return false;
   // Зіпсований напрям (правлений сейв) — жолоб на схід
   if (!((Math.abs(fx) === 1 && fz === 0) || (fx === 0 && Math.abs(fz) === 1))) {
     fx = 1; fz = 0;
@@ -17867,7 +17919,7 @@ function makeGrinderModel() {
 
 function addGrinder(x, y, z, ground = 0) {
   const key = grinderKey(x, y, z);
-  if (grinders.has(key) || bakers.has(key) || extractors.has(key) || incubators.has(key) || fishers.has(key) || smokers.has(key) || foragers.has(key) || dryers.has(key) || dredges.has(key) || steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || grinders.size >= GRINDER_MAX) return false;
+  if (grinders.has(key) || bakers.has(key) || extractors.has(key) || incubators.has(key) || fishers.has(key) || smokers.has(key) || foragers.has(key) || dryers.has(key) || dredges.has(key) || steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || grinders.size >= GRINDER_MAX) return false;
   const { g, runner, runMesh } = makeGrinderModel();
   g.position.set(x + 0.5, y, z + 0.5);
   scene.add(g);
@@ -18484,7 +18536,7 @@ function makeIncubatorModel() {
 
 function addIncubator(x, y, z, hatched = 0) {
   const key = incubatorKey(x, y, z);
-  if (incubators.has(key) || fishers.has(key) || smokers.has(key) || foragers.has(key) || dryers.has(key) || dredges.has(key) || steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || incubators.size >= INCUBATOR_MAX) return false;
+  if (incubators.has(key) || fishers.has(key) || smokers.has(key) || foragers.has(key) || dryers.has(key) || dredges.has(key) || steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || incubators.size >= INCUBATOR_MAX) return false;
   const { g, egg, lamp } = makeIncubatorModel();
   g.position.set(x + 0.5, y, z + 0.5);
   scene.add(g);
@@ -18691,7 +18743,7 @@ function makeFisherModel() {
 
 function addFisher(x, y, z, caught = 0) {
   const key = fisherKey(x, y, z);
-  if (fishers.has(key) || smokers.has(key) || foragers.has(key) || dryers.has(key) || dredges.has(key) || steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || grinders.has(key) || bakers.has(key) ||
+  if (fishers.has(key) || smokers.has(key) || foragers.has(key) || dryers.has(key) || dredges.has(key) || steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || grinders.has(key) || bakers.has(key) ||
       extractors.has(key) || incubators.has(key) ||
       fishers.size >= FISHER_MAX) return false;
   const { g, bob, head } = makeFisherModel();
@@ -18907,7 +18959,7 @@ function makeSmokerModel() {
 
 function addSmoker(x, y, z, smoked = 0) {
   const key = smokerKey(x, y, z);
-  if (smokers.has(key) || foragers.has(key) || dryers.has(key) || dredges.has(key) || steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || fishers.has(key) || grinders.has(key) ||
+  if (smokers.has(key) || foragers.has(key) || dryers.has(key) || dredges.has(key) || steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || fishers.has(key) || grinders.has(key) ||
       bakers.has(key) || extractors.has(key) || incubators.has(key) ||
       smokers.size >= SMOKER_MAX) return false;
   const { g, ember } = makeSmokerModel();
@@ -19116,7 +19168,7 @@ function makeForagerModel() {
 
 function addForager(x, y, z, picked = 0) {
   const key = foragerKey(x, y, z);
-  if (foragers.has(key) || dryers.has(key) || dredges.has(key) || steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || smokers.has(key) || fishers.has(key) ||
+  if (foragers.has(key) || dryers.has(key) || dredges.has(key) || steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || smokers.has(key) || fishers.has(key) ||
       grinders.has(key) || bakers.has(key) || extractors.has(key) ||
       incubators.has(key) || foragers.size >= FORAGER_MAX) return false;
   const { g, lamp } = makeForagerModel();
@@ -19351,7 +19403,7 @@ function makeDryerModel() {
 
 function addDryer(x, y, z, dried = 0) {
   const key = dryerKey(x, y, z);
-  if (dryers.has(key) || dredges.has(key) || steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || foragers.has(key) || smokers.has(key) ||
+  if (dryers.has(key) || dredges.has(key) || steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || foragers.has(key) || smokers.has(key) ||
       fishers.has(key) || grinders.has(key) || bakers.has(key) ||
       extractors.has(key) || incubators.has(key) ||
       dryers.size >= DRYER_MAX) return false;
@@ -19565,7 +19617,7 @@ function makeDredgeModel() {
 
 function addDredge(x, y, z, pulled = 0) {
   const key = dredgeKey(x, y, z);
-  if (dredges.has(key) || steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || dryers.has(key) || foragers.has(key) ||
+  if (dredges.has(key) || steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || dryers.has(key) || foragers.has(key) ||
       smokers.has(key) || fishers.has(key) || grinders.has(key) ||
       bakers.has(key) || extractors.has(key) || incubators.has(key) ||
       dredges.size >= DREDGE_MAX) return false;
@@ -19793,7 +19845,7 @@ function makeSteamerModel() {
 
 function addSteamer(x, y, z, opened = 0) {
   const key = steamerKey(x, y, z);
-  if (steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || dredges.has(key) || dryers.has(key) ||
+  if (steamers.has(key) || gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || dredges.has(key) || dryers.has(key) ||
       foragers.has(key) || smokers.has(key) || fishers.has(key) ||
       grinders.has(key) || bakers.has(key) || extractors.has(key) ||
       incubators.has(key) || steamers.size >= STEAMER_MAX) return false;
@@ -20015,7 +20067,7 @@ function makeGardenerModel() {
 
 function addGardener(x, y, z, picked = 0) {
   const key = gardenerKey(x, y, z);
-  if (gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || steamers.has(key) || dredges.has(key) ||
+  if (gardeners.has(key) || roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || steamers.has(key) || dredges.has(key) ||
       dryers.has(key) || foragers.has(key) || smokers.has(key) ||
       fishers.has(key) || grinders.has(key) || bakers.has(key) ||
       extractors.has(key) || incubators.has(key) ||
@@ -20247,7 +20299,7 @@ function makeRoasterModel() {
 
 function addRoaster(x, y, z, baked = 0) {
   const key = roasterKey(x, y, z);
-  if (roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || gardeners.has(key) || steamers.has(key) ||
+  if (roasters.has(key) || florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || gardeners.has(key) || steamers.has(key) ||
       dredges.has(key) || dryers.has(key) || foragers.has(key) ||
       smokers.has(key) || fishers.has(key) || grinders.has(key) ||
       bakers.has(key) || extractors.has(key) || incubators.has(key) ||
@@ -20473,7 +20525,7 @@ function makeFloristModel() {
 
 function addFlorist(x, y, z, plucked = 0) {
   const key = floristKey(x, y, z);
-  if (florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || gardeners.has(key) || roasters.has(key) ||
+  if (florists.has(key) || dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || gardeners.has(key) || roasters.has(key) ||
       steamers.has(key) || dredges.has(key) || dryers.has(key) ||
       foragers.has(key) || smokers.has(key) || fishers.has(key) ||
       grinders.has(key) || bakers.has(key) || extractors.has(key) ||
@@ -20738,7 +20790,7 @@ function makeDyehouseModel() {
 
 function addDyehouse(x, y, z, painted = 0) {
   const key = dyehouseKey(x, y, z);
-  if (dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || florists.has(key) || gardeners.has(key) ||
+  if (dyehouses.has(key) || weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || florists.has(key) || gardeners.has(key) ||
       roasters.has(key) || steamers.has(key) || dredges.has(key) ||
       dryers.has(key) || foragers.has(key) || smokers.has(key) ||
       fishers.has(key) || grinders.has(key) || bakers.has(key) ||
@@ -20988,7 +21040,7 @@ function makeWeaverModel() {
 
 function addWeaver(x, y, z, woven = 0) {
   const key = weaverKey(x, y, z);
-  if (weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || dyehouses.has(key) || florists.has(key) ||
+  if (weavers.has(key) || fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || dyehouses.has(key) || florists.has(key) ||
       gardeners.has(key) || roasters.has(key) || steamers.has(key) ||
       dredges.has(key) || dryers.has(key) || foragers.has(key) ||
       smokers.has(key) || fishers.has(key) || grinders.has(key) ||
@@ -21234,7 +21286,7 @@ function makeFertilizerModel() {
 
 function addFertilizer(x, y, z, fed = 0) {
   const key = fertilizerKey(x, y, z);
-  if (fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || weavers.has(key) || dyehouses.has(key) ||
+  if (fertilizers.has(key) || healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || weavers.has(key) || dyehouses.has(key) ||
       florists.has(key) || gardeners.has(key) || roasters.has(key) ||
       steamers.has(key) || dredges.has(key) || dryers.has(key) ||
       foragers.has(key) || smokers.has(key) || fishers.has(key) ||
@@ -21495,7 +21547,7 @@ function makeHealerModel() {
 
 function addHealer(x, y, z, healed = 0) {
   const key = healerKey(x, y, z);
-  if (healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || fertilizers.has(key) || weavers.has(key) ||
+  if (healers.has(key) || canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || fertilizers.has(key) || weavers.has(key) ||
       dyehouses.has(key) || florists.has(key) || gardeners.has(key) ||
       roasters.has(key) || steamers.has(key) || dredges.has(key) ||
       dryers.has(key) || foragers.has(key) || smokers.has(key) ||
@@ -21744,7 +21796,7 @@ function makeCanteenModel() {
 
 function addCanteen(x, y, z, served = 0) {
   const key = canteenKey(x, y, z);
-  if (canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || healers.has(key) || fertilizers.has(key) ||
+  if (canteens.has(key) || keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || healers.has(key) || fertilizers.has(key) ||
       weavers.has(key) || dyehouses.has(key) || florists.has(key) ||
       gardeners.has(key) || roasters.has(key) || steamers.has(key) ||
       dredges.has(key) || dryers.has(key) || foragers.has(key) ||
@@ -21987,7 +22039,7 @@ function makeKeeperModel() {
 
 function addKeeper(x, y, z, stored = 0) {
   const key = keeperKey(x, y, z);
-  if (keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || canteens.has(key) || healers.has(key) ||
+  if (keepers.has(key) || menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || canteens.has(key) || healers.has(key) ||
       fertilizers.has(key) || weavers.has(key) || dyehouses.has(key) ||
       florists.has(key) || gardeners.has(key) || roasters.has(key) ||
       steamers.has(key) || dredges.has(key) || dryers.has(key) ||
@@ -22222,7 +22274,7 @@ function makeMenderModel() {
 
 function addMender(x, y, z, mended = 0) {
   const key = menderKey(x, y, z);
-  if (menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || keepers.has(key) || canteens.has(key) ||
+  if (menders.has(key) || barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || keepers.has(key) || canteens.has(key) ||
       healers.has(key) || fertilizers.has(key) || weavers.has(key) ||
       dyehouses.has(key) || florists.has(key) || gardeners.has(key) ||
       roasters.has(key) || steamers.has(key) || dredges.has(key) ||
@@ -22476,7 +22528,7 @@ function makeBarterModel() {
 
 function addBarter(x, y, z, traded = 0) {
   const key = barterKey(x, y, z);
-  if (barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || menders.has(key) || keepers.has(key) ||
+  if (barters.has(key) || milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || menders.has(key) || keepers.has(key) ||
       canteens.has(key) || healers.has(key) || fertilizers.has(key) ||
       weavers.has(key) || dyehouses.has(key) || florists.has(key) ||
       gardeners.has(key) || roasters.has(key) || steamers.has(key) ||
@@ -22753,7 +22805,7 @@ function makeMilkmaidModel() {
 
 function addMilkmaid(x, y, z, served = 0) {
   const key = milkmaidKey(x, y, z);
-  if (milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || barters.has(key) || keepers.has(key) ||
+  if (milkmaids.has(key) || miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || barters.has(key) || keepers.has(key) ||
       menders.has(key) || canteens.has(key) || healers.has(key) ||
       fertilizers.has(key) || weavers.has(key) || dyehouses.has(key) ||
       florists.has(key) || gardeners.has(key) || roasters.has(key) ||
@@ -23011,7 +23063,7 @@ function makeMinerModel() {
 
 function addMiner(x, y, z, mined = 0) {
   const key = minerKey(x, y, z);
-  if (miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || milkmaids.has(key) || barters.has(key) ||
+  if (miners.has(key) || kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || milkmaids.has(key) || barters.has(key) ||
       keepers.has(key) || menders.has(key) || canteens.has(key) ||
       healers.has(key) || fertilizers.has(key) || weavers.has(key) ||
       dyehouses.has(key) || florists.has(key) || gardeners.has(key) ||
@@ -23280,7 +23332,7 @@ function makeKennelModel() {
 
 function addKennel(x, y, z, fed = 0) {
   const key = kennelKey(x, y, z);
-  if (kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || miners.has(key) || milkmaids.has(key) ||
+  if (kennels.has(key) || butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || miners.has(key) || milkmaids.has(key) ||
       barters.has(key) || keepers.has(key) || menders.has(key) ||
       canteens.has(key) || healers.has(key) || fertilizers.has(key) ||
       weavers.has(key) || dyehouses.has(key) || florists.has(key) ||
@@ -23537,7 +23589,7 @@ function makeButcherModel() {
 
 function addButcher(x, y, z, culled = 0) {
   const key = butcherKey(x, y, z);
-  if (butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || kennels.has(key) || miners.has(key) ||
+  if (butchers.has(key) || brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || kennels.has(key) || miners.has(key) ||
       milkmaids.has(key) || barters.has(key) || keepers.has(key) ||
       menders.has(key) || canteens.has(key) || healers.has(key) ||
       fertilizers.has(key) || weavers.has(key) || dyehouses.has(key) ||
@@ -23833,7 +23885,7 @@ function makeBrewerModel() {
 
 function addBrewer(x, y, z, brewed = 0) {
   const key = brewerKey(x, y, z);
-  if (brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || butchers.has(key) || kennels.has(key) ||
+  if (brewers.has(key) || cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || butchers.has(key) || kennels.has(key) ||
       miners.has(key) || milkmaids.has(key) || barters.has(key) ||
       keepers.has(key) || menders.has(key) || canteens.has(key) ||
       healers.has(key) || fertilizers.has(key) || weavers.has(key) ||
@@ -24114,7 +24166,7 @@ function makeCupbearerModel() {
 
 function addCupbearer(x, y, z, served = 0) {
   const key = cupbearerKey(x, y, z);
-  if (cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || brewers.has(key) || butchers.has(key) ||
+  if (cupbearers.has(key) || waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || brewers.has(key) || butchers.has(key) ||
       kennels.has(key) || miners.has(key) || milkmaids.has(key) ||
       barters.has(key) || keepers.has(key) || menders.has(key) ||
       canteens.has(key) || healers.has(key) || fertilizers.has(key) ||
@@ -24370,7 +24422,7 @@ function makeWaterbearerModel() {
 
 function addWaterbearer(x, y, z, filled = 0) {
   const key = waterbearerKey(x, y, z);
-  if (waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || cupbearers.has(key) || brewers.has(key) ||
+  if (waterbearers.has(key) || swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || cupbearers.has(key) || brewers.has(key) ||
       butchers.has(key) || kennels.has(key) || miners.has(key) ||
       milkmaids.has(key) || barters.has(key) || keepers.has(key) ||
       menders.has(key) || canteens.has(key) || healers.has(key) ||
@@ -24624,7 +24676,7 @@ function makeSwineherdModel() {
 
 function addSwineherd(x, y, z, found = 0) {
   const key = swineherdKey(x, y, z);
-  if (swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || waterbearers.has(key) || cupbearers.has(key) ||
+  if (swineherds.has(key) || outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || waterbearers.has(key) || cupbearers.has(key) ||
       brewers.has(key) || butchers.has(key) || kennels.has(key) ||
       miners.has(key) || milkmaids.has(key) || barters.has(key) ||
       keepers.has(key) || menders.has(key) || canteens.has(key) ||
@@ -24879,7 +24931,7 @@ function makeOutfitterModel() {
 
 function addOutfitter(x, y, z, issued = 0) {
   const key = outfitterKey(x, y, z);
-  if (outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || swineherds.has(key) || waterbearers.has(key) ||
+  if (outfitters.has(key) || lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || swineherds.has(key) || waterbearers.has(key) ||
       cupbearers.has(key) ||
       brewers.has(key) || butchers.has(key) || kennels.has(key) ||
       miners.has(key) || milkmaids.has(key) || barters.has(key) ||
@@ -25139,7 +25191,7 @@ function makeLumberjackModel() {
 
 function addLumberjack(x, y, z, felled = 0) {
   const key = lumberjackKey(x, y, z);
-  if (lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || outfitters.has(key) || swineherds.has(key) ||
+  if (lumberjacks.has(key) || foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || outfitters.has(key) || swineherds.has(key) ||
       waterbearers.has(key) || cupbearers.has(key) ||
       brewers.has(key) || butchers.has(key) || kennels.has(key) ||
       miners.has(key) || milkmaids.has(key) || barters.has(key) ||
@@ -25424,7 +25476,7 @@ function makeForesterModel() {
 
 function addForester(x, y, z, planted = 0) {
   const key = foresterKey(x, y, z);
-  if (foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || lumberjacks.has(key) || outfitters.has(key) ||
+  if (foresters.has(key) || colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || lumberjacks.has(key) || outfitters.has(key) ||
       swineherds.has(key) || waterbearers.has(key) || cupbearers.has(key) ||
       brewers.has(key) || butchers.has(key) || kennels.has(key) ||
       miners.has(key) || milkmaids.has(key) || barters.has(key) ||
@@ -25692,7 +25744,7 @@ function makeCollierModel() {
 
 function addCollier(x, y, z, charred = 0) {
   const key = collierKey(x, y, z);
-  if (colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || foresters.has(key) || lumberjacks.has(key) ||
+  if (colliers.has(key) || confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || foresters.has(key) || lumberjacks.has(key) ||
       outfitters.has(key) || swineherds.has(key) || waterbearers.has(key) ||
       cupbearers.has(key) || brewers.has(key) || butchers.has(key) ||
       kennels.has(key) || miners.has(key) || milkmaids.has(key) ||
@@ -25918,7 +25970,7 @@ function makeConfectionerModel() {
 
 function addConfectioner(x, y, z, baked = 0) {
   const key = confectionerKey(x, y, z);
-  if (confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || colliers.has(key) || foresters.has(key) ||
+  if (confectioners.has(key) || chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || colliers.has(key) || foresters.has(key) ||
       lumberjacks.has(key) || outfitters.has(key) || swineherds.has(key) ||
       waterbearers.has(key) || cupbearers.has(key) || brewers.has(key) ||
       butchers.has(key) || kennels.has(key) || miners.has(key) ||
@@ -26153,7 +26205,7 @@ function makeChapelModel() {
 
 function addChapel(x, y, z, cured = 0) {
   const key = chapelKey(x, y, z);
-  if (chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || confectioners.has(key) || colliers.has(key) ||
+  if (chapels.has(key) || smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || confectioners.has(key) || colliers.has(key) ||
       foresters.has(key) || lumberjacks.has(key) || outfitters.has(key) ||
       swineherds.has(key) || waterbearers.has(key) || cupbearers.has(key) ||
       brewers.has(key) || butchers.has(key) || kennels.has(key) ||
@@ -26396,7 +26448,7 @@ function makeSmithModel() {
 
 function addSmith(x, y, z, forged = 0) {
   const key = smithKey(x, y, z);
-  if (smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || chapels.has(key) || confectioners.has(key) ||
+  if (smiths.has(key) || sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || chapels.has(key) || confectioners.has(key) ||
       colliers.has(key) ||
       foresters.has(key) || lumberjacks.has(key) || outfitters.has(key) ||
       swineherds.has(key) || waterbearers.has(key) || cupbearers.has(key) ||
@@ -26685,7 +26737,7 @@ function makeSculptorModel() {
 
 function addSculptor(x, y, z, sculpted = 0) {
   const key = sculptorKey(x, y, z);
-  if (sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || smiths.has(key) || chapels.has(key) ||
+  if (sculptors.has(key) || masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || smiths.has(key) || chapels.has(key) ||
       confectioners.has(key) || colliers.has(key) ||
       foresters.has(key) || lumberjacks.has(key) || outfitters.has(key) ||
       swineherds.has(key) || waterbearers.has(key) || cupbearers.has(key) ||
@@ -27001,7 +27053,7 @@ function makeMasonModel() {
 
 function addMason(x, y, z, laid = 0) {
   const key = masonKey(x, y, z);
-  if (masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || sculptors.has(key) || smiths.has(key) ||
+  if (masons.has(key) || mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || sculptors.has(key) || smiths.has(key) ||
       chapels.has(key) ||
       confectioners.has(key) || colliers.has(key) ||
       foresters.has(key) || lumberjacks.has(key) || outfitters.has(key) ||
@@ -27388,6 +27440,8 @@ const MECHANIC_KINDS = {
                  make: (x, y, z, a) => addLamplighter(x, y, z, a[0] | 0) },
   tamer:       { map: () => tamers,       args: (e) => [e.tamedN | 0],
                  make: (x, y, z, a) => addTamer(x, y, z, a[0] | 0) },
+  herder:      { map: () => herders,      args: (e) => [e.herdedN | 0],
+                 make: (x, y, z, a) => addHerder(x, y, z, a[0] | 0) },
   observer:    { map: () => observers,    args: (e) => [e.fx | 0, e.fz | 0],
                  make: (x, y, z, a) => addObserver(x, y, z, a[0] | 0, a[1] | 0) },
   target:      { map: () => targets,      args: (e) => [e.fx | 0, e.fz | 0],
@@ -27483,7 +27537,7 @@ function makeMechanicModel() {
 
 function addMechanic(x, y, z, fixed = 0) {
   const key = mechanicKey(x, y, z);
-  if (mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || masons.has(key) || sculptors.has(key) ||
+  if (mechanics.has(key) || carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || masons.has(key) || sculptors.has(key) ||
       smiths.has(key) || chapels.has(key) ||
       confectioners.has(key) || colliers.has(key) ||
       foresters.has(key) || lumberjacks.has(key) || outfitters.has(key) ||
@@ -27888,7 +27942,7 @@ function makeCarpenterModel() {
 
 function addCarpenter(x, y, z, joined = 0) {
   const key = carpenterKey(x, y, z);
-  if (carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || mechanics.has(key) || masons.has(key) ||
+  if (carpenters.has(key) || lamplighters.has(key) || tamers.has(key) || herders.has(key) || mechanics.has(key) || masons.has(key) ||
       sculptors.has(key) || smiths.has(key) || chapels.has(key) ||
       confectioners.has(key) || colliers.has(key) ||
       foresters.has(key) || lumberjacks.has(key) || outfitters.has(key) ||
@@ -28190,7 +28244,7 @@ function makeLamplighterModel() {
 
 function addLamplighter(x, y, z, lit = 0) {
   const key = lamplighterKey(x, y, z);
-  if (lamplighters.has(key) || tamers.has(key) || carpenters.has(key) || mechanics.has(key) ||
+  if (lamplighters.has(key) || tamers.has(key) || herders.has(key) || carpenters.has(key) || mechanics.has(key) ||
       masons.has(key) || sculptors.has(key) || smiths.has(key) ||
       chapels.has(key) || confectioners.has(key) || colliers.has(key) ||
       foresters.has(key) || lumberjacks.has(key) || outfitters.has(key) ||
@@ -28485,7 +28539,7 @@ function makeTamerModel() {
 
 function addTamer(x, y, z, tamedN = 0) {
   const key = tamerKey(x, y, z);
-  if (tamers.has(key) || lamplighters.has(key) || carpenters.has(key) ||
+  if (tamers.has(key) || herders.has(key) || lamplighters.has(key) || carpenters.has(key) ||
       mechanics.has(key) ||
       masons.has(key) || sculptors.has(key) || smiths.has(key) ||
       chapels.has(key) || confectioners.has(key) || colliers.has(key) ||
@@ -28686,6 +28740,373 @@ if (savedGame && Array.isArray(savedGame.tamers)) {
   for (const e of savedGame.tamers) {
     if (Array.isArray(e) && e.length >= 3) {
       addTamer(e[0], e[1], e[2], e[3] | 0);
+    }
+  }
+}
+
+// ============================================================
+// Скотар: мережа скликає собі стадо
+// ============================================================
+// Скотар — перша машина, що СКЛИКАЄ: кам'яна тумба з коритом зерна і
+// ґирлиґою на стовпчику. Поки поруч є живий сигнал (сусідні клітинки,
+// ±1 по всіх осях — як засвічується лампа), у крузі двору
+// (HERDER_WATCH_R блоків, як варта сніговика) свійської худоби менше за
+// повний двір (HERDER_FULL_N), впритул (сусідні клітинки, і по
+// діагоналі теж — як бачить скрині годівниця) стоїть скриня з
+// колосками 🌾 на полиці і в сягу (HERDER_REACH блоків — далі за ріжок
+// ловчого, бо дика звірина заходить у світ не ближче 16 блоків від
+// гравця) пасеться ДИКА свійська тварина (не на повідці, не наймичка
+// свинопаса, не покликана іншим скотарем) — кожні HERDER_TIME секунд
+// ґирлиґа кличе її: тварина йде до корита тим самим спільним
+// followStep, що й на повідці (окремого ходу слідування не існує), і
+// поки її кличуть — не деспавниться, як і на повідці. Дійшла до корита
+// — скотар лічить новачка, а частунок біля корита йде тим самим
+// спільним farmFeedCore, що й рука та годівниця (ті самі сердечка, той
+// самий «настрій», те саме досягнення частування), тими самими
+// воротами (сита, перепочиває чи загін переповнений — зерно лишається
+// на полиці). Обмін атомарний у мить приходу: зламаний по дорозі
+// скотар нічого не губить — зерно на полиці, а тварина просто знову
+// блукає. Дорога не всесильна: застрягла без поступу (яр, мур, дерево
+// на прямій) — за HERDER_STALL секунд ґирлиґа відпускає її, сполохана
+// перепасається (HERDER_SHY), а поклик шукає іншу. Повний двір —
+// ґирлиґа спочиває (і два скотарі не скликають два стада: покликану
+// одним другий не кличе). Петля стада
+// замикається: кріпер чи лава винищує загін — скотар скликає нову
+// худобу з поля ще до наступної кривавої ночі, і годівниця, доярка,
+// стригаль і різник знову мають коло кого поратись. Повідець, як і
+// раніше, веде тварину з руки. Нове дієслово — скликати з полиці.
+
+const herderKey = leverKey;
+const HERDER_MAX = 32;                 // межа, щоб збереження не розросталося
+const HERDER_TIME = 8;                 // секунд між покликами ґирлиґи
+const HERDER_REACH = 24;               // сяг поклику, блоків (дика звірина заходить у світ не ближче 16)
+const HERDER_WATCH_R = 10;             // круг двору, блоків (як варта сніговика)
+const HERDER_FULL_N = 4;               // стільки худоби в крузі — двір повний
+const HERDER_ARRIVE = 1.6;             // ближче до корита — дійшла (сусідня клітинка)
+const HERDER_STALL = 12;               // секунд без поступу — поклик відпускає
+const HERDER_SHY = 30;                 // секунд сполохана пасеться, перш ніж кликати знову
+const HERDER_YARD_N = 3;               // приведених на «Повний двір»
+
+const HRD_BASE_GEO = new THREE.BoxGeometry(0.6, 0.12, 0.6);
+const HRD_BASE_MAT = new THREE.MeshLambertMaterial({ color: 0x6f7680 });
+// Дубовий стовпчик у кутку тумби — на ньому спочиває ґирлиґа скотаря
+const HRD_POST_GEO = new THREE.BoxGeometry(0.1, 0.66, 0.1);
+HRD_POST_GEO.translate(-0.16, 0.45, -0.16);
+const HRD_POST_MAT = new THREE.MeshLambertMaterial({ color: 0x6e532f });
+// Ґирлиґа — довгий кий з гачком, що хитається, коли скотар кличе
+const HRD_STAFF_GEO = new THREE.BoxGeometry(0.4, 0.07, 0.07);
+HRD_STAFF_GEO.translate(0.2, 0, 0);
+const HRD_STAFF_MAT = new THREE.MeshLambertMaterial({ color: 0x8a6a3f });
+const HRD_HOOK_GEO = new THREE.BoxGeometry(0.07, 0.16, 0.07);
+HRD_HOOK_GEO.translate(0.4, -0.08, 0);
+const HRD_HOOK_MAT = new THREE.MeshLambertMaterial({ color: 0x63401f });
+// Корито з зерном спереду тумби — частунок для новачка двору
+const HRD_TROUGH_GEO = new THREE.BoxGeometry(0.3, 0.08, 0.16);
+HRD_TROUGH_GEO.translate(0.08, 0.16, 0.18);
+const HRD_TROUGH_MAT = new THREE.MeshLambertMaterial({ color: 0x7a5c33 });
+const HRD_GRAIN_GEO = new THREE.BoxGeometry(0.22, 0.05, 0.1);
+HRD_GRAIN_GEO.translate(0.08, 0.22, 0.18);
+const HRD_GRAIN_MAT = new THREE.MeshLambertMaterial({ color: 0xd9b23c });
+// Ліхтарик на розі тумби: жевріє, коли скотар під живленням
+const HRD_LAMP_GEO = new THREE.BoxGeometry(0.1, 0.12, 0.1);
+HRD_LAMP_GEO.translate(0.22, 0.18, -0.2);
+const HRD_LAMP_MAT = new THREE.MeshLambertMaterial({ color: 0x6b5a33 });
+const HRD_LAMP_ON_MAT = new THREE.MeshLambertMaterial({
+  color: 0xffcf6b, emissive: 0xb07c1e });
+const HRD_STONE_COLOR = new THREE.Color(0x7d848d);
+const HRD_GRAIN_COLOR = new THREE.Color(0xd9b23c);
+
+function makeHerderModel() {
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(HRD_BASE_GEO, HRD_BASE_MAT);
+  base.position.y = 0.06;
+  g.add(base);
+  g.add(new THREE.Mesh(HRD_POST_GEO, HRD_POST_MAT));
+  // Ґирлиґа — окрема група на стовпчику: хитається, коли скотар кличе
+  const staff = new THREE.Group();
+  staff.position.set(-0.16, 0.68, -0.16);
+  staff.rotation.z = 0.3;
+  staff.add(new THREE.Mesh(HRD_STAFF_GEO, HRD_STAFF_MAT));
+  staff.add(new THREE.Mesh(HRD_HOOK_GEO, HRD_HOOK_MAT));
+  g.add(staff);
+  g.add(new THREE.Mesh(HRD_TROUGH_GEO, HRD_TROUGH_MAT));
+  g.add(new THREE.Mesh(HRD_GRAIN_GEO, HRD_GRAIN_MAT));
+  const lamp = new THREE.Mesh(HRD_LAMP_GEO, HRD_LAMP_MAT);
+  g.add(lamp);
+  return { g, staff, lamp };
+}
+
+function addHerder(x, y, z, herdedN = 0) {
+  const key = herderKey(x, y, z);
+  if (herders.has(key) || tamers.has(key) || lamplighters.has(key) ||
+      carpenters.has(key) || mechanics.has(key) ||
+      masons.has(key) || sculptors.has(key) || smiths.has(key) ||
+      chapels.has(key) || confectioners.has(key) || colliers.has(key) ||
+      foresters.has(key) || lumberjacks.has(key) || outfitters.has(key) ||
+      swineherds.has(key) || waterbearers.has(key) || cupbearers.has(key) ||
+      brewers.has(key) || butchers.has(key) || kennels.has(key) ||
+      miners.has(key) || milkmaids.has(key) || barters.has(key) ||
+      keepers.has(key) || menders.has(key) || canteens.has(key) ||
+      healers.has(key) || fertilizers.has(key) || weavers.has(key) ||
+      dyehouses.has(key) || florists.has(key) || gardeners.has(key) ||
+      roasters.has(key) || steamers.has(key) || dredges.has(key) ||
+      dryers.has(key) || foragers.has(key) || smokers.has(key) ||
+      fishers.has(key) || grinders.has(key) || bakers.has(key) ||
+      extractors.has(key) || incubators.has(key) ||
+      herders.size >= HERDER_MAX) return false;
+  const { g, staff, lamp } = makeHerderModel();
+  g.position.set(x + 0.5, y, z + 0.5);
+  scene.add(g);
+  herders.set(key, { x, y, z, group: g, staff, lamp,
+    on: false, callWorkT: 0, grainT: 0,
+    herdedN: Math.max(0, herdedN | 0) });
+  refreshWiresAround(x, y, z);
+  return true;
+}
+
+function removeHerder(key) {
+  const h = herders.get(key);
+  if (!h) return;
+  scene.remove(h.group);  // геометрія/матеріали спільні — не dispose
+  herders.delete(key);
+  refreshWiresAround(h.x, h.y, h.z);
+}
+
+// Розібрати скотаря ударом (чи втратою опори): обмін атомарний у мить
+// приходу, тож непочатий частунок — це ще зерно на полиці, а покликана
+// тварина просто знову блукає (застарілий поклик знімає updateAnimal) —
+// нічого не пропадає
+function breakHerder(key) {
+  const h = herders.get(key);
+  if (!h) return;
+  spawnParticles(h.x + 0.5, h.y + 0.4, h.z + 0.5, HRD_STONE_COLOR, 6,
+    { radius: 0.25, speed: 1.5, upBias: 0.5, life: 0.4, size: 0.08, gravity: 10 });
+  Sound.breakBlock(STONE);
+  removeHerder(key);
+}
+
+// Поставити скотаря в клітинку перед прицілом (лише на тверду опору);
+// напряму не має — худобу і скриню бачить з усіх боків
+function placeHerder(hit) {
+  const [x, y, z] = hit.prev;
+  if (!powerCellFree(x, y, z)) return false;
+  if (!addHerder(x, y, z)) return false;
+  Sound.place(STONE);
+  spawnParticles(x + 0.5, y + 0.3, z + 0.5, HRD_STONE_COLOR, 6,
+    { radius: 0.25, speed: 1.3, upBias: 0.4, life: 0.4, size: 0.08, gravity: 10 });
+  return true;
+}
+
+// Стан живлення скотаря: живий сигнал у сусідніх клітинках (±1 по
+// всіх осях, і по діагоналі теж — як засвічується лампа)
+function herderPowered(h) {
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        if (dx === 0 && dy === 0 && dz === 0) continue;
+        if (powerSourceLiveAt(herderKey(h.x + dx, h.y + dy, h.z + dz))) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function setHerderGlow(h, on) {
+  h.lamp.material = on ? HRD_LAMP_ON_MAT : HRD_LAMP_MAT;
+}
+
+// Зерно для корита: найповніша полиця колосків 🌾 скрині впритул до
+// скотаря (сусідні клітинки, і по діагоналі теж — як бачить скрині
+// годівниця); повертає скриню з принаймні одним колоском або null
+function herderGrain(h) {
+  let best = null, bestN = 0;
+  for (const ch of chests.values()) {
+    if (Math.abs(ch.x - h.x) > 1 || Math.abs(ch.y - h.y) > 1 ||
+        Math.abs(ch.z - h.z) > 1) continue;
+    const n = ch.store.wheat | 0;
+    if (n > bestN) { bestN = n; best = ch; }
+  }
+  return bestN >= 1 ? best : null;
+}
+
+// Скільки свійської худоби пасеться у крузі двору: повний двір —
+// ґирлиґа спочиває (зерно не марнується, і двір не переповнюється)
+function herderYardCount(h) {
+  let n = 0;
+  for (const a of animals) {
+    if (!BREED_TYPES.has(a.type) || a.health <= 0) continue;
+    const dx = a.pos.x - (h.x + 0.5);
+    const dz = a.pos.z - (h.z + 0.5);
+    if (dx * dx + dz * dz <= HERDER_WATCH_R * HERDER_WATCH_R) n++;
+  }
+  return n;
+}
+
+// Тварина, яку ЦЕЙ скотар уже покликав (вона в дорозі до корита);
+// покликану одним другий не кличе — два скотарі не скликають два стада
+function herderLured(key) {
+  for (const a of animals) {
+    if (a.lureKey === key && a.health > 0) return a;
+  }
+  return null;
+}
+
+// Найближча ДИКА свійська тварина в сягу поклику: доросла, не на
+// повідці, не наймичка свинопаса і не покликана іншим скотарем (вона-бо
+// пасеться в полі, як вовк блукає коло ловчого); за кругом двору —
+// ту, що вже вдома, кликати нема чого
+function herderWild(h) {
+  let best = null, bestDist = HERDER_REACH * HERDER_REACH;
+  for (const a of animals) {
+    if (!BREED_TYPES.has(a.type) || a.baby || a.health <= 0) continue;
+    if (a.leashed || a.herdKey || a.lureKey || a.lureShyT > 0) continue;
+    const dx = a.pos.x - (h.x + 0.5);
+    const dy = a.pos.y - h.y;
+    const dz = a.pos.z - (h.z + 0.5);
+    const d = dx * dx + dy * dy + dz * dz;
+    if (dx * dx + dz * dz <= HERDER_WATCH_R * HERDER_WATCH_R) continue;
+    if (d <= bestDist) { bestDist = d; best = a; }
+  }
+  return best;
+}
+
+// Двір не повний, дика худоба в сягу І зерно на полиці скрині впритул —
+// ґирлиґа має роботу; повертає { wild, chest } або null
+function herderTarget(h) {
+  if (herderYardCount(h) >= HERDER_FULL_N) return null;
+  const wild = herderWild(h);
+  if (!wild) return null;
+  const chest = herderGrain(h);
+  if (!chest) return null;
+  return { wild, chest };
+}
+
+// Дійшла до корита: скотар лічить новачка, а частунок іде тим самим
+// farmFeedCore, що й з руки та з годівниці, — одним атомарним обміном
+// тими самими воротами (сита, перепочиває чи загін переповнений —
+// зерно лишається на полиці, новачок усе одно вдома)
+function herderFinish(h, a) {
+  a.lureKey = null;                    // дійшла — ґирлиґа відпускає
+  h.herdedN = (h.herdedN | 0) + 1;
+  unlockAch('autoherd');
+  if (h.herdedN >= HERDER_YARD_N) unlockAch('herdyard');
+  const chest = herderGrain(h);
+  if (chest && !a.baby && a.love <= 0 && a.breedCd <= 0 &&
+      animals.length < BREED_ANIMAL_CAP) {
+    chest.store.wheat--;
+    if (!chest.store.wheat) delete chest.store.wheat;
+    if (chestOpen && chestCur === chest) {
+      updateChestKindHud('wheat');
+      renderChestPanel();
+    }
+    farmFeedCore(a, true);   // частунок мережі — для «приплоду без господаря»
+    Sound.eat();
+    pingSound(h.x + 0.5, h.y, h.z + 0.5, 'feed');
+    unlockAch('feed');
+  }
+  spawnParticles(h.x + 0.58, h.y + 0.26, h.z + 0.68, HRD_GRAIN_COLOR, 6,
+    { radius: 0.2, speed: 1.0, upBias: 0.8, life: 0.45, size: 0.07, gravity: 4 });
+  flashItemName('🐮 Скотар привів новачка до корита');
+  saveGame();
+}
+
+// Тик скотарів: опора, живлення поруч, покликана в дорозі чи пошук
+// нової — двір не повний, дика худоба в сягу і зерно на полиці;
+// викликається з updatePower після ловчих (стан минулого кадру)
+function updateHerders(dt) {
+  if (herders.size === 0) return;
+  for (const [key, h] of herders) {
+    // Блок зайняв клітинку чи зникла опора — розібрати
+    if (isSolid(blockAt(h.x, h.y, h.z)) || !isSolid(blockAt(h.x, h.y - 1, h.z))) {
+      breakHerder(key);
+      continue;
+    }
+    const on = herderPowered(h);
+    if (on !== h.on) {
+      h.on = on;
+      setHerderGlow(h, on);
+    }
+    const lured = herderLured(key);
+    if (!on) {
+      // Без живлення ґирлиґа спочиває і відпускає покликану (тварина
+      // знову блукає; зерно не чіпалось — обмін-бо атомарний у приході)
+      if (lured) lured.lureKey = null;
+      h.callWorkT = 0;
+      h.staff.rotation.z = 0.3;
+      continue;
+    }
+    if (lured) {
+      // Рука сильніша за поклик: узята на повідець — ґирлиґа відпускає
+      if (lured.leashed) {
+        lured.lureKey = null;
+      } else {
+        // Покликана в дорозі: ґирлиґа показує до корита, над коритом
+        // зрідка злітає зернятко
+        h.staff.rotation.z = 0.3 + Math.sin(performance.now() / 200) * 0.2;
+        h.grainT -= dt;
+        if (h.grainT <= 0) {
+          h.grainT = 0.6 + Math.random() * 0.5;
+          spawnParticles(h.x + 0.58, h.y + 0.3, h.z + 0.68, HRD_GRAIN_COLOR, 1,
+            { radius: 0.1, speed: 0.4, upBias: 1.1, life: 0.8, size: 0.06, gravity: -0.6 });
+        }
+        const dx = lured.pos.x - (h.x + 0.5);
+        const dz = lured.pos.z - (h.z + 0.5);
+        const d = Math.hypot(dx, dz);
+        if (d <= HERDER_ARRIVE * 1.1) {
+          herderFinish(h, lured);
+          continue;
+        }
+        // Поступ є — дорога жива; нема (яр, мур, дерево на прямій) —
+        // ґирлиґа відпускає: сполохана перепасається, а поклик шукає іншу
+        if (d < (h.lastD === undefined ? Infinity : h.lastD) - 0.3) {
+          h.lastD = d;
+          h.stallT = 0;
+        } else {
+          h.stallT = (h.stallT || 0) + dt;
+          if (h.stallT >= HERDER_STALL) {
+            lured.lureKey = null;
+            lured.lureShyT = HERDER_SHY;
+            h.stallT = 0;
+            h.lastD = undefined;
+          }
+        }
+        continue;
+      }
+    }
+    const target = herderTarget(h);
+    if (!target) {  // двір повний, худоби чи зерна нема — ґирлиґа спочиває
+      h.callWorkT = 0;
+      h.staff.rotation.z = 0.3;
+      continue;
+    }
+    h.callWorkT += dt;
+    // Ґирлиґа хитається до поля — скотар приміряється до поклику
+    h.staff.rotation.z = 0.3 + Math.sin(h.callWorkT * 5) * 0.25;
+    if (h.callWorkT >= HERDER_TIME) {
+      h.callWorkT = 0;
+      // Мить поклику: ціль чесно перевіряється ще раз (хтось повів по
+      // дорозі — поклик не вигадується)
+      const t2 = herderTarget(h);
+      if (t2) {
+        t2.wild.lureKey = key;
+        h.lastD = undefined;
+        h.stallT = 0;
+        Sound.peep();
+        spawnParticles(t2.wild.pos.x, t2.wild.pos.y + t2.wild.height + 0.25,
+          t2.wild.pos.z, HRD_GRAIN_COLOR, 4,
+          { radius: 0.2, speed: 0.8, upBias: 1.2, life: 0.6, size: 0.08, gravity: -1 });
+      }
+    }
+  }
+}
+
+// Відновити збережених скотарів (сумісно зі старими сейвами)
+if (savedGame && Array.isArray(savedGame.herders)) {
+  for (const e of savedGame.herders) {
+    if (Array.isArray(e) && e.length >= 3) {
+      addHerder(e[0], e[1], e[2], e[3] | 0);
     }
   }
 }
@@ -29457,7 +29878,7 @@ function placeCampfire(hit) {
       rails.has(k) || beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCampfire(x, y, z)) return false;
   Sound.torch(0.2);
@@ -29907,7 +30328,7 @@ function placeBeehive(hit) {
       signs.has(k) || rails.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addBeehive(x, y, z)) return false;
   Sound.place(PLANK);
@@ -30104,7 +30525,7 @@ function placeScarecrow(hit) {
       saplings.has(k) || signs.has(k) || rails.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addScarecrow(x, y, z)) return false;
   Sound.place(PLANK);
@@ -30243,7 +30664,7 @@ function placeLightningRod(hit) {
       doorAtCell(x, y, z) || fences.has(k) || gates.has(k) || crops.has(k) ||
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       anvils.has(k) || chests.has(k) || mills.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!Object.entries(LROD_COST).every(([ore, n]) => (player[ore] || 0) >= n)) {
     flashItemName('Потрібно ⛓ 2 × залізо + 🟡 1 × золото з торби');
@@ -30494,7 +30915,7 @@ function placeAnvil(hit) {
       beds.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addAnvil(x, y, z)) return false;
   Sound.place(STONE);
@@ -31013,7 +31434,7 @@ function placeChest(hit) {
       crops.has(k) || beds.has(k) || saplings.has(k) || signs.has(k) ||
       rails.has(k) || lightningRods.has(k) || cauldrons.has(k) ||
       mushrooms.has(k) || flowers.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addChest(x, y, z)) return false;
   Sound.place(PLANK);
@@ -31291,7 +31712,7 @@ function placeMill(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addMill(x, y, z)) return false;
   Sound.place(PLANK);
@@ -31506,7 +31927,7 @@ function placeCauldron(hit) {
       fences.has(k) || gates.has(k) || crops.has(k) || beds.has(k) ||
       saplings.has(k) || signs.has(k) || rails.has(k) ||
       lightningRods.has(k) || mushrooms.has(k) || flowers.has(k) ||
-      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
+      plates.has(k) || notes.has(k) || levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k)) return false;
   if (!isSolid(blockAt(x, y - 1, z))) return false;
   if (!addCauldron(x, y, z)) return false;
   Sound.place(STONE);
@@ -31747,7 +32168,7 @@ function mushCellFree(x, y, z) {
       saplings.has(k) || signs.has(k) || rails.has(k) || campfires.has(k) ||
       beehives.has(k) || scarecrows.has(k) || anvils.has(k) || chests.has(k) || mills.has(k) || beds.has(k) ||
       lightningRods.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       fences.has(k) || gates.has(k) || doorAtCell(x, y, z)) return false;
   if (blockAt(x, y, z) !== AIR) return false;
   return mushSupportable(blockAt(x, y - 1, z));
@@ -32707,7 +33128,7 @@ const flowerSupportable = (id, planted) => id === GRASS || (planted && id === DI
 function flowerCellFree(x, y, z, planted = false) {
   const k = flowerKey(x, y, z);
   if (flowers.has(k) || mushrooms.has(k) || plates.has(k) || notes.has(k) ||
-      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
+      levers.has(k) || wires.has(k) || lamps.has(k) || sensors.has(k) || inverters.has(k) || buttons.has(k) || latches.has(k) || turrets.has(k) || bells.has(k) || pistons.has(k) || fans.has(k) || sluices.has(k) || harvesters.has(k) || feeders.has(k) || porters.has(k) || collectors.has(k) || shearers.has(k) || grinders.has(k) || bakers.has(k) || extractors.has(k) || incubators.has(k) || fishers.has(k) || smokers.has(k) || foragers.has(k) || dryers.has(k) || dredges.has(k) || steamers.has(k) || gardeners.has(k) || roasters.has(k) || florists.has(k) || dyehouses.has(k) || weavers.has(k) || fertilizers.has(k) || healers.has(k) || canteens.has(k) || keepers.has(k) || menders.has(k) || barters.has(k) || milkmaids.has(k) || miners.has(k) || kennels.has(k) || butchers.has(k) || brewers.has(k) || cupbearers.has(k) || waterbearers.has(k) || swineherds.has(k) || outfitters.has(k) || lumberjacks.has(k) || foresters.has(k) || colliers.has(k) || confectioners.has(k) || chapels.has(k) || smiths.has(k) || sculptors.has(k) || masons.has(k) || mechanics.has(k) || carpenters.has(k) || lamplighters.has(k) || tamers.has(k) || herders.has(k) || observers.has(k) || targets.has(k) || tripwires.has(k) ||
       torches.has(k) || crops.has(k) ||
       ladders.has(k) || saplings.has(k) || signs.has(k) || rails.has(k) ||
       campfires.has(k) || beehives.has(k) || scarecrows.has(k) ||
@@ -34078,6 +34499,23 @@ function placeBlock() {
     }
   }
 
+  // Скотар у прицілі (ПКМ) → підказка стану: скільки приведено, чи двір
+  // повний, чи є дика худоба в сягу
+  if (herders.size > 0) {
+    const hk = herderKey(hit.prev[0], hit.prev[1], hit.prev[2]);
+    const hi = herders.get(hk);
+    if (hi) {
+      flashItemName(herderYardCount(hi) >= HERDER_FULL_N
+        ? `🐮 Скотар: приведено ${hi.herdedN | 0} — двір повний, ґирлиґа спочиває`
+        : herderLured(hk)
+          ? `🐮 Скотар: приведено ${hi.herdedN | 0} — покликана вже в дорозі до корита`
+          : herderWild(hi)
+            ? `🐮 Скотар: приведено ${hi.herdedN | 0} — дика худоба в сягу, ґирлиґа кличе`
+            : `🐮 Скотар: приведено ${hi.herdedN | 0} — у сягу нема кого кликати`);
+      return;
+    }
+  }
+
   // Спостерігач у прицілі (ПКМ) → повернути око на чверть оберту
   if (observers.size > 0) {
     const ok = observerKey(hit.prev[0], hit.prev[1], hit.prev[2]);
@@ -34629,6 +35067,12 @@ function placeBlock() {
   // Ловчий — ріжок мережі: приручає дикого вовка м'ясом з полиці
   if (id === TAMER) {
     placeTamer(hit);
+    return;
+  }
+
+  // Скотар — ґирлиґа мережі: скликає дику худобу до корита зерном з полиці
+  if (id === HERDER) {
+    placeHerder(hit);
     return;
   }
 
@@ -38500,6 +38944,29 @@ function drawBlockIcon(canvas, id) {
     ctx.fillRect(13, 6, 1, 1);
     return;
   }
+  if (id === HERDER) {
+    // Процедурна іконка скотаря: кам'яна тумба, ґирлиґа з гачком,
+    // корито з зерном і зернятко в повітрі — мережа скликає собі стадо
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.fillStyle = '#565d66';                 // тінь під основою
+    ctx.fillRect(2, 14, 12, 1);
+    ctx.fillStyle = '#6f7680';                 // кам'яна основа
+    ctx.fillRect(2, 13, 12, 1);
+    ctx.fillStyle = '#8a6a3f';                 // кий ґирлиґи
+    ctx.fillRect(3, 3, 2, 10);
+    ctx.fillStyle = '#63401f';                 // гачок ґирлиґи
+    ctx.fillRect(5, 2, 3, 2);
+    ctx.fillRect(7, 4, 1, 2);
+    ctx.fillStyle = '#7a5c33';                 // корито
+    ctx.fillRect(8, 11, 6, 2);
+    ctx.fillStyle = '#d9b23c';                 // зерно в кориті
+    ctx.fillRect(9, 10, 4, 1);
+    ctx.fillStyle = '#e9c558';                 // зернятко злітає
+    ctx.fillRect(11, 7, 1, 1);
+    ctx.fillRect(12, 6, 1, 1);
+    return;
+  }
   if (id === COLLIER) {
     // Процедурна іконка вуглежога: кам'яна основа, земляна купа ярусами,
     // жевріючі челюсті внизу і димок з продуху
@@ -40102,6 +40569,8 @@ const ACHIEVEMENTS = [
   { id: 'lamplight',   icon: '🌃', title: 'Світлий двір',         desc: 'Один ліхтарник засвітив 8 смолоскипів — нечисті нема де ступити' },
   { id: 'autotame',    icon: '🐾', title: 'Ріжок мережі',         desc: 'Ловчий приручив мережі першого друга — зграя росте без руки' },
   { id: 'tamepack',    icon: '🐺', title: 'Зграя двору',          desc: 'Один ловчий приручив 3 вовків — двір ніколи не лишається без друга' },
+  { id: 'autoherd',    icon: '🐮', title: 'Ґирлиґа мережі',       desc: 'Скотар привів до корита першого новачка — стадо сходиться без руки' },
+  { id: 'herdyard',    icon: '🐄', title: 'Повний двір',          desc: 'Один скотар привів 3 тварин — вибитий загін віднаселяється сам' },
   { id: 'master',      icon: '🏆', title: 'Майстер MineClone',  desc: 'Здобути всі інші досягнення' },
 ];
 const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -44099,6 +44568,49 @@ window.MCDebug = {
                powered: tamerPowered(t), feedWorkT: +t.feedWorkT.toFixed(1),
                friendAlive: tamerFriendAlive(),
                wild: w ? [w.pos.x, w.pos.y, w.pos.z, w.fedCount | 0] : null };
+    });
+  },
+  // Скотар (для тестів)
+  giveHerder: () => { assignBlockToSlot(HERDER); return BLOCK_NAMES[HERDER]; },
+  placeHerderAt: (x, y, z) => {
+    if (!powerCellFree(x, y, z)) return false;
+    return addHerder(x, y, z);
+  },
+  // Миттєво докликати всіх скотарів (наступний тик кличе, як умови живі)
+  herderFast: () => {
+    let n = 0;
+    for (const h of herders.values()) {
+      if (!h.on) continue;
+      h.callWorkT = HERDER_TIME;
+      n++;
+    }
+    return n;
+  },
+  spawnWildAnimalAt: (type, x, y, z) => {
+    if (!BREED_TYPES.has(type)) return `не свійський вид: ${type}`;
+    spawnAnimal(type, x + 0.5, y + 0.01, z + 0.5);
+    return animals.length;
+  },
+  // Прибрати всю свійську худобу (для тестів скликання на порожній двір)
+  smiteFarmAnimals: () => {
+    let n = 0;
+    for (let i = animals.length - 1; i >= 0; i--) {
+      if (!BREED_TYPES.has(animals[i].type)) continue;
+      removeAnimal(i);
+      n++;
+    }
+    return n;
+  },
+  get herderInfo() {
+    return [...herders.values()].map((h) => {
+      const lured = herderLured(herderKey(h.x, h.y, h.z));
+      const w = herderWild(h);
+      return { x: h.x, y: h.y, z: h.z, on: !!h.on, herdedN: h.herdedN | 0,
+               powered: herderPowered(h), callWorkT: +h.callWorkT.toFixed(1),
+               yardN: herderYardCount(h),
+               lured: lured ? [lured.type, +lured.pos.x.toFixed(1),
+                               +lured.pos.z.toFixed(1)] : null,
+               wild: w ? [w.type, +w.pos.x.toFixed(1), +w.pos.z.toFixed(1)] : null };
     });
   },
   // Спостерігач (для тестів)
