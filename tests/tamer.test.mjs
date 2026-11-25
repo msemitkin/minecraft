@@ -98,7 +98,7 @@ test('tamer appears in both control guides and the menu', () => {
   assert.match(html, /🐾 Ловчий \(меню\)/);
   assert.match(html, /🐾 Ловчий \(меню ▤\)/);
   assert.match(js, /\[TAMER\]: 'Ловчий',/);
-  assert.match(js, /LAMPLIGHTER, TAMER, OBSERVER/);
+  assert.match(js, /LAMPLIGHTER, TAMER, HERDER/);
 });
 
 test('debug helpers for the tamer exist', () => {
