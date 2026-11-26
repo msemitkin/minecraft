@@ -24,9 +24,9 @@ test('the follow step is shared between the leash and the herder call', () => {
   // повідець веде тим самим кроком
   assert.match(js,
     /followStep\(a, player\.pos\.x, player\.pos\.z, LEASH_FOLLOW_MIN\);/);
-  // покликана скотарем іде тим самим кроком до корита
+  // покликана скотарем (чи конюшим) іде тим самим кроком до корита
   assert.match(js,
-    /a\.lureKey && herders\.has\(a\.lureKey\)[\s\S]{0,400}followStep\(a, h\.x \+ 0\.5, h\.z \+ 0\.5, HERDER_ARRIVE\);/);
+    /a\.lureKey && \(herders\.has\(a\.lureKey\) \|\| stablers\.has\(a\.lureKey\)\)[\s\S]{0,400}followStep\(a, h\.x \+ 0\.5, h\.z \+ 0\.5, HERDER_ARRIVE\);/);
   // окремого ходу слідування не існує: крок живе лише в followStep
   const steps = (js.match(/a\.targetYaw = Math\.atan2\(a\.pos\.x - tx, a\.pos\.z - tz\);/g) || []);
   assert.equal(steps.length, 1);
@@ -97,13 +97,13 @@ test('the hand is stronger than the call', () => {
     /if \(lured\.leashed\) \{\s*\n\s*lured\.lureKey = null;/);
   // гілка повідця в updateAnimal стоїть перед гілкою поклику
   const leashIdx = js.indexOf('} else if (a.leashed) {');
-  const lureIdx = js.indexOf('} else if (a.lureKey && herders.has(a.lureKey)) {');
+  const lureIdx = js.indexOf('} else if (a.lureKey && (herders.has(a.lureKey) || stablers.has(a.lureKey))) {');
   assert.ok(leashIdx > 0 && lureIdx > leashIdx);
 });
 
 test('a called animal never despawns on the way', () => {
   assert.match(js,
-    /if \(!a\.tamed && !a\.leashed && !\(a\.lureKey && herders\.has\(a\.lureKey\)\) &&/);
+    /if \(!a\.tamed && !a\.leashed &&\s*\n\s*!\(a\.lureKey && \(herders\.has\(a\.lureKey\) \|\| stablers\.has\(a\.lureKey\)\)\) &&/);
 });
 
 test('a stalled walk is released and the animal grazes shy for a while', () => {
@@ -120,9 +120,9 @@ test('a stalled walk is released and the animal grazes shy for a while', () => {
 });
 
 test('a stale call releases itself', () => {
-  // скотаря розібрано — тварина знову сама собі
+  // скотаря (чи конюшого) розібрано — тварина знову сама собі
   assert.match(js,
-    /if \(a\.lureKey && !herders\.has\(a\.lureKey\)\) a\.lureKey = null;/);
+    /if \(a\.lureKey && !herders\.has\(a\.lureKey\) && !stablers\.has\(a\.lureKey\)\) a\.lureKey = null;/);
 });
 
 test('herder waits idle without power and releases the called animal', () => {
@@ -165,7 +165,7 @@ test('herder appears in both control guides and the menu', () => {
   assert.match(html, /🐮 Скотар \(меню\)/);
   assert.match(html, /🐮 Скотар \(меню ▤\)/);
   assert.match(js, /\[HERDER\]: 'Скотар',/);
-  assert.match(js, /TAMER, HERDER, OBSERVER/);
+  assert.match(js, /TAMER, HERDER, STABLER, OBSERVER/);
 });
 
 test('debug helpers for the herder exist', () => {
