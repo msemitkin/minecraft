@@ -49,14 +49,19 @@ test('serving is atomic at the moment of finishing (nothing to lose)', () => {
   // корова доїться, голод вгамовується і полум'я гасне всередині
   // milkmaidFinish — зламана доярка нічого не губить
   assert.match(js, /function milkmaidFinish\(m, cow\)/);
-  assert.match(js, /cow\.milkTimer = MILK_COOLDOWN;\s*\n\s*const burning = player\.fireTicks > 0;\s*\n\s*player\.hunger = Math\.min\(MAX_HUNGER, player\.hunger \+ MILK_FOOD\);/);
+  assert.match(js, /if \(!cowMilkCore\(cow\)\) return;\s*\n\s*const burning = player\.fireTicks > 0;\s*\n\s*player\.hunger = Math\.min\(MAX_HUNGER, player\.hunger \+ MILK_FOOD\);/);
   assert.match(js, /m\.served = \(m\.served \| 0\) \+ 1;/);
 });
 
 test('machine milking respects the same cooldown as the hand', () => {
-  // корова надоюється знову за MILK_COOLDOWN — як від ручного доїння
+  // корова надоюється знову за MILK_COOLDOWN — спільне серце доїння
+  // (cowMilkCore), і лічильник надою живе лише в ньому
+  assert.match(js, /function cowMilkCore\(cow\) \{\s*\n\s*if \(cow\.milkTimer > 0\) return false;\s*\n\s*cow\.milkTimer = MILK_COOLDOWN;/);
   const uses = (js.match(/milkTimer = MILK_COOLDOWN/g) || []).length;
-  assert.ok(uses >= 2, `milkTimer = MILK_COOLDOWN згадок: ${uses}`);
+  assert.equal(uses, 1, `milkTimer = MILK_COOLDOWN згадок: ${uses}`);
+  // ним доять усі троє: відро з руки, доярка і сировар
+  assert.match(js, /function milkCowEntity\(cow\) \{\s*\n\s*if \(!cowMilkCore\(cow\)\) \{/);
+  assert.match(js, /function cheesemakerFinish\(c, cow\) \{[\s\S]{0,400}if \(!cowMilkCore\(cow\)\) return;/);
 });
 
 test('hand path stays: the bucket still milks and milk is drunk by hand', () => {

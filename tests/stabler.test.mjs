@@ -155,7 +155,7 @@ test('stabler appears in both control guides and the menu', () => {
   assert.match(html, /🐴 Конюший \(меню\)/);
   assert.match(html, /🐴 Конюший \(меню ▤\)/);
   assert.match(js, /\[STABLER\]: 'Конюший',/);
-  assert.match(js, /TAMER, HERDER, STABLER, OBSERVER/);
+  assert.match(js, /TAMER, HERDER, STABLER, CHEESEMAKER, OBSERVER/);
 });
 
 test('debug helpers for the stabler exist', () => {

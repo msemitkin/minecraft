@@ -37,8 +37,8 @@ test('canteen serves only a full portion that fits the hunger deficit', () => {
 });
 
 test('canteen serves dishes in the same ladder as the hand (bread first)', () => {
-  // той самий щабель, що й у руки: хліб → смаженина → гриби → молюск → опунції
-  assert.match(js, /\['bread',\s+BREAD_FOOD\],\s*\n\s*\['cooked',\s+COOKED_FOOD\],\s*\n\s*\['roast',\s+ROAST_FOOD\],\s*\n\s*\['mollusk',\s+MOLLUSK_FOOD\],\s*\n\s*\['baked',\s+BAKED_FOOD\],/);
+  // той самий щабель, що й у руки: хліб → смаженина → сир → гриби → молюск → опунції
+  assert.match(js, /\['bread',\s+BREAD_FOOD\],\s*\n\s*\['cooked',\s+COOKED_FOOD\],\s*\n\s*\['cheese',\s+CHEESE_FOOD\],\s*\n\s*\['roast',\s+ROAST_FOOD\],\s*\n\s*\['mollusk',\s+MOLLUSK_FOOD\],\s*\n\s*\['baked',\s+BAKED_FOOD\],/);
 });
 
 test('serving is atomic at the moment of finishing (nothing to lose)', () => {
