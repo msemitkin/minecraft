@@ -291,6 +291,9 @@ kbd {
 #truffle-badge,
 #crown-badge,
 #wool-badge,
+#timber-badge,
+#cake-badge,
+#cheese-badge,
 #armor-badge {
   position: fixed;
   right: 16px;
@@ -371,6 +374,20 @@ kbd {
 
 #wool-badge {
   bottom: 882px;
+}
+
+/* Медяники: бейдж у вільному прорізі колонки (під павутиною) */
+#cake-badge {
+  bottom: 486px;
+}
+
+#timber-badge {
+  bottom: 1014px;
+}
+
+/* Круги сиру: крам сировара — молоко, що дійшло до полиці */
+#cheese-badge {
+  bottom: 1058px;
 }
 
 /* Розбитий обладунок: бейдж тьмяніє, доки панцир не полагоджено */
@@ -571,6 +588,9 @@ kbd {
   #truffle-badge,
   #crown-badge,
   #wool-badge,
+  #timber-badge,
+  #cake-badge,
+  #cheese-badge,
   #armor-badge,
   #ore-badge,
   #flower-badge,
