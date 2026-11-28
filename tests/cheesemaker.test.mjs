@@ -134,7 +134,7 @@ test('breaking by hand and by lost support both dismantle cleanly', () => {
 });
 
 test('cheesemaker appears in both control guides and the menu', () => {
-  assert.match(js, /TAMER, HERDER, STABLER, CHEESEMAKER, OBSERVER/);
+  assert.match(js, /TAMER, HERDER, STABLER, CHEESEMAKER, CARVER, OBSERVER/);
   assert.match(js, /\[CHEESEMAKER\]: 'Сировар',/);
   const guides = (html.match(/Сировар \(меню/g) || []).length;
   assert.ok(guides >= 2, `довідок із сироваром: ${guides}`);

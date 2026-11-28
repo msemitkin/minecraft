@@ -165,7 +165,7 @@ test('herder appears in both control guides and the menu', () => {
   assert.match(html, /🐮 Скотар \(меню\)/);
   assert.match(html, /🐮 Скотар \(меню ▤\)/);
   assert.match(js, /\[HERDER\]: 'Скотар',/);
-  assert.match(js, /TAMER, HERDER, STABLER, CHEESEMAKER, OBSERVER/);
+  assert.match(js, /TAMER, HERDER, STABLER, CHEESEMAKER, CARVER, OBSERVER/);
 });
 
 test('debug helpers for the herder exist', () => {
